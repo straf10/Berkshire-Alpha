@@ -16,6 +16,12 @@ Build an autonomous AI trading agent on Alpaca that:
 
 🚧 Just getting started — repo scaffolding in progress.
 
+## Judged Account
+
+- **Account ID:** `b1a0e3d2-61f1-4eac-9421-49deedc68fc4`
+- **Account number:** `PA3319FCQCPN`
+- Paper trading, created 28 Aug 2026, $100,000 starting balance, Options Level 3 approved.
+
 ## Getting Started
 
 ### Prerequisites
