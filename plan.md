@@ -137,8 +137,10 @@ Fixed, small, liquid — over four sessions, fills matter more than breadth. Pen
 
 **Two cadences, deliberately split.** Running a six-stage LLM debate every 15 minutes is both expensive and pointless: the underlying evidence barely moves, and each extra cycle just adds churn against wide options spreads.
 
-- **Entry scan: 2× per session** (≈10:15 ET and ≈14:00 ET) — the full LLM pipeline below. Never in the first or last 15 minutes of a session, when spreads are widest.
+- **Entry scan: 2× per session**, at **open + 45 min** and **close − 2 h** — the full LLM pipeline below. Expressed as offsets from the session boundaries Alpaca's calendar returns, not as hardcoded 10:15/14:00, so an early close or half-day doesn't put a scan into a closing auction. Never in the first or last 15 minutes of a session, when spreads are widest.
 - **Position management: every 5 minutes**, fully **deterministic, zero LLM calls** (step 8).
+
+The pipeline **narrows as it goes**, which is what keeps the LLM budget bounded: the screen shortlists ≤4 names for the analyst team, and only the **top 2 by composite analyst score** proceed to debate → trader → risk. Running a full four-stage debate on every candidate is where an "affordable" pipeline quietly becomes an unaffordable one.
 
 1. **Screen** — pull the fixed universe + Reddit mention velocity → shortlist ≤4 candidate tickers for the analyst team.
 2. **Analyst team (parallel, structured-output LLM calls, not free chat)**
@@ -152,7 +154,7 @@ Fixed, small, liquid — over four sessions, fills matter more than breadth. Pen
 5. **Risk management team — 3 personas (aggressive/neutral/conservative)** — each reviews the trader's proposal against account state (open positions, day P&L, buying power — all read via the CLI) and votes approve/reject/resize, citing which risk gate is at stake.
 6. **Fund manager gate (deterministic, not an LLM)** — see "Risk gates" for the actual numbers. The risk personas inform it; they can never bypass it.
 7. **Execute** — on approval, place the multi-leg limit order via alpaca-py, run the repricing loop, and log the full chain (analyst evidence → debate transcript → trader proposal → risk votes → final decision → order lifecycle) to SQLite for the UI feed and the write-up.
-8. **Manage (deterministic, every 5 min)** — profit target, stop loss, DTE floor, and the end-of-competition unwind, all in code.
+8. **Manage (deterministic, every 5 min)** — profit target, stop loss, DTE floor, assignment cleanup (liquidate any non-option position that appears in the broker's book), and the end-of-competition unwind, all in code.
 
 ### Risk gates (the fund-manager gate, with numbers)
 
@@ -165,7 +167,7 @@ Unit-tested in isolation, and the only thing standing between an LLM and the acc
 - **Daily loss kill switch:** −3% day P&L → no new entries for the rest of the session, management only.
 - **Cumulative drawdown brake:** −8% from the $100k starting equity → conservative mode (halve size, debit structures only). −12% → entries off entirely, manage to flat. Blowing the account is the single worst outcome available to us when P&L is criterion #1.
 - **Earnings gate:** no new position within 2 sessions of a hardcoded earnings date for that underlying.
-- **Equity-order hard block:** the executor refuses any non-options order outright (C3).
+- **Equity-order hard block:** the executor refuses any order that *opens* a non-options position (C3). Closing an equity position created by assignment is the one permitted exception, and is invoked only by the deterministic management pass, never by an LLM.
 - **Expiry policy:** see below.
 
 ### Expiry and the end-of-competition book
@@ -181,7 +183,7 @@ Judging is on P&L in the account, and short legs left open can be assigned after
 
 The Featherless credit is **$25, first-come first-served**, and Hackathon_Info notes the redemption mechanism isn't actually documented on the event page — so treat availability itself as a risk, not a given.
 
-- **Call budget:** one entry scan over 4 candidates is ≈12 analyst + 4 debate + 1 trader + 3 risk ≈ **20 calls**; at 2 scans/session that's ≈40/session and **≈250 calls across the whole competition**. That fits comfortably. It only fits *because* the cadence is 2×/session — a 15-minute cycle would be roughly 50× that, and is the thing that would actually burn the credit.
+- **Call budget, counted properly:** the analyst stage runs per candidate (3 analysts × 4 candidates = 12 calls), and the debate/trader/risk stages run per *surviving* candidate — 2 of them — at 4 debate + 1 trader + 3 risk = 8 each, so 16. That's **≈28 calls per scan**, ≈56 per session, and **≈350 across the whole competition**. Comfortable, but only because of two decisions: the 2×/session cadence, and the narrowing to 2 names before the debate. Fanning the full debate out over 4 candidates at a 15-minute cadence would be roughly 40× this — that, not prompt length, is what would actually burn the credit.
 - **Instrument it:** every call logs model, prompt/completion tokens, latency, and estimated cost to an `llm_calls` table. A **daily spend ceiling** halts new entries (not management) when hit.
 - **Provider-agnostic client:** `tools/llm.py` exposes one `complete_json(prompt, schema)` interface with the provider behind an env var. Featherless is the default (partner-prize eligibility); a second provider is configured as a drop-in fallback. **Day 1 spike: confirm we can actually obtain and authenticate the Featherless credit.** If we can't by end of Day 2, switch the default and stop chasing the partner track.
 - **Deterministic degradation:** if the LLM is unavailable or over budget, the agent does **not** stop trading. It falls back to the quant classifier alone (momentum + RSI + IV/RV) through the same risk gates, and the UI labels those decisions `quant-only`. An agent that keeps generating P&L when its LLM budget runs out is a better story than one that goes dark.
@@ -213,7 +215,7 @@ Single-page Next.js app, read-only, no auth needed (demo only):
 
 ## Build Order (7-day timeline)
 
-Day boundaries are calendar days from Fri 28 Aug. The governing constraint: **the judged account must be trading by Mon 31 Aug (Day 4).**
+Day boundaries are calendar days from Fri 28 Aug, so Day 1 is the kickoff evening and Day 8 is the deadline morning — seven days of build, eight dated rows. The governing constraint: **the judged account must be trading by Mon 31 Aug (Day 4).**
 
 1. **Day 1 (Fri 28 Aug) — unblock everything.**
    - lablab: profile → Enrol → connect Discord → **create the team** (C11). Without this there is no submit button.
