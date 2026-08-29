@@ -31,6 +31,17 @@ interface Status {
   next_action_utc?: string;
 }
 
+interface AssignmentEvent {
+  id: number;
+  ts_utc: string;
+  symbol: string;
+  reason: string;
+  equity_qty: number;
+  contracts: number;
+  equity_status: string;
+  orphan_status: string;
+}
+
 async function fetchJson<T>(url: string): Promise<T> {
   const res = await fetch(url, { cache: "no-store" });
   return res.json() as Promise<T>;
@@ -79,6 +90,26 @@ function StatusBar({ status }: { status: Status }) {
   );
 }
 
+function AssignmentPanel({ events }: { events: AssignmentEvent[] }) {
+  if (events.length === 0) return null;
+  return (
+    <div className="mb-6 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm">
+      <p className="mb-2 font-semibold text-amber-700 dark:text-amber-400">
+        Assignment reconciliation ({events.length})
+      </p>
+      <ul className="space-y-1">
+        {events.map((e) => (
+          <li key={e.id} className="text-black/70 dark:text-white/70">
+            {e.ts_utc} — {e.symbol} {e.reason} equity {e.equity_qty > 0 ? "+" : ""}
+            {e.equity_qty} sh ({e.contracts} contract{e.contracts === 1 ? "" : "s"}) — equity{" "}
+            {e.equity_status}, orphan {e.orphan_status}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function actionColor(action: string): string {
   if (action === "ENTER") return "text-emerald-600 dark:text-emerald-400";
   if (action === "HALT") return "text-red-600 dark:text-red-400";
@@ -93,9 +124,10 @@ function modeLabel(mode: string): string {
 
 export default async function Page() {
   const base = process.env.NEXT_PUBLIC_API_BASE!;
-  const [decisions, status] = await Promise.all([
+  const [decisions, status, assignments] = await Promise.all([
     fetchJson<Decision[]>(`${base}/decisions?limit=50`),
     fetchJson<Status>(`${base}/status`),
+    fetchJson<AssignmentEvent[]>(`${base}/assignments?limit=20`),
   ]);
 
   const llmDecisions = decisions.filter((d) => d.mode !== "quant-only");
@@ -113,6 +145,7 @@ export default async function Page() {
     <main className="p-8 font-mono text-sm">
       <h1 className="mb-4 text-lg">Options Alpha Agent — decisions</h1>
       <StatusBar status={status} />
+      <AssignmentPanel events={assignments} />
       {decisions.length === 0 ? (
         <p className="text-black/60 dark:text-white/60">No decisions yet.</p>
       ) : (

@@ -254,6 +254,72 @@ async def test_migration_adds_mentions_column(tmp_path) -> None:
         assert (await cur.fetchone())[0] == 0
 
 
+def _assignment_event_row(**overrides) -> write.AssignmentEventRow:
+    fields = dict(
+        ts_utc="2026-08-31T12:00:00Z", session_date="2026-08-31", symbol="AAPL", trade_id=None,
+        reason="SHORT_CALL_ASSIGNED", assigned_right="C", equity_qty=-100, contracts=1,
+        equity_status="FLATTENED", equity_order_id="o1", equity_fill_price=Decimal("180.42"),
+        orphan_occ_symbol="AAPL260904C00190000", orphan_qty=1, orphan_status="FLATTENED",
+        orphan_order_id="o2", orphan_fill_price=Decimal("0.13"), detail="test",
+    )
+    fields.update(overrides)
+    return write.AssignmentEventRow(**fields)
+
+
+async def test_assignment_events_table_created(tmp_path) -> None:
+    db_path = str(tmp_path / "agent.db")
+    await init_db(db_path)
+    async with connect(db_path) as conn:
+        cur = await conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='assignment_events'"
+        )
+        assert len(await cur.fetchall()) == 1
+        cur = await conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name IN "
+            "('ix_assignment_events_ts', 'ix_assignment_events_trade')"
+        )
+        assert len(await cur.fetchall()) == 2
+
+
+async def test_assignment_events_table_added_to_existing_db(tmp_path) -> None:
+    db_path = str(tmp_path / "legacy.db")
+    await _seed_legacy_db(db_path)  # a Day-2-shaped DB, predates assignment_events entirely
+    await init_db(db_path)  # no error -- CREATE TABLE IF NOT EXISTS is enough, no migration needed
+    async with connect(db_path) as conn:
+        cur = await conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='assignment_events'"
+        )
+        assert len(await cur.fetchall()) == 1
+
+
+async def test_insert_assignment_event_roundtrip(tmp_path) -> None:
+    db_path = str(tmp_path / "agent.db")
+    await init_db(db_path)
+    async with connect(db_path) as conn:
+        event_id = await write.insert_assignment_event(conn, _assignment_event_row())
+        rows = await read.latest_assignments(conn)
+
+    assert len(rows) == 1
+    got = rows[0]
+    assert got["id"] == event_id
+    assert got["symbol"] == "AAPL"
+    assert got["equity_fill_price"] == pytest.approx(180.42)
+    assert got["orphan_fill_price"] == pytest.approx(0.13)
+
+
+async def test_assignment_event_allows_null_trade_id(tmp_path) -> None:
+    db_path = str(tmp_path / "agent.db")
+    await init_db(db_path)
+    async with connect(db_path) as conn:
+        row = _assignment_event_row(
+            reason="UNMATCHED_EQUITY", trade_id=None, assigned_right=None,
+            orphan_occ_symbol=None, orphan_qty=0, orphan_status="NOT_HELD",
+            orphan_order_id=None, orphan_fill_price=None,
+        )
+        event_id = await write.insert_assignment_event(conn, row)  # foreign_keys=ON, must not raise
+        assert event_id is not None
+
+
 def test_money_boundary_is_explicit() -> None:
     write_src = (STORAGE_DIR / "write.py").read_text(encoding="utf-8")
     assert "float(" in write_src  # the Decimal -> REAL boundary lives here

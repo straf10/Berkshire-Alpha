@@ -52,6 +52,31 @@ CREATE TABLE IF NOT EXISTS trades (
 CREATE INDEX IF NOT EXISTS ix_trades_ts ON trades(ts_utc DESC);
 CREATE INDEX IF NOT EXISTS ix_trades_open ON trades(closed_at) WHERE closed_at IS NULL;
 
+-- Assignment Reconciliation Routine (docs/assignment_reconciliation_plan.md
+-- Group 3). Never a decisions row -- see main.py's _completed_scan_count.
+CREATE TABLE IF NOT EXISTS assignment_events (
+  id                 INTEGER PRIMARY KEY,
+  ts_utc             TEXT    NOT NULL,
+  session_date       TEXT    NOT NULL,
+  symbol             TEXT    NOT NULL,               -- underlying / equity ticker
+  trade_id           INTEGER REFERENCES trades(id),  -- NULL on UNMATCHED_EQUITY
+  reason             TEXT    NOT NULL,               -- AssignmentReason
+  assigned_right     TEXT,                           -- 'C' | 'P' | NULL
+  equity_qty         INTEGER NOT NULL,               -- SIGNED shares at detection
+  contracts          INTEGER NOT NULL,
+  equity_status      TEXT    NOT NULL,               -- AssignmentStatus
+  equity_order_id    TEXT,
+  equity_fill_price  REAL,
+  orphan_occ_symbol  TEXT,
+  orphan_qty         INTEGER NOT NULL DEFAULT 0,
+  orphan_status      TEXT    NOT NULL,
+  orphan_order_id    TEXT,
+  orphan_fill_price  REAL,
+  detail             TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_assignment_events_ts    ON assignment_events(ts_utc DESC);
+CREATE INDEX IF NOT EXISTS ix_assignment_events_trade ON assignment_events(trade_id);
+
 CREATE TABLE IF NOT EXISTS greeks_snapshots (
   id                INTEGER PRIMARY KEY,
   ts_utc            TEXT NOT NULL,

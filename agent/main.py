@@ -21,6 +21,7 @@ from agent.config import (
     CONSENSUS_HIGH_THRESHOLD,
     DAILY_LOSS_KILL_PCT,
     DRAWDOWN_TERMINAL_PCT,
+    DTE_FORCE_CLOSE,
     EARNINGS_VERIFIED_ON,
     LLM_SEMAPHORE_LIMIT,
     MANAGEMENT_INTERVAL_S,
@@ -33,9 +34,11 @@ from agent.config import (
 )
 from agent.execution import cli_bridge
 from agent.execution.alpaca_client import AlpacaClients, probe_equity_feed
+from agent.execution.assignment import ReconcileResult, reconcile
 from agent.execution.broker import AlpacaBroker, BrokerPort, ClockPort, RealClock
 from agent.execution.exits import OpenTrade, build_closing_plan, current_net_mid
 from agent.execution.order_manager import walk_to_fill
+from agent.risk.assignment import AssignmentEvent, AssignmentStatus, detect_assignments
 from agent.risk.exits import evaluate_exit
 from agent.risk.gates import GateContext, GateDecision, evaluate
 from agent.risk.greeks import aggregate, build_exposures
@@ -150,11 +153,147 @@ async def _open_trades(conn: aiosqlite.Connection) -> list[OpenTrade]:
     return open_trades
 
 
-async def exit_tick(deps: Deps, session: SessionPlan, conn: aiosqlite.Connection, spots: dict[str, float]) -> None:
+_SUBMITTED_STATUSES = frozenset({AssignmentStatus.FLATTENED, AssignmentStatus.PENDING, AssignmentStatus.REJECTED})
+
+
+@dataclass(frozen=True)
+class AssignmentTickResult:
+    """acted: an order was actually submitted this tick -> the caller must
+    re-read positions before computing greeks. trade_ids: trades exit_tick
+    must leave alone this tick -- reconciliation, not exit_tick, owns a
+    trade for as long as an assignment event named it, even if it isn't
+    fully resolved yet (docs/assignment_reconciliation_plan.md §A2)."""
+
+    acted: bool
+    trade_ids: frozenset[int]
+
+
+async def _working_symbols() -> frozenset[str] | None:
+    """None signals CLI_UNAVAILABLE -- the caller must not submit any
+    assignment order this tick (docs/assignment_reconciliation_plan.md §0.5
+    layer 2: submitting blind risks doubling the position)."""
+    try:
+        orders = await cli_bridge.list_orders(status="open")
+    except cli_bridge.CliUnavailable as e:
+        logger.warning("assignment_tick: CLI unavailable checking open orders -- skipping submission this tick: %s", e)
+        return None
+    return frozenset(o["symbol"] for o in orders)
+
+
+def _cli_unavailable_result(event: AssignmentEvent) -> ReconcileResult:
+    equity_status = AssignmentStatus.CLI_UNAVAILABLE if event.equity_qty != 0 else AssignmentStatus.NOT_HELD
+    orphan_status = AssignmentStatus.CLI_UNAVAILABLE if event.orphan_qty > 0 else AssignmentStatus.NOT_HELD
+    return ReconcileResult(
+        event=event, equity_status=equity_status, equity_order_id=None, equity_fill_price=None,
+        orphan_status=orphan_status, orphan_order_id=None, orphan_fill_price=None,
+        detail="CLI_UNAVAILABLE -- list_orders failed, submission skipped this tick",
+    )
+
+
+def _assignment_realized_pnl(trade: OpenTrade, event: AssignmentEvent, result: ReconcileResult) -> Decimal:
+    """Three cash flows (docs/assignment_reconciliation_plan.md Group 4): the
+    original entry, the assignment itself (exact -- the strike is on the leg
+    and the liquidation fill is on the order, so unlike a broker-reported
+    figure this needs no reconciliation), and the orphan's close."""
+    entry_cash = -trade.entry_net_mid * 100 * event.contracts
+    equity_fill = result.equity_fill_price or Decimal("0")
+    short_strike = Decimal(str(event.short_strike)) if event.short_strike is not None else Decimal("0")
+    if event.assigned_right == "C":
+        assign_cash = (short_strike - equity_fill) * 100 * event.contracts
+    else:
+        assign_cash = (equity_fill - short_strike) * 100 * event.contracts
+    orphan_cash = (
+        (result.orphan_fill_price or Decimal("0")) * 100 * event.orphan_qty if event.orphan_qty > 0 else Decimal("0")
+    )
+    return entry_cash + assign_cash + orphan_cash
+
+
+async def assignment_tick(
+    deps: Deps, session: SessionPlan, conn: aiosqlite.Connection, positions: list[cli_bridge.CliPosition]
+) -> AssignmentTickResult:
+    """plan.md's Assignment Reconciliation Routine (docs/assignment_
+    reconciliation_plan.md Group 4). Deterministic, zero LLM calls, zero
+    budget reads -- the one permitted exception to the C3 equity hard-block,
+    and reachable only from here. Never writes a decisions row (§A3) --
+    writing one would silently inflate _completed_scan_count and skip a
+    real entry scan for the rest of the session."""
+    open_trades = await _open_trades(conn)
+    events = detect_assignments(positions, open_trades)
+    if not events:
+        return AssignmentTickResult(acted=False, trade_ids=frozenset())
+
+    trade_by_id = {t.trade_id: t for t in open_trades}
+    held_by_symbol = {p.symbol: p for p in positions}
+
+    working = await _working_symbols()
+    cli_unavailable = working is None
+
+    orphan_occs = [e.orphan_occ_symbol for e in events if e.orphan_qty > 0 and e.orphan_occ_symbol]
+    quotes = {} if cli_unavailable else await fetch_leg_snapshots(deps.clients, orphan_occs)
+    unwind = is_unwind_triggered(deps.clock.now())
+
+    acted = False
+    trade_ids: set[int] = set()
+
+    for event in events:
+        if event.trade_id is not None:
+            trade_ids.add(event.trade_id)
+        trade = trade_by_id.get(event.trade_id) if event.trade_id is not None else None
+
+        if cli_unavailable:
+            result = _cli_unavailable_result(event)
+        else:
+            pos = held_by_symbol.get(event.symbol)
+            mark = abs(pos.market_value / pos.qty) if pos is not None and pos.qty != 0 else None
+            quote = quotes.get(event.orphan_occ_symbol) if event.orphan_qty > 0 else None
+            dte = (trade.expiry - session.session_date).days if trade is not None else None
+            urgent = unwind or (dte is not None and dte < DTE_FORCE_CLOSE)
+            result = await reconcile(
+                deps.broker, event, mark=mark, quote=quote, working_symbols=working,
+                urgent=urgent, clock=deps.clock, dry_run=deps.settings.dry_run,
+            )
+
+        if result.equity_status in _SUBMITTED_STATUSES or result.orphan_status in _SUBMITTED_STATUSES:
+            acted = True
+
+        await storage_write.insert_assignment_event(conn, storage_write.AssignmentEventRow(
+            ts_utc=datetime.now(timezone.utc).isoformat(), session_date=session.session_date.isoformat(),
+            symbol=event.symbol, trade_id=event.trade_id, reason=event.reason.value,
+            assigned_right=event.assigned_right, equity_qty=event.equity_qty, contracts=event.contracts,
+            equity_status=result.equity_status.value, equity_order_id=result.equity_order_id,
+            equity_fill_price=result.equity_fill_price, orphan_occ_symbol=event.orphan_occ_symbol,
+            orphan_qty=event.orphan_qty, orphan_status=result.orphan_status.value,
+            orphan_order_id=result.orphan_order_id, orphan_fill_price=result.orphan_fill_price,
+            detail=result.detail,
+        ))
+        logger.warning(
+            "ASSIGNMENT %s %s  equity %+d sh (%d contract%s, trade %s)\n"
+            "           equity  status=%s fill=%s order=%s\n"
+            "           orphan  %s status=%s fill=%s order=%s",
+            event.symbol, event.reason.value, event.equity_qty, event.contracts,
+            "" if event.contracts == 1 else "s", event.trade_id,
+            result.equity_status.value, result.equity_fill_price, result.equity_order_id,
+            event.orphan_occ_symbol or "--", result.orphan_status.value, result.orphan_fill_price, result.orphan_order_id,
+        )
+
+        if trade is not None and result.fully_resolved and event.contracts == trade.qty:
+            realized_pnl = _assignment_realized_pnl(trade, event, result)
+            await storage_write.close_trade(
+                conn, trade.trade_id, closed_at=datetime.now(timezone.utc).isoformat(), realized_pnl=realized_pnl,
+            )
+
+    return AssignmentTickResult(acted=acted, trade_ids=frozenset(trade_ids))
+
+
+async def exit_tick(
+    deps: Deps, session: SessionPlan, conn: aiosqlite.Connection, spots: dict[str, float],
+    *, skip_trade_ids: frozenset[int] = frozenset(),
+) -> None:
     """Deterministic, zero LLM calls (plan.md management pass). Reuses the
     spots snapshot management_tick already read for greeks -- no new Alpaca
     call site beyond the one batched fetch_leg_snapshots below."""
     open_trades = await _open_trades(conn)
+    open_trades = [t for t in open_trades if t.trade_id not in skip_trade_ids]
     if not open_trades:
         return
 
@@ -564,10 +703,16 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
 
 
 async def management_tick(deps: Deps, session: SessionPlan) -> None:
-    """Re-snapshots greeks for held legs (one batched call), writes
+    """Runs assignment_tick FIRST (an unhedged equity delta from an early
+    assignment outranks every exit rule -- plan.md's own priority order is
+    unwind > time stop > profit target > stop loss, and an undefined-risk
+    exposure outranks all four), re-reading positions only if it acted so
+    the greeks snapshot below reflects the post-liquidation book. Then
+    re-snapshots greeks for held legs (one batched call), writes
     greeks_snapshots, refreshes agent_state, and runs exit_tick (profit
     target, stop loss, 2-DTE time stop, end-of-competition unwind -- all
-    deterministic). Makes no LLM call and reads no budget -- the spend
+    deterministic), skipping any trade assignment_tick is still
+    reconciling. Makes no LLM call and reads no budget -- the spend
     ceiling halts new entries only, never management."""
     async with storage_db.connect(deps.settings.db_path) as conn:
         try:
@@ -576,6 +721,10 @@ async def management_tick(deps: Deps, session: SessionPlan) -> None:
         except cli_bridge.CliUnavailable as e:
             logger.error("management_tick: CLI unavailable: %s", e)
             return
+
+        assignment = await assignment_tick(deps, session, conn, positions)
+        if assignment.acted:
+            positions = await cli_bridge.list_positions()
 
         spots = await _read_state_value(conn, "spots") or {}
         exposures = await build_exposures(positions, deps.clients, spots)
@@ -590,7 +739,7 @@ async def management_tick(deps: Deps, session: SessionPlan) -> None:
         )
         await storage_write.insert_greeks_snapshot(conn, greeks_row)
         await storage_write.put_state(conn, "reduce_only", breached)
-        await exit_tick(deps, session, conn, spots)
+        await exit_tick(deps, session, conn, spots, skip_trade_ids=assignment.trade_ids)
         await storage_write.put_state(conn, "account", {
             "equity": str(account.equity), "last_equity": str(account.last_equity),
             "buying_power": str(account.buying_power), "cash": str(account.cash),

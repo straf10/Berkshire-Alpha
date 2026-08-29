@@ -24,6 +24,11 @@ async def latest_greeks(conn: aiosqlite.Connection) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
 
 
+async def latest_assignments(conn: aiosqlite.Connection, limit: int = 50) -> list[dict[str, Any]]:
+    cur = await conn.execute("SELECT * FROM assignment_events ORDER BY ts_utc DESC LIMIT ?", (limit,))
+    return [dict(row) for row in await cur.fetchall()]
+
+
 async def get_state(conn: aiosqlite.Connection, key: str) -> dict[str, Any] | None:
     cur = await conn.execute("SELECT * FROM agent_state WHERE key = ?", (key,))
     row = await cur.fetchone()

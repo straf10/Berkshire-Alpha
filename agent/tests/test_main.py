@@ -948,6 +948,27 @@ def _closing_leg_dict(occ: str, strike: float, side: str, intent: str) -> dict:
     }
 
 
+def _leg_dict(occ: str, strike: float, right: str, side: str, intent: str) -> dict:
+    return {
+        "occ_symbol": occ, "strike": strike, "right": right, "side": side, "ratio_qty": 1,
+        "intent": intent, "delta": -0.2, "vega": 0.05, "bid": 0.0, "ask": 0.0,
+    }
+
+
+def _equity_position(symbol: str, qty: Decimal, mark: Decimal) -> cli_bridge.CliPosition:
+    return cli_bridge.CliPosition(
+        symbol=symbol, asset_class="us_equity", qty=qty, avg_entry_price=mark,
+        market_value=mark * qty, unrealized_pl=Decimal("0"),
+    )
+
+
+def _option_position(occ: str, qty: Decimal, mark: Decimal) -> cli_bridge.CliPosition:
+    return cli_bridge.CliPosition(
+        symbol=occ, asset_class="us_option", qty=qty, avg_entry_price=mark,
+        market_value=mark * qty * 100, unrealized_pl=Decimal("0"),
+    )
+
+
 async def test_exit_tick_closes_on_profit_target(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     from agent.execution.broker import OrderState
     from agent.schemas.execution import OrderStatus as _OrderStatus
@@ -1027,6 +1048,669 @@ async def test_exit_tick_holds_with_no_open_trades(tmp_path, monkeypatch: pytest
     await main_module.management_tick(deps, session)
 
     assert broker.submitted == []
+
+
+# -- Assignment Reconciliation Routine (docs/assignment_reconciliation_plan.md Group 4) --
+
+async def test_short_call_assignment_end_to_end(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent.execution.broker import OrderState
+    from agent.schemas.execution import Intent as _Intent
+    from agent.schemas.execution import OrderStatus as _OrderStatus
+    from agent.schemas.market import OptionQuote as _OptionQuote
+
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+
+    short_occ, long_occ = "AAPL260904C00185000", "AAPL260904C00190000"
+    async with storage_db.connect(db_path) as conn:
+        trade_id = await _seed_open_trade(
+            conn, symbol="AAPL", structure="BEAR_CALL_SPREAD", filled_qty=1,
+            entry_limit=Decimal("-0.90"), max_profit_per_spread=Decimal("90"),
+            legs=[
+                _leg_dict(short_occ, 185.0, "C", "SELL", "SELL_TO_OPEN"),
+                _leg_dict(long_occ, 190.0, "C", "BUY", "BUY_TO_OPEN"),
+            ],
+        )
+
+    equity_pos = _equity_position("AAPL", Decimal("-100"), Decimal("180.42"))
+    long_pos = _option_position(long_occ, Decimal("1"), Decimal("0.13"))
+    _patch_cli(monkeypatch, positions=[equity_pos, long_pos])
+
+    async def fake_snapshots(clients, occ_symbols):
+        assert occ_symbols == [long_occ]
+        return {
+            long_occ: _OptionQuote(occ_symbol=long_occ, underlying="AAPL", expiry=date(2026, 9, 4),
+                                    strike=190.0, right="C", bid=0.13, ask=0.20, delta=0.15,
+                                    gamma=0.01, theta=-0.01, vega=0.03, iv=0.2),
+        }
+    monkeypatch.setattr(main_module, "fetch_leg_snapshots", fake_snapshots)
+
+    clients = FakeClients()
+    broker = MockBroker([
+        OrderState(order_id="eq1", status=_OrderStatus.FILLED, limit_price=Decimal("181.80"),
+                   filled_qty=100, total_qty=100, fill_avg_price=Decimal("180.42"), reject_code=None, reject_message=None),
+        OrderState(order_id="op1", status=_OrderStatus.FILLED, limit_price=Decimal("0.13"),
+                   filled_qty=1, total_qty=1, fill_avg_price=Decimal("0.13"), reject_code=None, reject_message=None),
+    ])
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+    deps.settings = dataclasses_replace(deps.settings, dry_run=False)
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.management_tick(deps, session)
+
+    assert broker.closes[0][:3] == ("AAPL", 100, "BUY")
+    assert broker.closes[0][4] == _Intent.BUY_TO_CLOSE
+    assert broker.closes[1][:3] == (long_occ, 1, "SELL")
+    assert broker.closes[1][4] == _Intent.SELL_TO_CLOSE
+
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT COUNT(*) FROM assignment_events")
+        assert (await cur.fetchone())[0] == 1
+        cur = await conn.execute("SELECT closed_at, realized_pnl FROM trades WHERE id = ?", (trade_id,))
+        closed_at, realized_pnl = await cur.fetchone()
+    assert closed_at is not None
+    # entry_cash = -(-0.90)*100*1 = 90; assign_cash = (185-180.42)*100*1 = 458; orphan_cash = 0.13*100*1 = 13
+    assert realized_pnl == pytest.approx(561.0)
+
+
+async def test_short_put_assignment_end_to_end(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The direction pair, asserted on the submitted order rather than the
+    enum (docs/assignment_reconciliation_plan.md §0.4)."""
+    from agent.execution.broker import OrderState
+    from agent.schemas.execution import Intent as _Intent
+    from agent.schemas.execution import OrderStatus as _OrderStatus
+    from agent.schemas.market import OptionQuote as _OptionQuote
+
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+
+    short_occ, long_occ = "SPY260904P00100000", "SPY260904P00097000"
+    async with storage_db.connect(db_path) as conn:
+        trade_id = await _seed_open_trade(
+            conn, symbol="SPY", structure="BULL_PUT_SPREAD", filled_qty=1,
+            entry_limit=Decimal("-0.90"), max_profit_per_spread=Decimal("90"),
+            legs=[
+                _leg_dict(short_occ, 100.0, "P", "SELL", "SELL_TO_OPEN"),
+                _leg_dict(long_occ, 97.0, "P", "BUY", "BUY_TO_OPEN"),
+            ],
+        )
+
+    equity_pos = _equity_position("SPY", Decimal("100"), Decimal("98.50"))
+    long_pos = _option_position(long_occ, Decimal("1"), Decimal("0.05"))
+    _patch_cli(monkeypatch, positions=[equity_pos, long_pos])
+
+    async def fake_snapshots(clients, occ_symbols):
+        assert occ_symbols == [long_occ]
+        return {
+            long_occ: _OptionQuote(occ_symbol=long_occ, underlying="SPY", expiry=date(2026, 9, 4),
+                                    strike=97.0, right="P", bid=0.05, ask=0.10, delta=-0.10,
+                                    gamma=0.01, theta=-0.01, vega=0.02, iv=0.15),
+        }
+    monkeypatch.setattr(main_module, "fetch_leg_snapshots", fake_snapshots)
+
+    clients = FakeClients()
+    broker = MockBroker([
+        OrderState(order_id="eq1", status=_OrderStatus.FILLED, limit_price=Decimal("97.52"),
+                   filled_qty=100, total_qty=100, fill_avg_price=Decimal("98.50"), reject_code=None, reject_message=None),
+        OrderState(order_id="op1", status=_OrderStatus.FILLED, limit_price=Decimal("0.05"),
+                   filled_qty=1, total_qty=1, fill_avg_price=Decimal("0.05"), reject_code=None, reject_message=None),
+    ])
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+    deps.settings = dataclasses_replace(deps.settings, dry_run=False)
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.management_tick(deps, session)
+
+    assert broker.closes[0][:3] == ("SPY", 100, "SELL")
+    assert broker.closes[0][4] == _Intent.SELL_TO_CLOSE
+    assert broker.closes[1][:3] == (long_occ, 1, "SELL")
+    assert broker.closes[1][4] == _Intent.SELL_TO_CLOSE
+
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT closed_at, realized_pnl FROM trades WHERE id = ?", (trade_id,))
+        closed_at, realized_pnl = await cur.fetchone()
+    assert closed_at is not None
+    # entry_cash = 90; assign_cash = (98.50-100)*100*1 = -150; orphan_cash = 0.05*100*1 = 5
+    assert realized_pnl == pytest.approx(-55.0)
+
+
+async def test_assignment_runs_before_exit_tick(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    _patch_cli(monkeypatch, positions=[])
+
+    order: list[str] = []
+    real_assignment_tick = main_module.assignment_tick
+    real_exit_tick = main_module.exit_tick
+
+    async def recording_assignment_tick(*args, **kwargs):
+        order.append("assignment")
+        return await real_assignment_tick(*args, **kwargs)
+
+    async def recording_exit_tick(*args, **kwargs):
+        order.append("exit")
+        return await real_exit_tick(*args, **kwargs)
+
+    monkeypatch.setattr(main_module, "assignment_tick", recording_assignment_tick)
+    monkeypatch.setattr(main_module, "exit_tick", recording_exit_tick)
+
+    clients = FakeClients()
+    broker = MockBroker([])
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.management_tick(deps, session)
+
+    assert order == ["assignment", "exit"]
+
+
+async def test_exit_tick_skips_reconciled_trade(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The assigned trade would otherwise clear its profit target -- proves
+    skip_trade_ids (docs/assignment_reconciliation_plan.md §A2), not merely
+    that a fully-resolved event already closed the row out from under
+    exit_tick. The equity leg is REJECTED here so the trade stays open
+    (closed_at IS NULL) and is still visible to exit_tick's own query."""
+    from agent.execution.broker import OrderState
+    from agent.schemas.execution import OrderStatus as _OrderStatus
+    from agent.schemas.market import OptionQuote as _OptionQuote
+
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+
+    short_occ, long_occ = "AAPL260904C00185000", "AAPL260904C00190000"
+    async with storage_db.connect(db_path) as conn:
+        trade_id = await _seed_open_trade(
+            conn, symbol="AAPL", structure="BEAR_CALL_SPREAD", filled_qty=1,
+            entry_limit=Decimal("-0.90"), max_profit_per_spread=Decimal("90"),
+            legs=[
+                _leg_dict(short_occ, 185.0, "C", "SELL", "SELL_TO_OPEN"),
+                _leg_dict(long_occ, 190.0, "C", "BUY", "BUY_TO_OPEN"),
+            ],
+        )
+
+    equity_pos = _equity_position("AAPL", Decimal("-100"), Decimal("180.42"))
+    long_pos = _option_position(long_occ, Decimal("1"), Decimal("0.13"))
+    _patch_cli(monkeypatch, positions=[equity_pos, long_pos])
+
+    # Both legs cheap relative to the 0.90 credit entered -- exit_tick would
+    # otherwise see this as comfortably past the 50% profit target.
+    quotes = {
+        short_occ: _OptionQuote(occ_symbol=short_occ, underlying="AAPL", expiry=date(2026, 9, 4),
+                                 strike=185.0, right="C", bid=0.01, ask=0.05, delta=0.05,
+                                 gamma=0.01, theta=-0.01, vega=0.02, iv=0.15),
+        long_occ: _OptionQuote(occ_symbol=long_occ, underlying="AAPL", expiry=date(2026, 9, 4),
+                                strike=190.0, right="C", bid=0.13, ask=0.20, delta=0.15,
+                                gamma=0.01, theta=-0.01, vega=0.03, iv=0.2),
+    }
+
+    async def fake_snapshots(clients, occ_symbols):
+        return {occ: quotes[occ] for occ in occ_symbols if occ in quotes}
+
+    monkeypatch.setattr(main_module, "fetch_leg_snapshots", fake_snapshots)
+
+    clients = FakeClients()
+    broker = MockBroker([
+        OrderState(order_id="", status=_OrderStatus.REJECTED, limit_price=None,
+                   filled_qty=0, total_qty=100, fill_avg_price=None, reject_code=None, reject_message=None),
+    ])
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+    deps.settings = dataclasses_replace(deps.settings, dry_run=False)
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.management_tick(deps, session)
+
+    assert broker.submitted == []  # exit_tick never built a closing mleg order for the assigned trade
+
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT closed_at FROM trades WHERE id = ?", (trade_id,))
+        assert (await cur.fetchone())[0] is None
+
+
+async def test_idempotent_when_order_already_working(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+
+    equity_pos = _equity_position("AAPL", Decimal("-100"), Decimal("180.42"))
+
+    async def fake_list_orders(*, status="open"):
+        return [{"symbol": "AAPL"}]
+
+    _patch_cli(monkeypatch, positions=[equity_pos])
+    monkeypatch.setattr(cli_bridge, "list_orders", fake_list_orders)
+    monkeypatch.setattr(main_module.cli_bridge, "list_orders", fake_list_orders)
+
+    clients = FakeClients()
+    broker = MockBroker([])
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+    deps.settings = dataclasses_replace(deps.settings, dry_run=False)
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.management_tick(deps, session)  # completes without error
+
+    assert broker.closes == []
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT equity_status FROM assignment_events")
+        assert (await cur.fetchone())[0] == "ALREADY_WORKING"
+
+
+async def test_idempotent_second_tick_after_fill(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent.execution.broker import OrderState
+    from agent.schemas.execution import OrderStatus as _OrderStatus
+    from agent.schemas.market import OptionQuote as _OptionQuote
+
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+
+    short_occ, long_occ = "AAPL260904C00185000", "AAPL260904C00190000"
+    async with storage_db.connect(db_path) as conn:
+        await _seed_open_trade(
+            conn, symbol="AAPL", structure="BEAR_CALL_SPREAD", filled_qty=1,
+            entry_limit=Decimal("-0.90"), max_profit_per_spread=Decimal("90"),
+            legs=[
+                _leg_dict(short_occ, 185.0, "C", "SELL", "SELL_TO_OPEN"),
+                _leg_dict(long_occ, 190.0, "C", "BUY", "BUY_TO_OPEN"),
+            ],
+        )
+
+    equity_pos = _equity_position("AAPL", Decimal("-100"), Decimal("180.42"))
+    long_pos = _option_position(long_occ, Decimal("1"), Decimal("0.13"))
+    positions_by_tick = [[equity_pos, long_pos], []]
+    tick_i = 0
+
+    async def fake_list_positions():
+        return positions_by_tick[min(tick_i, len(positions_by_tick) - 1)]
+
+    _patch_cli(monkeypatch, positions=[])
+    monkeypatch.setattr(cli_bridge, "list_positions", fake_list_positions)
+    monkeypatch.setattr(main_module.cli_bridge, "list_positions", fake_list_positions)
+
+    async def fake_snapshots(clients, occ_symbols):
+        return {
+            long_occ: _OptionQuote(occ_symbol=long_occ, underlying="AAPL", expiry=date(2026, 9, 4),
+                                    strike=190.0, right="C", bid=0.13, ask=0.20, delta=0.15,
+                                    gamma=0.01, theta=-0.01, vega=0.03, iv=0.2),
+        }
+    monkeypatch.setattr(main_module, "fetch_leg_snapshots", fake_snapshots)
+
+    clients = FakeClients()
+    broker = MockBroker([
+        OrderState(order_id="eq1", status=_OrderStatus.FILLED, limit_price=Decimal("181.80"),
+                   filled_qty=100, total_qty=100, fill_avg_price=Decimal("180.42"), reject_code=None, reject_message=None),
+        OrderState(order_id="op1", status=_OrderStatus.FILLED, limit_price=Decimal("0.13"),
+                   filled_qty=1, total_qty=1, fill_avg_price=Decimal("0.13"), reject_code=None, reject_message=None),
+    ])
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+    deps.settings = dataclasses_replace(deps.settings, dry_run=False)
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.management_tick(deps, session)
+    assert len(broker.closes) == 2
+
+    tick_i = 1
+    await main_module.management_tick(deps, session)  # both legs now absent -- no event, no second submit
+    assert len(broker.closes) == 2
+
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT COUNT(*) FROM assignment_events")
+        assert (await cur.fetchone())[0] == 1
+
+
+async def test_partially_handled_event_reprices_from_current_qty(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """§0.5 layer 1: re-running converges, it does not compound."""
+    from agent.execution.broker import OrderState
+    from agent.schemas.execution import OrderStatus as _OrderStatus
+
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+
+    positions_by_tick = [
+        [_equity_position("AAPL", Decimal("-100"), Decimal("180.42"))],
+        [_equity_position("AAPL", Decimal("-50"), Decimal("180.50"))],
+    ]
+    tick_i = 0
+
+    async def fake_list_positions():
+        return positions_by_tick[min(tick_i, len(positions_by_tick) - 1)]
+
+    _patch_cli(monkeypatch, positions=[])
+    monkeypatch.setattr(cli_bridge, "list_positions", fake_list_positions)
+    monkeypatch.setattr(main_module.cli_bridge, "list_positions", fake_list_positions)
+
+    clients = FakeClients()
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+
+    broker1 = MockBroker([
+        OrderState(order_id="eq1", status=_OrderStatus.PARTIALLY_FILLED, limit_price=Decimal("182.22"),
+                   filled_qty=50, total_qty=100, fill_avg_price=Decimal("180.50"), reject_code=None, reject_message=None),
+    ])
+    deps1 = _deps(db_path, clients, broker1, clock)
+    deps1.settings = dataclasses_replace(deps1.settings, dry_run=False)
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.management_tick(deps1, session)
+    assert broker1.closes[0][1] == 100  # first tick: full -100 still held, requests 100 shares
+
+    broker2 = MockBroker([
+        OrderState(order_id="eq2", status=_OrderStatus.FILLED, limit_price=Decimal("182.22"),
+                   filled_qty=50, total_qty=50, fill_avg_price=Decimal("180.60"), reject_code=None, reject_message=None),
+    ])
+    deps2 = _deps(db_path, clients, broker2, clock)
+    deps2.settings = dataclasses_replace(deps2.settings, dry_run=False)
+
+    tick_i = 1
+    await main_module.management_tick(deps2, session)
+    assert broker2.closes[0][1] == 50  # second tick: reprices off the now-current qty, not the original 100
+
+
+async def test_partial_assignment_leaves_trade_open(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent.execution.broker import OrderState
+    from agent.schemas.execution import OrderStatus as _OrderStatus
+    from agent.schemas.market import OptionQuote as _OptionQuote
+
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+
+    short_occ, long_occ = "AAPL260904C00185000", "AAPL260904C00190000"
+    async with storage_db.connect(db_path) as conn:
+        trade_id = await _seed_open_trade(
+            conn, symbol="AAPL", structure="BEAR_CALL_SPREAD", filled_qty=3,
+            entry_limit=Decimal("-0.90"), max_profit_per_spread=Decimal("270"),
+            legs=[
+                _leg_dict(short_occ, 185.0, "C", "SELL", "SELL_TO_OPEN"),
+                _leg_dict(long_occ, 190.0, "C", "BUY", "BUY_TO_OPEN"),
+            ],
+        )
+
+    equity_pos = _equity_position("AAPL", Decimal("-100"), Decimal("180.42"))  # 1 of 3 contracts assigned
+    short_pos = _option_position(short_occ, Decimal("-2"), Decimal("0.90"))    # 2 still hedge the rest
+    long_pos = _option_position(long_occ, Decimal("3"), Decimal("0.13"))
+    _patch_cli(monkeypatch, positions=[equity_pos, short_pos, long_pos])
+
+    async def fake_snapshots(clients, occ_symbols):
+        return {
+            long_occ: _OptionQuote(occ_symbol=long_occ, underlying="AAPL", expiry=date(2026, 9, 4),
+                                    strike=190.0, right="C", bid=0.13, ask=0.20, delta=0.15,
+                                    gamma=0.01, theta=-0.01, vega=0.03, iv=0.2),
+        }
+    monkeypatch.setattr(main_module, "fetch_leg_snapshots", fake_snapshots)
+
+    clients = FakeClients()
+    broker = MockBroker([
+        OrderState(order_id="eq1", status=_OrderStatus.FILLED, limit_price=Decimal("181.80"),
+                   filled_qty=100, total_qty=100, fill_avg_price=Decimal("180.42"), reject_code=None, reject_message=None),
+        OrderState(order_id="op1", status=_OrderStatus.FILLED, limit_price=Decimal("0.13"),
+                   filled_qty=1, total_qty=1, fill_avg_price=Decimal("0.13"), reject_code=None, reject_message=None),
+    ])
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+    deps.settings = dataclasses_replace(deps.settings, dry_run=False)
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.management_tick(deps, session)
+
+    assert broker.closes[1][1] == 1  # orphan order qty == 1, not 3
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT closed_at FROM trades WHERE id = ?", (trade_id,))
+        assert (await cur.fetchone())[0] is None
+
+
+async def test_rejection_does_not_escape_management_tick(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Project-wide rule: no reject path may raise out of the loop."""
+    from agent.execution.broker import OrderState
+    from agent.schemas.execution import OrderStatus as _OrderStatus
+
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+
+    equity_pos = _equity_position("AAPL", Decimal("-100"), Decimal("180.42"))
+    _patch_cli(monkeypatch, positions=[equity_pos])
+
+    clients = FakeClients()
+    broker = MockBroker([
+        OrderState(order_id="", status=_OrderStatus.REJECTED, limit_price=None,
+                   filled_qty=0, total_qty=100, fill_avg_price=None, reject_code=None, reject_message=None),
+    ])
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+    deps.settings = dataclasses_replace(deps.settings, dry_run=False)
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.management_tick(deps, session)  # must not raise
+
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT COUNT(*) FROM greeks_snapshots")
+        assert (await cur.fetchone())[0] == 1
+        cur = await conn.execute("SELECT equity_status FROM assignment_events")
+        assert (await cur.fetchone())[0] == "REJECTED"
+
+
+async def test_broker_exception_does_not_escape_management_tick(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    class ExplodingBroker(MockBroker):
+        async def submit_close(self, symbol, qty, side, limit, intent):
+            raise RuntimeError("boom")
+
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+
+    equity_pos = _equity_position("AAPL", Decimal("-100"), Decimal("180.42"))
+    _patch_cli(monkeypatch, positions=[equity_pos])
+
+    clients = FakeClients()
+    broker = ExplodingBroker([])
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+    deps.settings = dataclasses_replace(deps.settings, dry_run=False)
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.management_tick(deps, session)  # must not raise
+
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT COUNT(*) FROM greeks_snapshots")
+        assert (await cur.fetchone())[0] == 1
+
+
+async def test_cli_unavailable_on_open_orders_skips_submission(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+
+    equity_pos = _equity_position("AAPL", Decimal("-100"), Decimal("180.42"))
+    _patch_cli(monkeypatch, positions=[equity_pos])
+
+    async def raise_unavailable(*, status="open"):
+        raise cli_bridge.CliUnavailable("cli down")
+
+    monkeypatch.setattr(cli_bridge, "list_orders", raise_unavailable)
+    monkeypatch.setattr(main_module.cli_bridge, "list_orders", raise_unavailable)
+
+    clients = FakeClients()
+    broker = MockBroker([])
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+    deps.settings = dataclasses_replace(deps.settings, dry_run=False)
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.management_tick(deps, session)  # completes without error
+
+    assert broker.closes == []
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT equity_status FROM assignment_events")
+        assert (await cur.fetchone())[0] == "CLI_UNAVAILABLE"
+
+
+async def test_dry_run_places_no_assignment_orders(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+
+    equity_pos = _equity_position("AAPL", Decimal("-100"), Decimal("180.42"))
+    _patch_cli(monkeypatch, positions=[equity_pos])
+
+    clients = FakeClients()
+    broker = MockBroker([])
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+    deps.settings = dataclasses_replace(deps.settings, dry_run=True)
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.management_tick(deps, session)
+
+    assert broker.closes == []
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT equity_status FROM assignment_events")
+        assert (await cur.fetchone())[0] == "DRY_RUN"
+
+
+async def test_greeks_recomputed_after_liquidation(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """list_positions is called TWICE and the greeks/positions state
+    published afterward reflects the post-liquidation book (docs/assignment_
+    reconciliation_plan.md Group 4 reason 3 -- CRITICAL ordering)."""
+    from agent.execution.broker import OrderState
+    from agent.schemas.execution import OrderStatus as _OrderStatus
+    from agent.schemas.market import OptionQuote as _OptionQuote
+    from agent.storage import read as storage_read
+
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+
+    short_occ, long_occ = "AAPL260904C00185000", "AAPL260904C00190000"
+    async with storage_db.connect(db_path) as conn:
+        await _seed_open_trade(
+            conn, symbol="AAPL", structure="BEAR_CALL_SPREAD", filled_qty=1,
+            entry_limit=Decimal("-0.90"), max_profit_per_spread=Decimal("90"),
+            legs=[
+                _leg_dict(short_occ, 185.0, "C", "SELL", "SELL_TO_OPEN"),
+                _leg_dict(long_occ, 190.0, "C", "BUY", "BUY_TO_OPEN"),
+            ],
+        )
+
+    equity_pos = _equity_position("AAPL", Decimal("-100"), Decimal("180.42"))
+    long_pos = _option_position(long_occ, Decimal("1"), Decimal("0.13"))
+    positions_by_call = [[equity_pos, long_pos], []]  # pre- then post-liquidation
+    calls = 0
+
+    async def fake_list_positions():
+        nonlocal calls
+        result = positions_by_call[min(calls, len(positions_by_call) - 1)]
+        calls += 1
+        return result
+
+    _patch_cli(monkeypatch, positions=[])
+    monkeypatch.setattr(cli_bridge, "list_positions", fake_list_positions)
+    monkeypatch.setattr(main_module.cli_bridge, "list_positions", fake_list_positions)
+
+    async def fake_snapshots(clients, occ_symbols):
+        return {
+            long_occ: _OptionQuote(occ_symbol=long_occ, underlying="AAPL", expiry=date(2026, 9, 4),
+                                    strike=190.0, right="C", bid=0.13, ask=0.20, delta=0.15,
+                                    gamma=0.01, theta=-0.01, vega=0.03, iv=0.2),
+        }
+    monkeypatch.setattr(main_module, "fetch_leg_snapshots", fake_snapshots)
+
+    clients = FakeClients()
+    broker = MockBroker([
+        OrderState(order_id="eq1", status=_OrderStatus.FILLED, limit_price=Decimal("181.80"),
+                   filled_qty=100, total_qty=100, fill_avg_price=Decimal("180.42"), reject_code=None, reject_message=None),
+        OrderState(order_id="op1", status=_OrderStatus.FILLED, limit_price=Decimal("0.13"),
+                   filled_qty=1, total_qty=1, fill_avg_price=Decimal("0.13"), reject_code=None, reject_message=None),
+    ])
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+    deps.settings = dataclasses_replace(deps.settings, dry_run=False)
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.management_tick(deps, session)
+
+    assert calls == 2  # list_positions read pre- AND post-liquidation
+
+    async with storage_db.connect(db_path) as conn:
+        state = await storage_read.get_state(conn, "positions")
+    assert state["value_json"] == []  # published book reflects the post-liquidation read
+
+
+async def test_no_event_means_no_extra_calls(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    _patch_cli(monkeypatch, positions=FAKE_POSITIONS)
+
+    async def _boom_orders(*, status="open"):
+        raise AssertionError("list_orders must not be called when detect_assignments finds nothing")
+
+    async def _boom_snapshots(clients, occ_symbols):
+        raise AssertionError("fetch_leg_snapshots must not be called when there is nothing to reconcile or exit")
+
+    monkeypatch.setattr(cli_bridge, "list_orders", _boom_orders)
+    monkeypatch.setattr(main_module.cli_bridge, "list_orders", _boom_orders)
+    monkeypatch.setattr(main_module, "fetch_leg_snapshots", _boom_snapshots)
+
+    clients = FakeClients()
+    broker = MockBroker([])
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.management_tick(deps, session)  # must not raise
+
+
+async def test_no_llm_on_the_assignment_path(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+
+    equity_pos = _equity_position("AAPL", Decimal("-100"), Decimal("180.42"))
+    _patch_cli(monkeypatch, positions=[equity_pos])
+
+    async def _boom(*a, **k):
+        raise AssertionError("no LLM call may happen on the assignment path")
+
+    monkeypatch.setattr(main_module, "run_llm_pipeline", _boom)
+    monkeypatch.setattr(main_module, "_build_llm_client", _boom)
+
+    clients = FakeClients()
+    broker = MockBroker([])  # dry_run stays True -- no submission needed to prove the point
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.management_tick(deps, session)  # must not raise, must not touch LLM
+
+
+def test_submit_close_called_only_from_assignment() -> None:
+    """The structural form of 'invoked only by the deterministic management
+    pass, never by an LLM' (docs/assignment_reconciliation_plan.md Group 4)."""
+    allowed = {"agent/execution/assignment.py", "agent/execution/broker.py"}
+    for path in (REPO_ROOT / "agent").rglob("*.py"):
+        rel = path.relative_to(REPO_ROOT).as_posix()
+        if rel in allowed or "agent/tests/" in rel or "__pycache__" in rel:
+            continue
+        src = path.read_text(encoding="utf-8")
+        assert "submit_close(" not in src, f"submit_close( found outside the assignment path: {rel}"
+
+
+async def test_assignment_writes_no_decisions_row(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Guards the _completed_scan_count landmine (§A3): a decisions row
+    written here would silently inflate the count and skip a real entry
+    scan for the rest of the session."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+
+    equity_pos = _equity_position("AAPL", Decimal("-100"), Decimal("180.42"))
+    _patch_cli(monkeypatch, positions=[equity_pos])
+
+    clients = FakeClients()
+    broker = MockBroker([])
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.management_tick(deps, session)
+
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT COUNT(*) FROM decisions")
+        assert (await cur.fetchone())[0] == 0
 
 
 def _fixed_session(*, is_open: bool) -> SessionPlan:

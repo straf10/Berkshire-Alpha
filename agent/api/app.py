@@ -74,6 +74,11 @@ async def trades(limit: int = 50, conn: aiosqlite.Connection = Depends(get_conn)
     return await read.latest_trades(conn, min(limit, 200))
 
 
+@app.get("/assignments")
+async def assignments(limit: int = 50, conn: aiosqlite.Connection = Depends(get_conn)) -> list[dict[str, Any]]:
+    return await read.latest_assignments(conn, min(limit, 200))
+
+
 @app.get("/greeks/latest")
 async def greeks_latest(conn: aiosqlite.Connection = Depends(get_conn)) -> dict[str, Any]:
     return await read.latest_greeks(conn) or {}

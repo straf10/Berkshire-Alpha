@@ -139,6 +139,27 @@ class RiskVoteRow:
 
 
 @dataclass(frozen=True)
+class AssignmentEventRow:
+    ts_utc: str
+    session_date: str
+    symbol: str
+    trade_id: int | None
+    reason: str
+    assigned_right: str | None
+    equity_qty: int
+    contracts: int
+    equity_status: str
+    equity_order_id: str | None
+    equity_fill_price: Decimal | None
+    orphan_occ_symbol: str | None
+    orphan_qty: int
+    orphan_status: str
+    orphan_order_id: str | None
+    orphan_fill_price: Decimal | None
+    detail: str
+
+
+@dataclass(frozen=True)
 class GreeksRow:
     ts_utc: str
     equity: Decimal
@@ -217,6 +238,31 @@ async def insert_greeks_snapshot(conn: aiosqlite.Connection, g: GreeksRow) -> in
         (
             g.ts_utc, float(g.equity), g.delta_dollars, g.vega_dollars,
             g.delta_limit, g.vega_limit, int(g.breached), g.per_position_json,
+        ),
+    )
+    await conn.commit()
+    assert cur.lastrowid is not None
+    return cur.lastrowid
+
+
+async def insert_assignment_event(conn: aiosqlite.Connection, a: AssignmentEventRow) -> int:
+    """Assignment Reconciliation Routine (docs/assignment_reconciliation_plan.md
+    Group 3) -- audit/dashboard only, never consulted before submitting an
+    order (§0.5 layer 3 is explicitly not a gate). Deliberately NOT a
+    decisions row -- see main.py's _completed_scan_count (§A3)."""
+    cur = await conn.execute(
+        """INSERT INTO assignment_events
+           (ts_utc, session_date, symbol, trade_id, reason, assigned_right, equity_qty,
+            contracts, equity_status, equity_order_id, equity_fill_price, orphan_occ_symbol,
+            orphan_qty, orphan_status, orphan_order_id, orphan_fill_price, detail)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            a.ts_utc, a.session_date, a.symbol, a.trade_id, a.reason, a.assigned_right,
+            a.equity_qty, a.contracts, a.equity_status, a.equity_order_id,
+            float(a.equity_fill_price) if a.equity_fill_price is not None else None,
+            a.orphan_occ_symbol, a.orphan_qty, a.orphan_status, a.orphan_order_id,
+            float(a.orphan_fill_price) if a.orphan_fill_price is not None else None,
+            a.detail,
         ),
     )
     await conn.commit()

@@ -141,6 +141,29 @@ async def test_decision_chain_serves_full_chain(tmp_path) -> None:
     assert detail["llm_calls"][0]["decision_id"] == decision_id
 
 
+async def test_assignments_endpoint_serves_rows(tmp_path) -> None:
+    db_path = str(tmp_path / "test_agent.db")
+    await storage_db.init_db(db_path)
+
+    async with storage_db.connect(db_path) as conn:
+        await storage_write.insert_assignment_event(conn, storage_write.AssignmentEventRow(
+            ts_utc=datetime.now(timezone.utc).isoformat(), session_date=date(2026, 8, 31).isoformat(),
+            symbol="AAPL", trade_id=None, reason="SHORT_CALL_ASSIGNED", assigned_right="C",
+            equity_qty=-100, contracts=1, equity_status="FLATTENED", equity_order_id="o1",
+            equity_fill_price=Decimal("180.42"), orphan_occ_symbol="AAPL260904C00190000",
+            orphan_qty=1, orphan_status="FLATTENED", orphan_order_id="o2",
+            orphan_fill_price=Decimal("0.13"), detail="test",
+        ))
+
+    from agent.api import app as api_app
+
+    async with storage_db.connect(db_path) as conn:
+        rows = await api_app.assignments(limit=10, conn=conn)
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "AAPL"
+    assert rows[0]["equity_fill_price"] == pytest.approx(180.42)
+
+
 async def test_status_endpoint_serves_published_state(tmp_path) -> None:
     db_path = str(tmp_path / "test_agent.db")
     await storage_db.init_db(db_path)
