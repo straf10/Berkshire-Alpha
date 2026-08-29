@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -682,3 +683,113 @@ async def test_supervised_loop_restarts(monkeypatch: pytest.MonkeyPatch) -> None
         await asyncio.wait_for(main_module.supervised_loop(deps), timeout=0.2)
 
     assert attempts >= 2
+
+
+async def _seed_open_trade(
+    conn, *, symbol: str, structure: str, filled_qty: int, entry_limit: Decimal,
+    max_profit_per_spread: Decimal, legs: list[dict], expiry: str = "2026-09-04",
+) -> int:
+    """A decisions + trades row pair shaped like a real filled entry: the
+    decision carries plan_json (max_profit_per_spread lives there, not on
+    trades), the trade is FILLED with filled_qty > 0 and closed_at NULL."""
+    decision_id = await storage_write.insert_decision(conn, storage_write.DecisionRow(
+        ts_utc="t", cycle_id="seed-open", session_date=SESSION_DATE.isoformat(), symbol=symbol,
+        mode="quant-only", regime="CREDIT", structure=structure, action="ENTER",
+        gate_reason="APPROVED", gate_detail="APPROVED", observed_value=None, threshold_value=None,
+        qty=filled_qty, equity_feed="iex", earnings_armed=False, quant_json="{}",
+        plan_json=json.dumps({"max_profit_per_spread": str(max_profit_per_spread)}),
+    ))
+    trade_id = await storage_write.insert_trade(conn, storage_write.TradeRow(
+        decision_id=decision_id, ts_utc="t", symbol=symbol, structure=structure, expiry=expiry,
+        legs_json=json.dumps(legs), qty=filled_qty, submitted_limit=entry_limit,
+        final_limit=entry_limit, filled_qty=filled_qty, status="FILLED",
+    ))
+    return trade_id
+
+
+def _closing_leg_dict(occ: str, strike: float, side: str, intent: str) -> dict:
+    return {
+        "occ_symbol": occ, "strike": strike, "right": "P", "side": side, "ratio_qty": 1,
+        "intent": intent, "delta": -0.2, "vega": 0.05, "bid": 0.0, "ask": 0.0,
+    }
+
+
+async def test_exit_tick_closes_on_profit_target(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent.execution.broker import OrderState
+    from agent.schemas.execution import OrderStatus as _OrderStatus
+    from agent.schemas.market import OptionQuote as _OptionQuote
+
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    _patch_cli(monkeypatch, positions=[])
+
+    short_occ, long_occ = "SPY260904P00100000", "SPY260904P00097000"
+    async with storage_db.connect(db_path) as conn:
+        trade_id = await _seed_open_trade(
+            conn, symbol="SPY", structure="BULL_PUT_SPREAD", filled_qty=1,
+            entry_limit=Decimal("-0.90"), max_profit_per_spread=Decimal("90"),
+            legs=[
+                _closing_leg_dict(short_occ, 100.0, "SELL", "SELL_TO_OPEN"),
+                _closing_leg_dict(long_occ, 97.0, "BUY", "BUY_TO_OPEN"),
+            ],
+        )
+
+    async def fake_snapshots(clients, occ_symbols):
+        return {
+            short_occ: _OptionQuote(occ_symbol=short_occ, underlying="SPY", expiry=date(2026, 9, 4),
+                                     strike=100.0, right="P", bid=0.05, ask=0.15, delta=-0.05,
+                                     gamma=0.01, theta=-0.01, vega=0.02, iv=0.15),
+            long_occ: _OptionQuote(occ_symbol=long_occ, underlying="SPY", expiry=date(2026, 9, 4),
+                                    strike=97.0, right="P", bid=0.01, ask=0.05, delta=-0.02,
+                                    gamma=0.01, theta=-0.01, vega=0.01, iv=0.15),
+        }
+
+    monkeypatch.setattr(main_module, "fetch_leg_snapshots", fake_snapshots)
+
+    clients = FakeClients()
+    # Closing order (BUY_TO_CLOSE short / SELL_TO_CLOSE long) fills at 0.10 --
+    # cost to close 0.10 vs entry credit 0.90 -> profit $80/spread = 88.9% of
+    # max, comfortably over the 50% target.
+    broker = MockBroker([
+        OrderState(order_id="c1", status=_OrderStatus.FILLED, limit_price=Decimal("0.10"),
+                   filled_qty=1, total_qty=1, fill_avg_price=Decimal("0.10"), reject_code=None, reject_message=None),
+    ])
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.management_tick(deps, session)
+
+    assert len(broker.submitted) == 1
+    closing_plan, qty, _limit = broker.submitted[0]
+    assert qty == 1
+    closing_sides = {leg.occ_symbol: leg.side for leg in closing_plan.legs}
+    assert closing_sides[short_occ] == "BUY"
+    assert closing_sides[long_occ] == "SELL"
+
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT closed_at, realized_pnl FROM trades WHERE id = ?", (trade_id,))
+        closed_at, realized_pnl = await cur.fetchone()
+    assert closed_at is not None
+    assert realized_pnl == pytest.approx(80.0)
+
+
+async def test_exit_tick_holds_with_no_open_trades(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    _patch_cli(monkeypatch, positions=[])
+
+    async def _boom(*a, **k):
+        raise AssertionError("fetch_leg_snapshots must not be called with no open trades")
+
+    monkeypatch.setattr(main_module, "fetch_leg_snapshots", _boom)
+
+    clients = FakeClients()
+    broker = MockBroker([])
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.management_tick(deps, session)
+
+    assert broker.submitted == []

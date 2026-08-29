@@ -10,6 +10,9 @@ from agent.config import (
     ENTRY_CUTOFF_OFFSET_MIN,
     SCAN_1_OFFSET_MIN,
     SCAN_2_OFFSET_MIN,
+    UNWIND_DATE,
+    UNWIND_ET_HOUR,
+    UNWIND_ET_MINUTE,
 )
 from agent.execution.alpaca_client import AlpacaClients
 
@@ -91,6 +94,16 @@ async def current_or_next_session(clients: AlpacaClients) -> SessionPlan:
         trading_days=trading_days,
         is_open=clock.is_open,
     )
+
+
+_UNWIND_UTC = _to_utc(datetime(UNWIND_DATE.year, UNWIND_DATE.month, UNWIND_DATE.day, UNWIND_ET_HOUR, UNWIND_ET_MINUTE))
+
+
+def is_unwind_triggered(now_utc: datetime) -> bool:
+    """plan.md: Thu 3 Sep 22:30 EEST (15:30 ET) -- one-time, hardcoded, not
+    derived from any session's boundaries. Once true it stays true for the
+    rest of the competition; management_tick checks this every cycle."""
+    return now_utc >= _UNWIND_UTC
 
 
 def seconds_until_next_boundary(s: SessionPlan, now_utc: datetime) -> float:

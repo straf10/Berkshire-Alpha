@@ -35,6 +35,15 @@ ANNUALISATION_DAYS: Final[int] = 252
 DTE_MIN: Final[int] = 3
 DTE_MAX: Final[int] = 7
 DTE_FORCE_CLOSE: Final[int] = 2
+PROFIT_TARGET_PCT_OF_MAX: Final[Decimal] = Decimal("0.50")
+CREDIT_STOP_LOSS_PCT: Final[Decimal] = Decimal("1.00")   # 100% of credit received
+DEBIT_STOP_LOSS_PCT: Final[Decimal] = Decimal("0.50")    # 50% of debit paid
+# plan.md: "Thu 3 Sep, 22:30 EEST (15:30 ET) -- end-of-competition unwind."
+# A fixed calendar trigger, not a per-session offset -- localized via
+# session.py's _ET the same way every other ET wall-clock value is.
+UNWIND_DATE: Final[date] = date(2026, 9, 3)
+UNWIND_ET_HOUR: Final[int] = 15
+UNWIND_ET_MINUTE: Final[int] = 30
 MAX_RISK_PER_TRADE_PCT: Final[float] = 0.015
 MAX_AGGREGATE_RISK_PCT: Final[float] = 0.08
 MAX_CONCURRENT_POSITIONS: Final[int] = 6

@@ -8,7 +8,7 @@ import logging
 import os
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -32,18 +32,20 @@ from agent.config import (
 from agent.execution import cli_bridge
 from agent.execution.alpaca_client import AlpacaClients, probe_equity_feed
 from agent.execution.broker import AlpacaBroker, BrokerPort, ClockPort, RealClock
+from agent.execution.exits import OpenTrade, build_closing_plan, current_net_mid
 from agent.execution.order_manager import walk_to_fill
+from agent.risk.exits import evaluate_exit
 from agent.risk.gates import GateContext, GateDecision, evaluate
 from agent.risk.greeks import aggregate, build_exposures
-from agent.schemas.execution import STRUCTURE_IS_CREDIT, Regime, SpreadPlan
-from agent.session import SessionPlan, current_or_next_session, seconds_until_next_boundary
+from agent.schemas.execution import STRUCTURE_IS_CREDIT, Intent, Leg, Regime, SpreadPlan, Structure
+from agent.session import SessionPlan, current_or_next_session, is_unwind_triggered, seconds_until_next_boundary
 from agent.storage import db as storage_db
 from agent.storage import write as storage_write
 from agent.strategy.regime import select
 from agent.strategy.spread_builder import BuildFailure, build
 from agent.strategy.ticker_screener import shortlist
 from agent.tools.llm import LlmBudget, LlmClient, LlmPort, LlmUnavailable, load_budget
-from agent.tools.market_data import ChainCache, fetch_universe_bars
+from agent.tools.market_data import ChainCache, fetch_leg_snapshots, fetch_universe_bars
 from agent.tools.news import Headline, fetch_headlines
 from agent.tools.quant import compute_all
 from agent.tools.reddit import MentionSignal, PrawReddit, mention_signals
@@ -107,6 +109,92 @@ async def _open_defined_risk(conn: aiosqlite.Connection) -> Decimal:
     )
     row = await cur.fetchone()
     return Decimal(str(row[0]))
+
+
+async def _open_trades(conn: aiosqlite.Connection) -> list[OpenTrade]:
+    """Every still-open, actually-filled spread, grouped exactly as it was
+    submitted (docs/day3_llm_plan.md's own exits blocking-gap note) -- raw
+    query joining trades to its decisions row for max_profit_per_spread,
+    which trades itself does not carry. Bypasses storage.read, same
+    precedent as _open_defined_risk."""
+    cur = await conn.execute(
+        """SELECT t.id, t.symbol, t.structure, t.expiry, t.filled_qty, t.final_limit,
+                  t.submitted_limit, t.legs_json, d.plan_json
+           FROM trades t JOIN decisions d ON d.id = t.decision_id
+           WHERE t.closed_at IS NULL AND t.filled_qty > 0 AND t.status = 'FILLED'"""
+    )
+    rows = await cur.fetchall()
+    open_trades: list[OpenTrade] = []
+    for trade_id, symbol, structure_s, expiry_s, filled_qty, final_limit, submitted_limit, legs_json, plan_json in rows:
+        if plan_json is None:
+            continue
+        plan_data = json.loads(plan_json)
+        legs = tuple(
+            Leg(
+                occ_symbol=leg["occ_symbol"], strike=float(leg["strike"]), right=leg["right"],
+                side=leg["side"], ratio_qty=int(leg["ratio_qty"]), intent=Intent(leg["intent"]),
+                delta=float(leg["delta"]), vega=float(leg["vega"]), bid=float(leg["bid"]), ask=float(leg["ask"]),
+            )
+            for leg in json.loads(legs_json)
+        )
+        structure = Structure(structure_s)
+        entry_price = Decimal(str(final_limit if final_limit is not None else submitted_limit))
+        open_trades.append(OpenTrade(
+            trade_id=trade_id, symbol=symbol, structure=structure,
+            regime=Regime.CREDIT if STRUCTURE_IS_CREDIT[structure] else Regime.DEBIT,
+            expiry=date.fromisoformat(expiry_s), qty=int(filled_qty), entry_net_mid=entry_price,
+            max_profit_per_spread=Decimal(str(plan_data["max_profit_per_spread"])), legs=legs,
+        ))
+    return open_trades
+
+
+async def exit_tick(deps: Deps, session: SessionPlan, conn: aiosqlite.Connection, spots: dict[str, float]) -> None:
+    """Deterministic, zero LLM calls (plan.md management pass). Reuses the
+    spots snapshot management_tick already read for greeks -- no new Alpaca
+    call site beyond the one batched fetch_leg_snapshots below."""
+    open_trades = await _open_trades(conn)
+    if not open_trades:
+        return
+
+    occ_symbols = [leg.occ_symbol for t in open_trades for leg in t.legs]
+    quotes = await fetch_leg_snapshots(deps.clients, occ_symbols)
+    unwind = is_unwind_triggered(deps.clock.now())
+
+    for trade in open_trades:
+        mid = current_net_mid(trade, quotes)
+        if mid is None:
+            logger.warning("exit_tick: %s trade %d missing a live quote -- holding, retry next tick", trade.symbol, trade.trade_id)
+            continue
+
+        dte = (trade.expiry - session.session_date).days
+        decision = evaluate_exit(
+            is_credit=STRUCTURE_IS_CREDIT[trade.structure], entry_net_mid=trade.entry_net_mid,
+            current_net_mid=mid, max_profit_per_spread=trade.max_profit_per_spread,
+            dte=dte, unwind_triggered=unwind,
+        )
+        if not decision.should_close:
+            continue
+
+        closing_plan = build_closing_plan(trade, quotes, spot=spots.get(trade.symbol, 0.0))
+        if closing_plan is None:
+            logger.warning("exit_tick: %s trade %d decided %s but a quote vanished mid-tick -- retry next tick",
+                            trade.symbol, trade.trade_id, decision.reason)
+            continue
+
+        result = await walk_to_fill(deps.broker, closing_plan, trade.qty, clock=deps.clock)
+        logger.info("exit_tick: %s trade %d %s (%s) -> %s", trade.symbol, trade.trade_id, decision.reason, decision.detail, result.status)
+
+        if result.status == "FILLED" and result.filled_qty == trade.qty:
+            realized_pnl = (-trade.entry_net_mid - (result.fill_price or Decimal("0"))) * 100 * result.filled_qty
+            await storage_write.close_trade(
+                conn, trade.trade_id, closed_at=datetime.now(timezone.utc).isoformat(), realized_pnl=realized_pnl,
+            )
+        # PARTIAL_SUSPENDED / UNFILLED_REJECT / REJECTED: closed_at stays
+        # NULL deliberately. walk_to_fill already polls a partial fill up to
+        # PARTIAL_FILL_MAX_POLL_S internally; a close that is STILL not fully
+        # filled after that is a known, flagged gap (no partial-close
+        # accounting in trades' single-row-per-spread schema) rather than a
+        # silently swallowed one -- the next tick will re-evaluate and retry.
 
 
 def _build_llm_client(http: httpx.AsyncClient, conn: aiosqlite.Connection, budget: LlmBudget, settings: Settings) -> LlmPort:
@@ -463,10 +551,11 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
 
 
 async def management_tick(deps: Deps, session: SessionPlan) -> None:
-    """Day-2 scope only: re-snapshot greeks for held legs (one batched call),
-    write greeks_snapshots, and refresh agent_state. Exits, the 2-DTE time
-    stop, and the unwind are Day 4 (docs/day3_llm_plan.md S0.1). Makes no LLM
-    call and reads no budget -- the spend ceiling halts new entries only."""
+    """Re-snapshots greeks for held legs (one batched call), writes
+    greeks_snapshots, refreshes agent_state, and runs exit_tick (profit
+    target, stop loss, 2-DTE time stop, end-of-competition unwind -- all
+    deterministic). Makes no LLM call and reads no budget -- the spend
+    ceiling halts new entries only, never management."""
     async with storage_db.connect(deps.settings.db_path) as conn:
         try:
             account = await cli_bridge.get_account()
@@ -488,6 +577,7 @@ async def management_tick(deps: Deps, session: SessionPlan) -> None:
         )
         await storage_write.insert_greeks_snapshot(conn, greeks_row)
         await storage_write.put_state(conn, "reduce_only", breached)
+        await exit_tick(deps, session, conn, spots)
         await storage_write.put_state(conn, "account", {
             "equity": str(account.equity), "last_equity": str(account.last_equity),
             "buying_power": str(account.buying_power), "cash": str(account.cash),
@@ -545,8 +635,7 @@ async def serve_api(settings: Settings) -> None:
 async def main() -> None:
     parser = argparse.ArgumentParser(prog="agent.main")
     parser.add_argument("--dry-run", action="store_true", help="never place orders")
-    parser.add_argument("--live", action="store_true", help="place real paper orders")
-    parser.add_argument("--i-will-supervise", action="store_true", dest="i_will_supervise")
+    parser.add_argument("--live", action="store_true", help="place real paper orders, unattended")
     parser.add_argument("--once", action="store_true", help="run a single scan_cycle and exit")
     parser.add_argument("--llm", dest="llm", action="store_true", default=None, help="force-enable the LLM pipeline")
     parser.add_argument(
@@ -555,12 +644,11 @@ async def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.live and not args.i_will_supervise:
-        raise SystemExit(
-            "--live refused: Day 2 has no exit path yet -- pass --i-will-supervise "
-            "for a single supervised entry, or use --dry-run"
-        )
-
+    # --i-will-supervise was Day 2's stopgap for exactly one reason: entries
+    # existed with no way to close them. exit_tick (profit target, stop
+    # loss, 2-DTE time stop, the Thu-3-Sep unwind) closed that gap, so --live
+    # runs unattended now -- the EARNINGS gate immediately below is the
+    # remaining hard stop, and it cannot be satisfied by this process.
     dry_run = not args.live
     logging.basicConfig(level=logging.INFO)
     settings = load_settings(dry_run=dry_run)

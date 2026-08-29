@@ -335,6 +335,17 @@ async def insert_proposal(conn: aiosqlite.Connection, p: ProposalRow) -> int:
     return cur.lastrowid
 
 
+async def close_trade(conn: aiosqlite.Connection, trade_id: int, *, closed_at: str, realized_pnl: Decimal) -> None:
+    """Day 4 exits (docs/day3_llm_plan.md's own §0.1 blocking-gap note): the
+    ONLY writer of `closed_at`. Until this lands, `_open_defined_risk`'s
+    ledger only ever grows within a session -- see main.py's exit_tick."""
+    await conn.execute(
+        "UPDATE trades SET closed_at = ?, realized_pnl = ? WHERE id = ?",
+        (closed_at, float(realized_pnl), trade_id),
+    )
+    await conn.commit()
+
+
 async def insert_risk_vote(conn: aiosqlite.Connection, v: RiskVoteRow) -> int:
     cur = await conn.execute(
         """INSERT INTO risk_votes
