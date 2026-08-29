@@ -286,6 +286,18 @@ def test_vega_cap_resizes() -> None:
         assert decision.reason == GateReason.PORTFOLIO_VEGA_LIMIT
 
 
+def test_llm_budget_ceiling_blocks_entry() -> None:
+    plan = _plan()
+    decision = evaluate(plan, _ctx(llm_budget_exhausted=True))
+    assert not decision.approved
+    assert decision.reason == GateReason.LLM_BUDGET_CEILING
+
+
+def test_gate_context_default_keeps_day2_tests_green() -> None:
+    ctx = _ctx()
+    assert ctx.llm_budget_exhausted is False
+
+
 def test_binding_constraint_reported() -> None:
     plan = _plan(max_loss=Decimal("5000"), max_profit=Decimal("2000"), width=100.0)
     decision = evaluate(plan, _ctx(buying_power=Decimal("100")))

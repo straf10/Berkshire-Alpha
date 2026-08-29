@@ -6,8 +6,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
 
 # Alpaca CLI is a hard dependency (plan.md C2) -- cli_bridge.health() fails
 # and the agent correctly halts without it, rather than trading blind.
+# Pinned to v0.0.14 (not `latest`): cli_bridge encodes a real behavioural fact
+# about this exact version -- it has no `--output json` flag (memory.md,
+# Day 2) -- and a `latest` that moves between now and a later rebuild would
+# change CLI output shape under a running agent (docs/day3-llm-plan.md S1d).
 RUN curl -fsSL -o /usr/local/bin/alpaca \
-    https://github.com/alpacahq/cli/releases/latest/download/alpaca-linux-amd64 \
+    https://github.com/alpacahq/cli/releases/download/v0.0.14/alpaca-linux-amd64 \
  && chmod +x /usr/local/bin/alpaca
 
 WORKDIR /app

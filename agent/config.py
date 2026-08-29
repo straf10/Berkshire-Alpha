@@ -76,6 +76,33 @@ SEMAPHORE_LIMIT: Final[int] = 4
 ACCOUNT_START_EQUITY: Final[Decimal] = Decimal("100000")
 CLOSED_SLEEP_CEILING_S: Final[float] = 900.0
 
+# Values introduced by the Day-3 LLM plan (docs/day3-llm-plan.md S0.3).
+# plan.md is silent on each of these; they are reviewable here rather than
+# buried at their call sites.
+LLM_PROVIDER: Final[str] = "featherless"
+LLM_BASE_URL: Final[str] = "https://api.featherless.ai/v1"
+LLM_MODEL: Final[str] = "Qwen/Qwen2.5-72B-Instruct"
+LLM_TIMEOUT_S: Final[float] = 45.0
+LLM_MAX_TOKENS: Final[int] = 700
+LLM_TEMPERATURE: Final[float] = 0.2
+LLM_SEMAPHORE_LIMIT: Final[int] = 6
+LLM_VALIDATION_RETRIES: Final[int] = 1
+LLM_COST_IN_PER_MTOK: Final[Decimal] = Decimal("0.20")
+LLM_COST_OUT_PER_MTOK: Final[Decimal] = Decimal("0.60")
+LLM_DAILY_SPEND_CEILING_USD: Final[Decimal] = Decimal("4.00")
+LLM_MAX_CALLS_PER_SESSION: Final[int] = 80
+CONSENSUS_HIGH_THRESHOLD: Final[float] = 0.85
+DEBATE_MAX_ROUNDS: Final[int] = 2
+DEBATE_CANDIDATES: Final[int] = 2
+EVIDENCE_CITES_EXPECTED: Final[int] = 3
+REDDIT_SUBS: Final[tuple[str, ...]] = ("wallstreetbets", "stocks", "options")
+REDDIT_POST_LIMIT: Final[int] = 100
+REDDIT_MENTION_BASELINE_N: Final[int] = 6
+NEWS_LOOKBACK_H: Final[int] = 24
+NEWS_MAX_HEADLINES: Final[int] = 10
+SENTIMENT_MAX_POSTS_IN_PROMPT: Final[int] = 8
+STRIKE_TABLE_SPAN: Final[int] = 6
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -87,6 +114,15 @@ class Settings:
     equity_feed: str
     web_origin: str
     dry_run: bool
+    # Day-3 additions, defaulted so every existing Settings(...) call site --
+    # including the Day-2 tests -- keeps constructing unchanged.
+    llm_api_key: str = ""
+    llm_provider: str = LLM_PROVIDER
+    llm_base_url: str = LLM_BASE_URL
+    llm_model: str = LLM_MODEL
+    reddit_client_id: str = ""
+    reddit_client_secret: str = ""
+    reddit_user_agent: str = "options-alpha-agent/0.1"
 
 
 def _require_env(name: str) -> str:
@@ -107,4 +143,11 @@ def load_settings(*, dry_run: bool = True) -> Settings:
         equity_feed=os.environ.get("EQUITY_FEED", "auto"),
         web_origin=os.environ.get("WEB_ORIGIN", ""),
         dry_run=dry_run,
+        llm_api_key=os.environ.get("FEATHERLESS_API_KEY", ""),
+        llm_provider=os.environ.get("LLM_PROVIDER", LLM_PROVIDER),
+        llm_base_url=os.environ.get("LLM_BASE_URL", LLM_BASE_URL),
+        llm_model=os.environ.get("LLM_MODEL", LLM_MODEL),
+        reddit_client_id=os.environ.get("REDDIT_CLIENT_ID", ""),
+        reddit_client_secret=os.environ.get("REDDIT_CLIENT_SECRET", ""),
+        reddit_user_agent=os.environ.get("REDDIT_USER_AGENT", "options-alpha-agent/0.1"),
     )

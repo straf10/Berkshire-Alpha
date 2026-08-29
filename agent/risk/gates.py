@@ -54,6 +54,7 @@ class GateReason(StrEnum):
     INSUFFICIENT_BUYING_POWER = "INSUFFICIENT_BUYING_POWER"
     PORTFOLIO_DELTA_LIMIT = "PORTFOLIO_DELTA_LIMIT"
     PORTFOLIO_VEGA_LIMIT = "PORTFOLIO_VEGA_LIMIT"
+    LLM_BUDGET_CEILING = "LLM_BUDGET_CEILING"
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,9 @@ class GateContext:
     reduce_only: bool
     chain_symbols: frozenset[str]                      # OCC keys of this underlying's live chain
     earnings_armed: bool
+    # Day 3 (docs/day3-llm-plan.md S1b): appended LAST so every Day-2 GateContext(...)
+    # call site keeps constructing positionally without change.
+    llm_budget_exhausted: bool = False
 
 
 @dataclass(frozen=True)
@@ -126,6 +130,8 @@ def evaluate(plan: SpreadPlan, ctx: GateContext) -> GateDecision:
         return _reject(GateReason.DAILY_LOSS_KILL_SWITCH, ctx.day_pnl_pct, DAILY_LOSS_KILL_PCT)
     if ctx.reduce_only:
         return _reject(GateReason.REDUCE_ONLY)
+    if ctx.llm_budget_exhausted:
+        return _reject(GateReason.LLM_BUDGET_CEILING)
     conservative_mode = ctx.drawdown_pct <= DRAWDOWN_CONSERVATIVE_PCT
     if conservative_mode and STRUCTURE_IS_CREDIT[plan.structure]:
         return _reject(GateReason.CONSERVATIVE_MODE_CREDIT_BLOCKED, ctx.drawdown_pct, DRAWDOWN_CONSERVATIVE_PCT)

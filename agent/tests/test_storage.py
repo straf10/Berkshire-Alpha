@@ -153,6 +153,107 @@ async def test_state_upsert(tmp_path) -> None:
         assert state["value_json"] == {"equity": 99000}
 
 
+async def _seed_legacy_db(db_path: str) -> None:
+    """A Day-2-shaped DB: schema.sql minus the Day-3 columns/tables, so
+    _migrate() has real work to do (docs/day3-llm-plan.md Group 1 tests)."""
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE decisions (
+          id INTEGER PRIMARY KEY, ts_utc TEXT NOT NULL, cycle_id TEXT NOT NULL,
+          session_date TEXT NOT NULL, symbol TEXT NOT NULL, mode TEXT NOT NULL,
+          regime TEXT NOT NULL, structure TEXT, action TEXT NOT NULL,
+          gate_reason TEXT NOT NULL, gate_detail TEXT NOT NULL, observed_value REAL,
+          threshold_value REAL, qty INTEGER, equity_feed TEXT NOT NULL,
+          earnings_armed INTEGER NOT NULL, quant_json TEXT NOT NULL, plan_json TEXT
+        );
+        CREATE TABLE trades (
+          id INTEGER PRIMARY KEY, decision_id INTEGER NOT NULL REFERENCES decisions(id),
+          ts_utc TEXT NOT NULL, symbol TEXT NOT NULL, structure TEXT NOT NULL,
+          expiry TEXT NOT NULL, legs_json TEXT NOT NULL, qty INTEGER NOT NULL,
+          submitted_limit REAL NOT NULL, final_limit REAL, fill_price REAL,
+          filled_qty INTEGER NOT NULL DEFAULT 0, walk_steps INTEGER NOT NULL DEFAULT 0,
+          order_id TEXT, final_order_id TEXT, status TEXT NOT NULL, reject_code TEXT,
+          events_json TEXT NOT NULL, closed_at TEXT, realized_pnl REAL
+        );
+        CREATE TABLE sentiment_snapshots (
+          id INTEGER PRIMARY KEY, ts_utc TEXT NOT NULL, symbol TEXT NOT NULL,
+          source TEXT NOT NULL, mention_velocity REAL, tone_score REAL, raw_json TEXT
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+async def test_migration_is_idempotent(tmp_path) -> None:
+    from agent.storage.db import _migrate
+
+    db_path = str(tmp_path / "legacy.db")
+    await _seed_legacy_db(db_path)
+    async with connect(db_path) as conn:
+        await _migrate(conn)
+        await conn.commit()
+        await _migrate(conn)  # second call -- no error, column added once
+        await conn.commit()
+        cur = await conn.execute("PRAGMA table_info(trades)")
+        cols = [row[1] for row in await cur.fetchall()]
+        assert cols.count("max_loss_per_spread") == 1
+
+
+async def test_migration_backfills_from_plan_json(tmp_path) -> None:
+    from agent.storage.db import _migrate
+
+    db_path = str(tmp_path / "legacy.db")
+    await _seed_legacy_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """INSERT INTO decisions (ts_utc, cycle_id, session_date, symbol, mode, regime,
+           structure, action, gate_reason, gate_detail, qty, equity_feed, earnings_armed,
+           quant_json, plan_json)
+           VALUES ('t','c','2026-08-31','SPY','quant-only','CREDIT','BULL_PUT_SPREAD',
+           'ENTER','APPROVED','APPROVED',3,'iex',0,'{}', '{"max_loss_per_spread": "260.00"}')"""
+    )
+    decision_id = conn.execute("SELECT id FROM decisions").fetchone()[0]
+    conn.execute(
+        """INSERT INTO trades (decision_id, ts_utc, symbol, structure, expiry, legs_json,
+           qty, submitted_limit, status, events_json) VALUES (?, 't', 'SPY', 'BULL_PUT_SPREAD',
+           '2026-09-04', '[]', 3, -0.9, 'FILLED', '[]')""",
+        (decision_id,),
+    )
+    conn.commit()
+    conn.close()
+
+    async with connect(db_path) as conn:
+        await _migrate(conn)
+        await conn.commit()
+        cur = await conn.execute("SELECT max_loss_per_spread FROM trades")
+        row = await cur.fetchone()
+        assert row[0] == pytest.approx(260.0)
+
+
+async def test_migration_adds_mentions_column(tmp_path) -> None:
+    from agent.storage.db import _migrate
+
+    db_path = str(tmp_path / "legacy.db")
+    await _seed_legacy_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "INSERT INTO sentiment_snapshots (ts_utc, symbol, source) VALUES ('t','SPY','reddit')"
+    )
+    conn.commit()
+    conn.close()
+
+    async with connect(db_path) as conn:
+        await _migrate(conn)
+        await conn.commit()
+        cur = await conn.execute("PRAGMA table_info(sentiment_snapshots)")
+        cols = [row[1] for row in await cur.fetchall()]
+        assert "mentions" in cols
+        cur = await conn.execute("SELECT mentions FROM sentiment_snapshots")
+        assert (await cur.fetchone())[0] == 0
+
+
 def test_money_boundary_is_explicit() -> None:
     write_src = (STORAGE_DIR / "write.py").read_text(encoding="utf-8")
     assert "float(" in write_src  # the Decimal -> REAL boundary lives here

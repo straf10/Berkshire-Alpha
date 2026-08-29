@@ -74,6 +74,22 @@ async def _completed_scan_count(conn: aiosqlite.Connection, session_date: str) -
     return int(row[0]) if row is not None else 0
 
 
+async def _open_defined_risk(conn: aiosqlite.Connection) -> Decimal:
+    """Sum of max_loss_per_spread x filled_qty over trades still open (docs/
+    day3-llm-plan.md S1a) -- raw query, deliberately bypassing storage.read
+    (api-only, same precedent as _read_state_value). Multiplying by
+    filled_qty (not qty) makes an UNFILLED_REJECT/CANCELED/REJECTED row
+    contribute exactly 0 with no status filter, and prices a partial fill
+    correctly. `closed_at` has no writer until exits land (Day 4) -- the
+    ledger only ever grows within a session, which is conservative in the
+    safe direction (it can block a trade, never permit an oversized one)."""
+    cur = await conn.execute(
+        "SELECT COALESCE(SUM(max_loss_per_spread * filled_qty), 0) FROM trades WHERE closed_at IS NULL"
+    )
+    row = await cur.fetchone()
+    return Decimal(str(row[0]))
+
+
 def _format_metrics_line(q) -> str:
     return (
         f"[{q.symbol:<4}] VRP {q.vrp_ratio:.2f}  RV20 {q.rv_20:.3f}  IV_ATM {q.iv_atm:.3f}  "
@@ -149,6 +165,8 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
         portfolio = aggregate(exposures, account.equity)
         open_underlyings = frozenset(underlying for underlying, _ in portfolio.position_keys)
 
+        aggregate_risk = await _open_defined_risk(conn)  # running local -- docs/day3-llm-plan.md S1a/G6
+
         reduce_only = bool(await _read_state_value(conn, "reduce_only") or False)
         now_utc = deps.clock.now()
         past_entry_cutoff = now_utc >= session.cutoff_utc
@@ -186,10 +204,7 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
                             equity=account.equity, buying_power=buying_power, day_pnl_pct=day_pnl_pct,
                             drawdown_pct=drawdown_pct, open_position_keys=portfolio.position_keys,
                             open_underlyings=open_underlyings,
-                            # Day-2 simplification: no per-position max-loss ledger is
-                            # reconstructable from CLI positions alone; the aggregate
-                            # cap starts at zero each cycle (flagged, not fabricated).
-                            aggregate_defined_risk=Decimal("0"),
+                            aggregate_defined_risk=aggregate_risk,
                             portfolio=portfolio, session_date=session.session_date,
                             past_entry_cutoff=past_entry_cutoff, reduce_only=reduce_only,
                             chain_symbols=chain_symbols, earnings_armed=earnings_armed,
@@ -226,10 +241,13 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
                     structure=plan.structure.value, expiry=plan.expiry.isoformat(),
                     legs_json=json.dumps([dataclasses.asdict(leg) for leg in plan.legs], default=str),
                     qty=qty_val, submitted_limit=plan.net_mid,
+                    max_loss_per_spread=plan.max_loss_per_spread,
                 )
                 trade_id = await storage_write.insert_trade(conn, trade_row)
                 result = await walk_to_fill(deps.broker, plan, qty_val, clock=deps.clock)
                 await storage_write.update_trade_result(conn, trade_id, result)
+                if result.filled_qty:
+                    aggregate_risk += plan.max_loss_per_spread * result.filled_qty
 
         await storage_write.put_state(conn, "account", {
             "equity": str(account.equity), "last_equity": str(account.last_equity),

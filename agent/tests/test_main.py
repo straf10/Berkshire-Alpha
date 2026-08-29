@@ -355,6 +355,121 @@ async def test_scan_slot_not_rerun_after_restart(tmp_path, monkeypatch: pytest.M
     assert call_count == 1
 
 
+async def _seed_trade(conn, *, max_loss: Decimal, filled_qty: int, closed_at: str | None = None) -> None:
+    decision_id = await storage_write.insert_decision(conn, storage_write.DecisionRow(
+        ts_utc="t", cycle_id="seed", session_date=SESSION_DATE.isoformat(), symbol="TST",
+        mode="quant-only", regime="CREDIT", structure="BULL_PUT_SPREAD", action="ENTER",
+        gate_reason="APPROVED", gate_detail="APPROVED", observed_value=None, threshold_value=None,
+        qty=filled_qty or 1, equity_feed="iex", earnings_armed=False, quant_json="{}", plan_json=None,
+    ))
+    trade = storage_write.TradeRow(
+        decision_id=decision_id, ts_utc="t", symbol="TST", structure="BULL_PUT_SPREAD",
+        expiry="2026-09-04", legs_json="[]", qty=filled_qty or 1, submitted_limit=Decimal("-0.9"),
+        filled_qty=filled_qty, status="FILLED" if filled_qty else "UNFILLED_REJECT",
+        closed_at=closed_at, max_loss_per_spread=max_loss,
+    )
+    await storage_write.insert_trade(conn, trade)
+
+
+async def test_aggregate_risk_from_open_trades(tmp_path) -> None:
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    async with storage_db.connect(db_path) as conn:
+        await _seed_trade(conn, max_loss=Decimal("300"), filled_qty=4)          # 1200
+        await _seed_trade(conn, max_loss=Decimal("500"), filled_qty=0)          # UNFILLED_REJECT -> 0
+        await _seed_trade(conn, max_loss=Decimal("999"), filled_qty=2, closed_at="t")  # closed -> excluded
+        assert await main_module._open_defined_risk(conn) == Decimal("1200")
+
+
+async def test_aggregate_risk_partial_fill_weighted(tmp_path) -> None:
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    async with storage_db.connect(db_path) as conn:
+        await _seed_trade(conn, max_loss=Decimal("250"), filled_qty=2)  # qty=5 requested, filled=2 -> 500
+        assert await main_module._open_defined_risk(conn) == Decimal("500")
+
+
+async def test_aggregate_risk_accumulates_in_cycle(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two approvable candidates (SPY, then NVDA) in one scan_cycle; the
+    aggregate cap is seeded so only the first fits -- the second must reject
+    with MAX_AGGREGATE_RISK, proving aggregate_risk is a running local
+    incremented after SPY's fill rather than read once per cycle (docs/
+    day3-llm-plan.md G6)."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    async with storage_db.connect(db_path) as conn:
+        await _seed_trade(conn, max_loss=Decimal("7000"), filled_qty=1)  # aggregate starts at 7000
+
+    _patch_cli(monkeypatch, positions=[])
+
+    import agent.strategy.ticker_screener as ticker_screener_module
+    from agent.schemas.execution import Intent, Leg, Regime, SpreadPlan, Structure
+    from agent.strategy.regime import RegimeDecision
+    from agent.strategy.regime import select as real_select
+    from agent.schemas.market import ChainSnapshot, OptionQuote
+    from datetime import datetime as dt_cls, timezone as tz
+
+    def forced_select(q):
+        if q.symbol in ("SPY", "NVDA") and q.data_ok:
+            return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
+        return real_select(q)
+
+    monkeypatch.setattr(main_module, "select", forced_select)
+    monkeypatch.setattr(ticker_screener_module, "select", forced_select)
+
+    def build_stub(q, decision, chain):
+        occ_short = f"{q.symbol}260904P00100000"
+        occ_long = f"{q.symbol}260904P00097000"
+        leg_short = Leg(occ_symbol=occ_short, strike=100.0, right="P", side="SELL", ratio_qty=1,
+                         intent=Intent.SELL_TO_OPEN, delta=-0.275, vega=0.05, bid=1.0, ask=1.1)
+        leg_long = Leg(occ_symbol=occ_long, strike=97.0, right="P", side="BUY", ratio_qty=1,
+                        intent=Intent.BUY_TO_OPEN, delta=-0.10, vega=0.03, bid=0.2, ask=0.3)
+        return SpreadPlan(
+            symbol=q.symbol, structure=Structure.BULL_PUT_SPREAD, regime=Regime.CREDIT,
+            expiry=date(2026, 9, 4), dte=4, legs=(leg_short, leg_long), width=3.0,
+            net_mid=Decimal("-3.50"), net_natural=Decimal("-3.30"),
+            max_profit_per_spread=Decimal("500"), max_loss_per_spread=Decimal("1000"),
+            p_success=0.8, spot=100.0, short_leg_delta=0.275,
+        )
+
+    monkeypatch.setattr(main_module, "build", build_stub)
+
+    def chain_get_stub(self, symbol):
+        occ_short = f"{symbol}260904P00100000"
+        occ_long = f"{symbol}260904P00097000"
+        q = OptionQuote(occ_symbol=occ_short, underlying=symbol, expiry=date(2026, 9, 4), strike=100.0,
+                         right="P", bid=1.0, ask=1.1, delta=-0.275, gamma=0.01, theta=-0.01, vega=0.05, iv=0.2)
+        q2 = OptionQuote(occ_symbol=occ_long, underlying=symbol, expiry=date(2026, 9, 4), strike=97.0,
+                          right="P", bid=0.2, ask=0.3, delta=-0.10, gamma=0.01, theta=-0.01, vega=0.03, iv=0.2)
+        return ChainSnapshot(underlying=symbol, fetched_at=dt_cls(2026, 8, 29, tzinfo=tz.utc), contracts=(q, q2))
+
+    monkeypatch.setattr(main_module.ChainCache, "get", chain_get_stub)
+
+    from agent.execution.broker import OrderState
+    from agent.schemas.execution import OrderStatus as _OrderStatus
+
+    clients = FakeClients()
+    broker = MockBroker([
+        OrderState(order_id="o1", status=_OrderStatus.NEW, limit_price=Decimal("-3.50"),
+                   filled_qty=0, total_qty=1, fill_avg_price=None, reject_code=None, reject_message=None),
+        OrderState(order_id="o1", status=_OrderStatus.FILLED, limit_price=Decimal("-3.50"),
+                   filled_qty=1, total_qty=1, fill_avg_price=Decimal("-3.50"), reject_code=None, reject_message=None),
+    ])
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.scan_cycle(deps, session, dry_run=False)
+
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute(
+            "SELECT symbol, gate_reason FROM decisions WHERE symbol IN ('SPY','NVDA') ORDER BY symbol"
+        )
+        rows = {r[0]: r[1] for r in await cur.fetchall()}
+    assert rows["SPY"] == "APPROVED"
+    assert rows["NVDA"] == "MAX_AGGREGATE_RISK"
+
+
 async def test_supervised_loop_restarts(monkeypatch: pytest.MonkeyPatch) -> None:
     attempts = 0
 
