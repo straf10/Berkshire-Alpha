@@ -55,7 +55,7 @@ class TradeRow:
     events_json: str = "[]"
     closed_at: str | None = None
     realized_pnl: Decimal | None = None
-    # Day 3 (docs/day3-llm-plan.md S1a): the aggregate-defined-risk ledger.
+    # Day 3 (docs/day3_llm_plan.md S1a): the aggregate-defined-risk ledger.
     max_loss_per_spread: Decimal = Decimal("0")
 
 
@@ -236,7 +236,7 @@ async def put_state(conn: aiosqlite.Connection, key: str, value: Any) -> None:
 
 
 # --------------------------------------------------------------------------
-# Day 3 (docs/day3-llm-plan.md S1c/S1e): the LLM artifact tables. analyst_outputs
+# Day 3 (docs/day3_llm_plan.md S1c/S1e): the LLM artifact tables. analyst_outputs
 # / debate_summaries / proposals / risk_votes / debates all carry a NOT NULL
 # decision_id FK -- callers must insert AFTER insert_decision (PipelineArtifacts,
 # Group 5). llm_calls is the deliberate exception: written at call time with

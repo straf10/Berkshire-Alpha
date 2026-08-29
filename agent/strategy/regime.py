@@ -27,7 +27,7 @@ class RegimeDecision:
 
 def select(q: QuantSnapshot) -> RegimeDecision:
     """Exact decision order, transcribed from plan.md's two-regime table
-    (docs/day2-spine-plan.md, Group 4)."""
+    (docs/day2_spine_plan.md, Group 4)."""
     if not q.data_ok:
         return RegimeDecision(
             Regime.NO_TRADE, None, q.drop_reason or "DATA_NOT_OK", "DATA", None, None

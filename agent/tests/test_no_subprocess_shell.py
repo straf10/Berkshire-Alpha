@@ -1,6 +1,6 @@
 """create_subprocess_shell is banned repo-wide: asyncio.create_subprocess_exec
 passes argv directly to CreateProcess, so PowerShell 5.1's JSON-mangling
-cannot occur (docs/day2-spine-plan.md §0.1). This pins that the shell variant
+cannot occur (docs/day2_spine_plan.md §0.1). This pins that the shell variant
 never creeps back in."""
 
 from __future__ import annotations

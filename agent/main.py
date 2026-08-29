@@ -62,7 +62,7 @@ def _feed_str(feed: Any) -> str:
 
 async def _read_state_value(conn: aiosqlite.Connection, key: str) -> Any | None:
     """Raw query, deliberately bypassing storage.read -- that module is
-    imported ONLY by api/ (docs/day2-spine-plan.md Group 3)."""
+    imported ONLY by api/ (docs/day2_spine_plan.md Group 3)."""
     cur = await conn.execute("SELECT value_json FROM agent_state WHERE key = ?", (key,))
     row = await cur.fetchone()
     return json.loads(row[0]) if row is not None else None
@@ -76,7 +76,7 @@ async def _completed_scan_count(conn: aiosqlite.Connection, session_date: str) -
 
 async def _open_defined_risk(conn: aiosqlite.Connection) -> Decimal:
     """Sum of max_loss_per_spread x filled_qty over trades still open (docs/
-    day3-llm-plan.md S1a) -- raw query, deliberately bypassing storage.read
+    day3_llm_plan.md S1a) -- raw query, deliberately bypassing storage.read
     (api-only, same precedent as _read_state_value). Multiplying by
     filled_qty (not qty) makes an UNFILLED_REJECT/CANCELED/REJECTED row
     contribute exactly 0 with no status filter, and prices a partial fill
@@ -124,7 +124,7 @@ def _format_gate_line(gate_decision: GateDecision | None) -> str:
 
 
 async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list[GateDecision]:
-    """One entry scan. Order is fixed by data dependency (docs/day2-spine-plan.md
+    """One entry scan. Order is fixed by data dependency (docs/day2_spine_plan.md
     Group 6): CLI health -> bars -> chains -> quant -> shortlist -> positions/greeks
     -> per-candidate regime/build/gate -> persist every candidate -> walk approved."""
     cycle_id = str(uuid.uuid4())
@@ -165,7 +165,7 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
         portfolio = aggregate(exposures, account.equity)
         open_underlyings = frozenset(underlying for underlying, _ in portfolio.position_keys)
 
-        aggregate_risk = await _open_defined_risk(conn)  # running local -- docs/day3-llm-plan.md S1a/G6
+        aggregate_risk = await _open_defined_risk(conn)  # running local -- docs/day3_llm_plan.md S1a/G6
 
         reduce_only = bool(await _read_state_value(conn, "reduce_only") or False)
         now_utc = deps.clock.now()

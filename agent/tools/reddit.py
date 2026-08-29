@@ -32,7 +32,7 @@ class RedditPost:
 class MentionSignal:
     symbol: str
     mentions: int              # raw count this scan -- persisted to sentiment_snapshots.mentions
-    baseline: float            # mean of the trailing REDDIT_MENTION_BASELINE_N raw COUNTS (docs/day3-llm-plan.md S1e)
+    baseline: float            # mean of the trailing REDDIT_MENTION_BASELINE_N raw COUNTS (docs/day3_llm_plan.md S1e)
     velocity: float            # mentions / max(baseline, 1.0)
     posts: tuple[RedditPost, ...]   # matched posts, newest first, for the analyst prompt
 
@@ -53,7 +53,7 @@ class PrawReddit:
 
     async def recent_posts(self, subs: Sequence[str], limit: int) -> tuple[RedditPost, ...]:
         """One to_thread call over reddit.subreddit('+'.join(subs)).new(limit=limit).
-        praw is blocking and sync; a bare call freezes the event loop (docs/day2-spine-plan.md S0.1)."""
+        praw is blocking and sync; a bare call freezes the event loop (docs/day2_spine_plan.md S0.1)."""
 
         def _fetch() -> list[RedditPost]:
             sub = self._reddit.subreddit("+".join(subs))
@@ -90,7 +90,7 @@ def match_symbols(posts: Sequence[RedditPost], universe: Sequence[str]) -> dict[
 
 async def _baseline(conn: aiosqlite.Connection, symbol: str) -> float:
     """Mean of the trailing raw mention COUNTS, never of the stored velocities
-    (docs/day3-llm-plan.md S1e). `mentions > 0` excludes rows backfilled to 0
+    (docs/day3_llm_plan.md S1e). `mentions > 0` excludes rows backfilled to 0
     by the migration, so a partially migrated table reports "no baseline yet"
     rather than a baseline biased toward zero."""
     cur = await conn.execute(

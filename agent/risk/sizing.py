@@ -9,7 +9,7 @@ from agent.schemas.execution import STRUCTURE_IS_CREDIT, SpreadPlan, Structure
 
 # One unit staked == one unit of max loss (plan.md's Kelly formula is only
 # correct for per-unit-of-stake ratios, not dollar amounts -- see
-# docs/day2-spine-plan.md Group 5, F12).
+# docs/day2_spine_plan.md Group 5, F12).
 L_UNIT: Final[float] = 1.0
 
 

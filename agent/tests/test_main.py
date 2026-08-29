@@ -394,7 +394,7 @@ async def test_aggregate_risk_accumulates_in_cycle(tmp_path, monkeypatch: pytest
     aggregate cap is seeded so only the first fits -- the second must reject
     with MAX_AGGREGATE_RISK, proving aggregate_risk is a running local
     incremented after SPY's fill rather than read once per cycle (docs/
-    day3-llm-plan.md G6)."""
+    day3_llm_plan.md G6)."""
     db_path = str(tmp_path / "agent.db")
     await storage_db.init_db(db_path)
     async with storage_db.connect(db_path) as conn:

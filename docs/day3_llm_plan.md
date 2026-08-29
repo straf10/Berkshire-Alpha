@@ -2,7 +2,7 @@
 
 **Scope:** the LLM layer that sits *between* the Day-2 screen and the Day-2 deterministic gate — analysts, the Bull/Bear DoC debate, the trader, and the three risk personas — plus the external tools that feed them and the tech debt Day 2 knowingly left behind.
 
-**Authority:** [plan.md](../plan.md) is authoritative for every schema, threshold, call-budget figure, retry rule, and pipeline stage. [docs/day2-spine-plan.md](day2-spine-plan.md) is authoritative for everything already built; this document never re-derives a Day-2 decision, it references it. Where this plan introduces a value neither document specifies, it is tagged **[NEW]** and collected in §0.3.
+**Authority:** [plan.md](../plan.md) is authoritative for every schema, threshold, call-budget figure, retry rule, and pipeline stage. [docs/day2_spine_plan.md](day2_spine_plan.md) is authoritative for everything already built; this document never re-derives a Day-2 decision, it references it. Where this plan introduces a value neither document specifies, it is tagged **[NEW]** and collected in §0.3.
 
 **Engineering rules:** CLAUDE.md — edit don't rewrite, no speculative abstractions, no error handling for impossible scenarios, strictly necessary comments only. Batch independent writes.
 
@@ -29,7 +29,7 @@
 
 Builds: Groups 1–5 below. Does **not** build: the 5-minute *management* pass — profit target, stop loss, 2-DTE time stop, assignment reconciliation, end-of-competition unwind.
 
-> **⚠ Blocking gap, called out rather than silently absorbed.** [docs/day2-spine-plan.md §0.4](day2-spine-plan.md) defers exits to Day 3, and `main.py` refuses `--live` without `--i-will-supervise` precisely because the spine can open positions and cannot close them. The five groups requested for today do not include exits. **Day 4 (Mon 31 Aug) is the LIVE day**, so unattended live trading is impossible until `management_tick` grows exits. This is a scope call for the operator, not something this plan expands into on its own initiative. Estimated cost if added: **≈120 min** (profit target + stop + 2-DTE time stop + unwind trigger, all deterministic, reusing `order_manager.walk_to_fill` with closing intents; `execution/assignment.py` is a further ~45 min). Recommendation: build it immediately after Group 5, before the Day-4 open. Everything in Groups 1–5 is written so that adding it later touches only `management_tick`.
+> **⚠ Blocking gap, called out rather than silently absorbed.** [docs/day2_spine_plan.md §0.4](day2_spine_plan.md) defers exits to Day 3, and `main.py` refuses `--live` without `--i-will-supervise` precisely because the spine can open positions and cannot close them. The five groups requested for today do not include exits. **Day 4 (Mon 31 Aug) is the LIVE day**, so unattended live trading is impossible until `management_tick` grows exits. This is a scope call for the operator, not something this plan expands into on its own initiative. Estimated cost if added: **≈120 min** (profit target + stop + 2-DTE time stop + unwind trigger, all deterministic, reusing `order_manager.walk_to_fill` with closing intents; `execution/assignment.py` is a further ~45 min). Recommendation: build it immediately after Group 5, before the Day-4 open. Everything in Groups 1–5 is written so that adding it later touches only `management_tick`.
 
 ### 0.2 Async model, ports, and the import graph
 
@@ -115,7 +115,7 @@ That makes agreement well-defined and symmetric, and it means a Bear `DISAGREE` 
 ```python
 def consensus_score(bull: DebateNodeOutput, bear: DebateNodeOutput,
                     evidence_keys: frozenset[str]) -> float:
-    """[NEW] docs/day3-llm-plan.md §0.4. Range [0, 1]."""
+    """[NEW] docs/day3_llm_plan.md §0.4. Range [0, 1]."""
     commit = 0.5 * (int(bull.doc_action == "COMMIT") + int(bear.doc_action == "COMMIT"))
     grounding = 0.5 * sum(
         min(valid_citations(n, evidence_keys), EVIDENCE_CITES_EXPECTED) / EVIDENCE_CITES_EXPECTED
@@ -280,7 +280,7 @@ if result.filled_qty:                                     # after walk_to_fill
 
 ### 1b. `GateContext.llm_budget_exhausted`
 
-plan.md: "A daily spend ceiling halts new entries (not management) when hit." Enforced in the gate, not the loop, so a manually triggered scan cannot route around it — the same reasoning that put `past_entry_cutoff` there ([day2-spine-plan.md F6](day2-spine-plan.md)).
+plan.md: "A daily spend ceiling halts new entries (not management) when hit." Enforced in the gate, not the loop, so a manually triggered scan cannot route around it — the same reasoning that put `past_entry_cutoff` there ([day2_spine_plan.md F6](day2_spine_plan.md)).
 
 ```python
 # gates.py -- appended LAST so the 25 existing gate tests keep constructing
@@ -336,7 +336,7 @@ CREATE TABLE IF NOT EXISTS risk_votes (
 
 ### 1d. Deploy status — outstanding, not re-derived
 
-**The commands already exist.** [docs/day2-spine-plan.md, Group 6 "Deploy" §, lines 1443–1503](day2-spine-plan.md) specifies the Dockerfile (now committed at [Dockerfile](../Dockerfile)), the Railway single-service/`/data`-volume topology, the 6-step restart verification, the `create-next-app` invocation, and the `vercel --prod` + outside-machine CORS check. **Do not write new ones.** Per memory.md (Day 2 Groups 5 & 6 entry): *"`Dockerfile` and `web/` are new but unverified end-to-end (no Docker build or Vercel deploy attempted this session)."*
+**The commands already exist.** [docs/day2_spine_plan.md, Group 6 "Deploy" §, lines 1443–1503](day2_spine_plan.md) specifies the Dockerfile (now committed at [Dockerfile](../Dockerfile)), the Railway single-service/`/data`-volume topology, the 6-step restart verification, the `create-next-app` invocation, and the `vercel --prod` + outside-machine CORS check. **Do not write new ones.** Per memory.md (Day 2 Groups 5 & 6 entry): *"`Dockerfile` and `web/` are new but unverified end-to-end (no Docker build or Vercel deploy attempted this session)."*
 
 **Still outstanding, all three:**
 
@@ -820,7 +820,7 @@ def valid_citations(node: DebateNodeOutput, keys: frozenset[str]) -> int:
 
 def consensus_score(bull: DebateNodeOutput, bear: DebateNodeOutput,
                     keys: frozenset[str]) -> float:
-    """[NEW] docs/day3-llm-plan.md §0.4."""
+    """[NEW] docs/day3_llm_plan.md §0.4."""
 
 async def run_debate(llm: LlmPort, bundle: EvidenceBundle, *, sink: list[int]) -> DebateResult:
     """Round 1: BULL (bundle) then BEAR (bundle + bull's output). Score.

@@ -36,10 +36,10 @@ async def fetch_headlines(
     """ONE batched request for all symbols (the API takes a symbol list),
     newest first, sliced to `limit` per symbol. `since` is derived from
     SessionPlan, never from the host clock. Returns {} on any failure --
-    news is additive evidence, not a precondition (docs/day3-llm-plan.md S2).
+    news is additive evidence, not a precondition (docs/day3_llm_plan.md S2).
     Deliberately catches broadly rather than importing alpaca.APIError:
     tools/news.py imports AlpacaClients only, keeping
-    test_no_blocking_sdk.ALLOWED unchanged (docs/day3-llm-plan.md S0.2)."""
+    test_no_blocking_sdk.ALLOWED unchanged (docs/day3_llm_plan.md S0.2)."""
     try:
         news_set = await clients.get_news(list(symbols), since)
     except Exception:

@@ -16,6 +16,11 @@ Build an autonomous AI trading agent on Alpaca that:
 
 🚧 Just getting started — repo scaffolding in progress.
 
+## Demo
+
+- **Live dashboard (Vercel):** https://larp-lake.vercel.app
+- **Agent API (Railway):** https://alpaca-trading-agent-production.up.railway.app
+
 ## Judged Account
 
 - **Account ID:** `b1a0e3d2-61f1-4eac-9421-49deedc68fc4`

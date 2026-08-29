@@ -55,7 +55,7 @@ SCAN_2_OFFSET_MIN: Final[int] = -120    # from session close
 ENTRY_CUTOFF_OFFSET_MIN: Final[int] = -60
 MANAGEMENT_INTERVAL_S: Final[float] = 300.0
 
-# Values introduced by the Day-2 spine plan (docs/day2-spine-plan.md §0.3).
+# Values introduced by the Day-2 spine plan (docs/day2_spine_plan.md §0.3).
 # plan.md does not specify these; each is reviewable here rather than buried
 # inline at its call site.
 RSI_PERIOD: Final[int] = 5
@@ -76,7 +76,7 @@ SEMAPHORE_LIMIT: Final[int] = 4
 ACCOUNT_START_EQUITY: Final[Decimal] = Decimal("100000")
 CLOSED_SLEEP_CEILING_S: Final[float] = 900.0
 
-# Values introduced by the Day-3 LLM plan (docs/day3-llm-plan.md S0.3).
+# Values introduced by the Day-3 LLM plan (docs/day3_llm_plan.md S0.3).
 # plan.md is silent on each of these; they are reviewable here rather than
 # buried at their call sites.
 LLM_PROVIDER: Final[str] = "featherless"

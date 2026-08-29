@@ -96,7 +96,7 @@ async def _walk(
     broker: BrokerPort, plan: SpreadPlan, qty: int, clock: ClockPort, events: list[WalkEvent]
 ) -> WalkResult:
     # mid/natural come from the plan, computed once from the cached chain --
-    # the walk does not re-quote (docs/day2-spine-plan.md Group 5).
+    # the walk does not re-quote (docs/day2_spine_plan.md Group 5).
     mid = _quantize_cent(plan.net_mid)
     natural = _quantize_cent(plan.net_natural)
     cap = _quantize_cent(mid + WALK_CAP_FRACTION * (natural - mid))

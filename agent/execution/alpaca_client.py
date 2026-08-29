@@ -75,7 +75,7 @@ class AlpacaClients:
         await asyncio.to_thread(self.trading.cancel_order_by_id, order_id)
 
     async def get_news(self, symbols: list[str], since: datetime) -> NewsSet:
-        """Day 3 (docs/day3-llm-plan.md S0.2) -- builds the NewsRequest itself so
+        """Day 3 (docs/day3_llm_plan.md S0.2) -- builds the NewsRequest itself so
         tools/news.py never imports alpaca.* directly, keeping
         test_no_blocking_sdk.ALLOWED unchanged."""
         req = NewsRequest(symbols=symbols, start=since, include_content=False, exclude_contentless=True)

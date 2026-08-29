@@ -1,6 +1,6 @@
 """Optional live check (`pytest -m live`), safe on a closed weekend market:
 data endpoints only, no orders. Asserts shape and non-degeneracy only -- never
-timestamps or session state (docs/day2-spine-plan.md §0.5)."""
+timestamps or session state (docs/day2_spine_plan.md §0.5)."""
 
 from __future__ import annotations
 

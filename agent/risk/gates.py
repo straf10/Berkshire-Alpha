@@ -24,7 +24,7 @@ from agent.risk.sizing import size_position
 from agent.schemas.execution import STRUCTURE_IS_CREDIT, Intent, SpreadPlan
 
 # `evaluate` takes no persona votes, no LLM output, and no confidence score --
-# by construction (docs/day2-spine-plan.md Group 5). This module must never
+# by construction (docs/day2_spine_plan.md Group 5). This module must never
 # import agent.agents; a test guards that import graph.
 
 _OPTION_SYMBOL_RE = re.compile(r"^[A-Z]{1,6}\d{6}[CP]\d{8}$")
@@ -72,7 +72,7 @@ class GateContext:
     reduce_only: bool
     chain_symbols: frozenset[str]                      # OCC keys of this underlying's live chain
     earnings_armed: bool
-    # Day 3 (docs/day3-llm-plan.md S1b): appended LAST so every Day-2 GateContext(...)
+    # Day 3 (docs/day3_llm_plan.md S1b): appended LAST so every Day-2 GateContext(...)
     # call site keeps constructing positionally without change.
     llm_budget_exhausted: bool = False
 

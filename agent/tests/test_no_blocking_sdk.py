@@ -1,5 +1,5 @@
 """alpaca client classes may only be imported by the wrapper modules
-(docs/day2-spine-plan.md §0.1). Enforcement, not convention: a 6-second scan
+(docs/day2_spine_plan.md §0.1). Enforcement, not convention: a 6-second scan
 turning into a 6-second event-loop freeze is the exact regression this test
 exists to catch.
 

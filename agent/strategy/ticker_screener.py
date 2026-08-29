@@ -21,7 +21,7 @@ class ScreenedCandidate:
 
 
 def composite_score(q: QuantSnapshot, d: RegimeDecision) -> float:
-    """[NEW] pre-LLM composite rank -- see docs/day2-spine-plan.md Group 4."""
+    """[NEW] pre-LLM composite rank -- see docs/day2_spine_plan.md Group 4."""
     if d.regime == Regime.CREDIT:
         return (
             0.50 * _clip((q.vrp_ratio - VRP_CREDIT_MIN) / 0.50, 0.0, 1.0)

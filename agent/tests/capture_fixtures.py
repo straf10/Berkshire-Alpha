@@ -28,7 +28,7 @@ from agent.execution.alpaca_client import AlpacaClients
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
-# Weekend anchor per docs/day2-spine-plan.md §0.5: today is Sat 29 Aug 2026,
+# Weekend anchor per docs/day2_spine_plan.md §0.5: today is Sat 29 Aug 2026,
 # next session is Mon 31 Aug -- daily bars end there to include Friday's
 # close, and the DTE window is anchored there too.
 SESSION_DATE = date(2026, 8, 31)
@@ -143,7 +143,7 @@ async def _capture_calendar(clients: AlpacaClients) -> None:
 
 async def _capture_cli_account() -> None:
     raw = await cli_bridge._run(["account", "get"])
-    raw["account_number"] = "PA0000000000"  # scrubbed per docs/day2-spine-plan.md
+    raw["account_number"] = "PA0000000000"  # scrubbed per docs/day2_spine_plan.md
     raw["id"] = "00000000-0000-0000-0000-000000000000"
     _write_json("cli_account.json", raw)
 

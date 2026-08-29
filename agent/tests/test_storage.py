@@ -155,7 +155,7 @@ async def test_state_upsert(tmp_path) -> None:
 
 async def _seed_legacy_db(db_path: str) -> None:
     """A Day-2-shaped DB: schema.sql minus the Day-3 columns/tables, so
-    _migrate() has real work to do (docs/day3-llm-plan.md Group 1 tests)."""
+    _migrate() has real work to do (docs/day3_llm_plan.md Group 1 tests)."""
     conn = sqlite3.connect(db_path)
     conn.executescript(
         """

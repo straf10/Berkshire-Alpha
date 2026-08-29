@@ -1,4 +1,4 @@
-"""praw may only be imported by agent/tools/reddit.py (docs/day3-llm-plan.md
+"""praw may only be imported by agent/tools/reddit.py (docs/day3_llm_plan.md
 S0.2) -- the same confinement discipline as test_no_blocking_sdk.py, so a
 blocking praw call can never freeze the event loop from anywhere else."""
 

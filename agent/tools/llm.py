@@ -36,7 +36,7 @@ _ERROR_TRACE_MAX_CHARS = 800
 
 # Providers observed not to support response_format={"type":"json_object"} --
 # probed once per process, then skipped for the rest of the session. Not a
-# validation retry (docs/day3-llm-plan.md S2).
+# validation retry (docs/day3_llm_plan.md S2).
 _JSON_MODE_UNSUPPORTED: set[str] = set()
 
 

@@ -40,7 +40,7 @@ async def _column_names(conn: aiosqlite.Connection, table: str) -> set[str]:
 
 
 async def _migrate(conn: aiosqlite.Connection) -> None:
-    """Additive-only (docs/day3-llm-plan.md S1a, S1e). Day 2's agent.db predates
+    """Additive-only (docs/day3_llm_plan.md S1a, S1e). Day 2's agent.db predates
     both columns below and exists on the Railway volume; CREATE TABLE IF NOT
     EXISTS cannot add a column to a table that already exists, and SQLite has
     no ADD COLUMN IF NOT EXISTS."""
@@ -54,7 +54,7 @@ async def _migrate(conn: aiosqlite.Connection) -> None:
               FROM decisions d WHERE d.id = trades.decision_id
             ), 0) WHERE max_loss_per_spread = 0""")
 
-    # See docs/day3-llm-plan.md S1e -- the velocity baseline must average raw
+    # See docs/day3_llm_plan.md S1e -- the velocity baseline must average raw
     # mention COUNTS, never the recursive `mention_velocity` column.
     if "mentions" not in await _column_names(conn, "sentiment_snapshots"):
         await conn.execute("ALTER TABLE sentiment_snapshots ADD COLUMN mentions INTEGER NOT NULL DEFAULT 0")
