@@ -31,14 +31,27 @@ These are load-bearing. Anything below that slips invalidates the submission reg
 | C1 | Autonomous agent on Alpaca **Trading API** | Core req 1 | `/agent/execution` |
 | C2 | Must use Alpaca **MCP server or CLI** | Core req 2 | CLI is a real dependency, not decoration — see "MCP/CLI" |
 | C3 | **All** strategies must incorporate options | Core req 3 | Agent is options-only; equity orders hard-blocked in the fund-manager gate |
-| C4 | **Brand-new** paper account, dedicated to this hackathon | Account reqs | Created **Day 1**, not Day 7 — see calendar below |
-| C5 | Judged account balance set to **$100,000** | Account reqs | Set at creation Day 1; re-verified Day 6 |
-| C6 | **Options Level 3** approval on the judged account | Alpaca account config | **Day 1 blocker** — multi-leg spreads are impossible without it. Fallback defined below |
+| C4 | **Brand-new, never-traded** paper account, dedicated to this hackathon | Account reqs | ⚠️ **Broken, needs a fix Day 2** — see "Account status" below |
+| C5 | Judged account balance set to **$100,000** | Account reqs | Set at creation; must be re-verified on the replacement account |
+| C6 | **Options Level 3** approval on the judged account | Alpaca account config | **Day 1 blocker, now recurring on the replacement account** — multi-leg spreads are impossible without it. Fallback defined below |
 | C7 | One-page write-up: AI logic, risk gates, Alpaca infra | Account reqs | Drafted Day 5, final Day 7 |
 | C8 | Deadline **4 Sep 2026, 15:00 UTC** (= 11:00 ET, mid-session) | Timeline | Trading frozen and book squared **Thu 3 Sep close** |
 | C9 | Public GitHub repo + **MIT-compatible** license | Prize terms | `LICENSE` (MIT) added Day 1 |
 | C10 | Mandatory assets: 16:9 cover image, MP4 ≤5 min / ≤300MB, **slide PDF**, **live demo URL**, **Alpaca paper account ID** | What to Submit | See "Submission assets" |
 | C11 | lablab registration: profile → Enrol → Discord connected → team created | How to Participate | **Day 1, before any code** — no team, no submit button |
+
+### Account status — correction needed (found Day 2, 29 Aug)
+
+Alpaca's official FAQ (received 29 Aug, see `docs/hackathon.md`) states, twice, that **the testing account and the judged account must be different accounts**: *"Please do not use your testing account for the official P&L measurement"* / *"An account used for testing should not be used for the official measurement."*
+
+The account currently recorded as the "Judged Account" (id `b1a0e3d2-61f1-4eac-9421-49deedc68fc4`, in `README.md`) had a real manual `mleg` bull-call-spread opened and closed on it during the Day 1 spike (see `memory.md`, 2026-08-28 22:00 entry). That makes it a **testing account** under the rule above, not eligible as the judged account, independent of its "brand new" origin or its $100k-minus-$5 balance.
+
+**Fix, before Monday 31 Aug 9:30 a.m. ET:**
+1. Create a **second, brand-new** paper trading account — same email is fine — and place **zero** manual/dev orders on it, ever. It exists solely for the automated agent to trade Monday onward.
+2. Request/confirm **Options Level 3** on it immediately (Day 2), not Day 1 — the approval-queue risk from C6 now applies again, on a compressed timeline (~2 days to Monday open instead of ~3).
+3. Keep the existing account (`...c4`) as the dev/test account for all future manual spikes and dry-runs — it already has CLI auth and fixtures wired to it, no need to discard it, just stop treating it as the judged one.
+4. Once the new account exists: update `README.md` "Judged Account" section, `.env` credentials the deploy host uses for live trading, and this doc's references, to the new account ID. Re-verify balance is exactly $100,000 and Level 3 is approved before Monday's first scan.
+5. This is a **user action** (Alpaca account creation happens on the Alpaca dashboard, not via API/CLI) — flag it and don't let it slip to Sunday night.
 
 ### Trading calendar reality, in EEST (this drives everything else)
 

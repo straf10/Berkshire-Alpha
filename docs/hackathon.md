@@ -32,9 +32,12 @@ Build an autonomous AI trading agent designed to generate P&L using Alpaca's tra
 3. **Options trading** — all strategies must incorporate options trading.
 
 ### Account requirements
-- **During development:** use any paper trading account to prototype/experiment.
-- **For final submission (judging):** you must create a **brand-new Alpaca paper trading account** dedicated to this hackathon. Projects run on an existing/reused account are **not eligible** for judging.
-- **Starting balance:** the competition account must be set to **$100,000**.
+- **During development:** use any paper trading account (a "testing account") to prototype/experiment. Test trades are explicitly fine before the official window.
+- **For final submission (judging):** you must create a **brand-new Alpaca paper trading account** dedicated to this hackathon, with a starting balance of **$100,000**. Same email is fine for a second account.
+- **The testing account and the judged account must be two different accounts.** Alpaca's FAQ is explicit and repeated twice: *"Please do not use your testing account for the official P&L measurement"* / *"An account used for testing should not be used for the official measurement."* A brand-new account that has already had manual/dev trades placed on it before the official window is a testing account, not a judged account, regardless of when it was created.
+- **The agent must begin trading the judged account at Monday, August 31, 9:30 a.m. ET** — trades made before then, on any account, don't count toward the official measurement.
+- **⚠️ Our repo currently violates this** — see `plan.md` §"Account status" for the correction needed. The account recorded as "Judged Account" in `README.md` (id `b1a0e3d2-...`) had a manual `mleg` round-trip test order placed and filled on it on Day 1 (28 Aug). Per the rule above, that makes it a testing account. A separate, untouched, brand-new $100k account needs to be created for judging before Monday, with Options Level 3 re-requested on it immediately (approval isn't guaranteed instant).
+- **Judging uses total account equity, not cash balance.**
 - **One-page write-up required**, covering your AI logic, risk gates, and Alpaca infrastructure implementation.
 
 ### Extra challenge — Social engagement (optional, for a separate prize track)
@@ -59,6 +62,18 @@ All times as listed on the event page (mixed timezones as published):
 (Note: the JSON-LD event metadata gives the overall event window as `2026-08-28T15:00:00Z` → `2026-09-04T15:00:00Z`.)
 
 Speakers/Mentors/Judges: not yet announced on the page at time of scraping.
+
+## Official Alpaca FAQ clarifications (received 2026-08-29 — these govern where they differ from the scraped page above)
+
+- **Hackathon window:** Fri 28 Aug 9:30 a.m. ET → Fri 4 Sep 9:30 a.m. ET.
+- **Official P&L measurement window:** Mon 31 Aug 9:30 a.m. ET → Fri 4 Sep 9:30 a.m. ET. **The actual scoring snapshot is total account equity as of EOD Thursday, Sep 3rd** — not a Friday-morning snapshot. Option exercises/assignments for contracts expiring Sep 3 are reflected in that EOD value. This confirms (doesn't change) `plan.md`'s existing Thu-close unwind plan.
+- **Note the 9:30 a.m. ET Friday figure is ~1.5h earlier than the 15:00 UTC / 17:00 CEST lablab submission-portal deadline in the "Timeline / Event Schedule" table above** — those appear to be two different deadlines (Alpaca's trading/measurement cutoff vs. the lablab asset-upload cutoff). Since scoring is actually EOD Thu 3 Sep regardless, this doesn't change our unwind timing, but double-check the lablab dashboard for the literal submission-button deadline rather than assuming either number.
+- **Judging is by total account equity, not cash balance.** P&L is an important factor but not the sole one — creativity, autonomy, and robustness of the agent workflow are explicitly weighed alongside it, and there's no live scoreboard this time.
+- **A UI is not required.** Judging is primarily on the autonomous agent workflow and trading performance; a hosted demo URL is needed only if the submission includes a demo app judges must open.
+- **MCP vs CLI vs SDK:** either Alpaca's MCP server or its CLI satisfies the tooling requirement, in any language. Using an SDK (e.g. `alpaca-py`) alongside is fine — it's Alpaca's own official SDK — but if used, explain why in the write-up and prioritize official SDKs over third-party ones.
+- **Market data:** both free (indicative options feed) and paid (Algo Trader Plus / OPRA) tiers are permitted; nobody gets OPRA automatically. Matches what we already verified and hardcoded (`feed=indicative` for greeks/IV).
+- Live market data governs the official window; backtests/simulated shocks are fine as supplementary write-up evidence, not a substitute for the live snapshot.
+- The GitHub repo may stay **private during the hackathon** — it only needs to be public for the final submission.
 
 ## Partners
 
