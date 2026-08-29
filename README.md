@@ -23,9 +23,10 @@ Build an autonomous AI trading agent on Alpaca that:
 
 ## Judged Account
 
-- **Account ID:** `b1a0e3d2-61f1-4eac-9421-49deedc68fc4`
-- **Account number:** `PA3319FCQCPN`
-- Paper trading, created 28 Aug 2026, $100,000 starting balance, Options Level 3 approved.
+- **Account ID:** `bc8bc895-ec1e-4b9d-9f69-413432024e5e`
+- **Account number:** `PA3UM9X4MN5X`
+- Paper trading, created 29 Aug 2026, $100,000 starting balance, Options Level 3 approved. Never manually traded — agent-only from creation.
+- The account previously recorded here (`b1a0e3d2-61f1-4eac-9421-49deedc68fc4` / `PA3319FCQCPN`) is disqualified as a judged account per Alpaca's FAQ (a manual test trade was placed on it Day 1) and is now the permanent dev/test account.
 
 ## Getting Started
 
