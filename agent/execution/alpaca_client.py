@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from alpaca.common.exceptions import APIError
@@ -72,9 +72,17 @@ class AlpacaClients:
 
 
 async def probe_equity_feed(clients: AlpacaClients) -> DataFeed:
-    """One SIP daily bar for SPY; on 403 fall back to IEX and log the downgrade."""
+    """One SIP daily bar for SPY; on 403 fall back to IEX and log the downgrade.
+
+    The probe must ask for a RECENT bar (end=now), not just any historical
+    one -- a free-tier SIP subscription's recency embargo can reject a
+    request for the last few months of data while an open-ended/older
+    request succeeds, which would let this probe report SIP is fine and then
+    have the real scan's wider date-range request 403 anyway (found by
+    running the live dry-run against the real subscription)."""
     req = StockBarsRequest(
-        symbol_or_symbols=["SPY"], timeframe=TimeFrame.Day, limit=1, feed=DataFeed.SIP
+        symbol_or_symbols=["SPY"], timeframe=TimeFrame.Day, limit=1, feed=DataFeed.SIP,
+        end=datetime.now(timezone.utc),
     )
     try:
         await clients.get_stock_bars(req)

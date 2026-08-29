@@ -5,6 +5,9 @@ __pycache__/
 .env.*
 !.env.example
 *.log
+*.db
+*.db-shm
+*.db-wal
 .DS_Store
 memory.md
 CLAUDE.md
