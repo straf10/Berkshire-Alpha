@@ -20,7 +20,7 @@ Live since Day 2 (Sat 29 Aug), per plan.md's "deploy on Day 2, not Day 6" rule.
 
 `APCA_API_KEY_ID`, `APCA_API_SECRET_KEY`, `APCA_API_BASE_URL` (SDK auth) — plus `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` (same credentials, different names: the **Alpaca CLI** reads these, not the `APCA_*` ones, or it demands `alpaca profile login`) — `TZ=UTC`, `WEB_ORIGIN` (set to the Vercel URL above, for CORS once the API needs it).
 
-Day 3's new env vars (`FEATHERLESS_API_KEY`, Reddit `praw` credentials — see `.env.example`) still need to be added to Railway before the LLM/sentiment layer can run live there.
+`FEATHERLESS_API_KEY` is set — the LLM pipeline (analysts/debate/trader/risk personas) is live. Reddit `praw` credentials (`REDDIT_CLIENT_ID`/`REDDIT_CLIENT_SECRET`/`REDDIT_USER_AGENT` — see `.env.example`) are **not** set yet, so the sentiment analyst runs on an empty signal (Tier-2 cuttable per plan.md — degrades gracefully, doesn't block anything).
 
 ## Redeploying
 
