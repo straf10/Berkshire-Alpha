@@ -119,30 +119,6 @@ class ScriptedLlm:
         return item
 
 
-async def test_unanimous_approve_of_oversized_trade_rejected() -> None:
-    """plan.md's required adversarial test: a unanimous APPROVE from every
-    risk persona must never influence the deterministic gate. run_risk_team's
-    votes are logged for the reasoning feed and nowhere passed into
-    GateContext/evaluate -- the gate call below takes only the plan, exactly
-    as it would on the Day-2 quant-only path."""
-    # 5% of $100k equity, over the 1.5% cap -- profit scaled to keep the
-    # Kelly edge positive, so the rejection is provably MAX_RISK_PER_TRADE
-    # and not a coincidental NEGATIVE_EDGE reject.
-    oversized = _plan(max_loss=Decimal("5000"), max_profit=Decimal("2000"))
-    llm = ScriptedLlm({
-        "RISK_AGGRESSIVE": _vote("AGGRESSIVE", "APPROVE"),
-        "RISK_NEUTRAL": _vote("NEUTRAL", "APPROVE"),
-        "RISK_CONSERVATIVE": _vote("CONSERVATIVE", "APPROVE"),
-    })
-    result = await run_risk_team(llm, oversized, _bundle(), _account(), _portfolio(), sem=asyncio.Semaphore(3), sink=[])
-    assert not result.vetoed
-    assert all(v.decision == "APPROVE" for v in result.votes)
-
-    decision = evaluate(oversized, _gate_ctx())
-    assert not decision.approved
-    assert decision.reason.value == "MAX_RISK_PER_TRADE"
-
-
 async def test_two_rejects_veto() -> None:
     llm = ScriptedLlm({
         "RISK_AGGRESSIVE": _vote("AGGRESSIVE", "APPROVE"),
@@ -168,21 +144,25 @@ async def test_one_reject_does_not_veto() -> None:
 async def test_resize_vote_does_not_change_qty() -> None:
     """All three RESIZE: run_risk_team records the votes, and qty is decided
     entirely by risk.sizing/gates.evaluate -- the same qty as if no risk team
-    had run at all."""
+    had run at all. The baseline is computed BEFORE run_risk_team runs, so
+    this actually proves the votes had no effect on the plan or the gate,
+    rather than just proving evaluate() is deterministic when called twice
+    on an unmodified plan."""
+    plan = _plan()
+    baseline = evaluate(plan, _gate_ctx())
+
     llm = ScriptedLlm({
         "RISK_AGGRESSIVE": _vote("AGGRESSIVE", "RESIZE"),
         "RISK_NEUTRAL": _vote("NEUTRAL", "RESIZE"),
         "RISK_CONSERVATIVE": _vote("CONSERVATIVE", "RESIZE"),
     })
-    plan = _plan()
     result = await run_risk_team(llm, plan, _bundle(), _account(), _portfolio(), sem=asyncio.Semaphore(3), sink=[])
     assert not result.vetoed
     assert all(v.decision == "RESIZE" for v in result.votes)
 
-    with_votes = evaluate(plan, _gate_ctx())
-    without_votes = evaluate(plan, _gate_ctx())
-    assert with_votes.approved == without_votes.approved
-    assert with_votes.qty == without_votes.qty
+    after_votes = evaluate(plan, _gate_ctx())
+    assert after_votes.approved == baseline.approved
+    assert after_votes.qty == baseline.qty
 
 
 async def test_dropped_persona_absent_not_fatal() -> None:

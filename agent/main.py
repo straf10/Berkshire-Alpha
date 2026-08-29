@@ -19,6 +19,8 @@ from agent.agents.pipeline import PipelineArtifacts, PipelineOutcome, run_llm_pi
 from agent.config import (
     ACCOUNT_START_EQUITY,
     CONSENSUS_HIGH_THRESHOLD,
+    DAILY_LOSS_KILL_PCT,
+    DRAWDOWN_TERMINAL_PCT,
     EARNINGS_VERIFIED_ON,
     LLM_SEMAPHORE_LIMIT,
     MANAGEMENT_INTERVAL_S,
@@ -414,7 +416,18 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
         budget = await load_budget(conn, session.session_date.isoformat())
 
         outcomes_by_symbol: dict[str, PipelineOutcome] = {}
-        run_llm_this_cycle = deps.llm_enabled and not budget.exhausted and bool(candidates) and deps.http is not None
+        # Skip the LLM pipeline (a full ~24-30 call scan) when the cycle-level
+        # deterministic gates would reject every candidate regardless of what
+        # the LLM proposes -- these mirror gates.py's own unconditional
+        # rejects (Phase B, before any plan-specific check).
+        gate_will_reject_cycle = (
+            reduce_only or past_entry_cutoff
+            or drawdown_pct <= DRAWDOWN_TERMINAL_PCT or day_pnl_pct <= DAILY_LOSS_KILL_PCT
+        )
+        run_llm_this_cycle = (
+            deps.llm_enabled and not budget.exhausted and bool(candidates)
+            and deps.http is not None and not gate_will_reject_cycle
+        )
         if run_llm_this_cycle:
             since = now_utc - timedelta(hours=NEWS_LOOKBACK_H)
             news_by_symbol, mentions_by_symbol = await asyncio.gather(

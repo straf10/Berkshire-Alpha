@@ -140,15 +140,21 @@ class LlmClient:
                 f"budget exhausted: spent={self._budget.spent_usd} calls={self._budget.calls}"
             )
 
+        # The schema is constant per node (system prompt + schema never
+        # change across calls to the same node), so it lives in the system
+        # message rather than the user message -- providers that support
+        # prompt-caching cache the system prefix, not the ever-changing user
+        # turn, so this is where the schema actually gets the caching payoff.
         schema_json = json.dumps(schema.model_json_schema(), separators=(",", ":"))
-        user_content = (
-            f"{prompt}\n\nRespond with a single JSON object matching this schema. "
+        schema_instruction = (
+            f"Respond with a single JSON object matching this schema. "
             f"No prose, no markdown fence.\n{schema_json}"
         )
-        messages: list[dict[str, str]] = []
-        if system:
-            messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": user_content})
+        system_content = f"{system}\n\n{schema_instruction}" if system else schema_instruction
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": prompt},
+        ]
 
         return await self._attempt(messages, schema, node=node, sink=sink, retry_index=0)
 

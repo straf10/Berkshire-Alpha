@@ -18,10 +18,27 @@ from agent.schemas.market import QuantSnapshot
 from agent.strategy.regime import RegimeDecision
 from agent.strategy.ticker_screener import ScreenedCandidate
 from agent.tools.llm import LlmBudgetExceeded, LlmUnavailable, LlmValidationDropped
-from datetime import date
+from agent.tools.news import Headline
+from agent.tools.reddit import MentionSignal, RedditPost
+from datetime import date, datetime, timezone
 
 SESSION_DATE = date(2026, 8, 31)
 EXPIRY = date(2026, 9, 4)
+_TS = datetime(2026, 8, 28, tzinfo=timezone.utc)
+
+
+def _headlines(symbol: str) -> tuple[Headline, ...]:
+    """news_analyst only calls the LLM when there is at least one headline
+    -- a token-efficiency fix -- so tests exercising the NEWS node need real
+    input rather than the default empty dict."""
+    return (Headline.build(id="n1", symbol=symbol, headline="h", source="s", created_at=_TS, summary="s"),)
+
+
+def _mention_signal(symbol: str) -> MentionSignal:
+    """Same reasoning as _headlines -- sentiment_analyst skips the call with
+    no posts, so tests exercising the SENTIMENT node need a real post."""
+    post = RedditPost(id="p1", subreddit="stocks", title="t", created_utc=_TS, score=1, num_comments=0)
+    return MentionSignal(symbol=symbol, mentions=1, baseline=1.0, velocity=1.0, posts=(post,))
 
 
 def _snapshot(symbol: str) -> QuantSnapshot:
@@ -95,10 +112,12 @@ class FakeLlm:
 async def test_analysts_run_concurrently() -> None:
     llm = FakeLlm()
     candidates = [_candidate(f"SYM{i}") for i in range(4)]
+    news = {c.snapshot.symbol: _headlines(c.snapshot.symbol) for c in candidates}
+    mentions = {c.snapshot.symbol: _mention_signal(c.snapshot.symbol) for c in candidates}
     sem = asyncio.Semaphore(6)
     sinks = {c.snapshot.symbol: [] for c in candidates}
     t0 = time.monotonic()
-    results = await run_analysts(llm, candidates, {}, {}, sem=sem, sinks=sinks)
+    results = await run_analysts(llm, candidates, news, mentions, sem=sem, sinks=sinks)
     elapsed = time.monotonic() - t0
     assert llm.calls == 12
     assert llm.max_concurrent == 6
@@ -110,8 +129,10 @@ async def test_one_analyst_validation_drop_isolated() -> None:
     llm = FakeLlm()
     llm.script("NEWS", [LlmValidationDropped("bad news node")])
     candidates = [_candidate("SPY")]
+    news = {"SPY": _headlines("SPY")}
+    mentions = {"SPY": _mention_signal("SPY")}
     sinks = {"SPY": []}
-    results = await run_analysts(llm, candidates, {}, {}, sem=asyncio.Semaphore(6), sinks=sinks)
+    results = await run_analysts(llm, candidates, news, mentions, sem=asyncio.Semaphore(6), sinks=sinks)
     bundle = results[0].bundle
     assert bundle.news_analyst is None
     assert bundle.quant_analyst is not None
@@ -136,11 +157,15 @@ async def test_partial_outage_degrades_cycle() -> None:
     llm = FakeLlm()
     candidates = [_candidate(f"SYM{i}") for i in range(4)]
     # 7 of the 12 calls unavailable: fail QUANT and NEWS for all 4 (8), too many -- trim to 7.
+    # NEWS must actually be called for the scripted failures to fire, so
+    # every candidate needs a real headline (news_analyst skips the call
+    # entirely with no headlines).
+    news = {c.snapshot.symbol: _headlines(c.snapshot.symbol) for c in candidates}
     llm.script("QUANT", [LlmUnavailable("x")] * 4)
     llm.script("NEWS", [LlmUnavailable("x")] * 3)
     sinks = {c.snapshot.symbol: [] for c in candidates}
     with pytest.raises(LlmUnavailable):
-        await run_analysts(llm, candidates, {}, {}, sem=asyncio.Semaphore(6), sinks=sinks)
+        await run_analysts(llm, candidates, news, {}, sem=asyncio.Semaphore(6), sinks=sinks)
 
 
 async def test_single_flap_does_not_degrade() -> None:

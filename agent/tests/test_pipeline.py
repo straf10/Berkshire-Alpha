@@ -23,6 +23,8 @@ from agent.schemas.market import ChainSnapshot, OptionQuote, QuantSnapshot
 from agent.strategy.regime import RegimeDecision
 from agent.strategy.ticker_screener import ScreenedCandidate
 from agent.tools.llm import LlmBudgetExceeded
+from agent.tools.news import Headline
+from agent.tools.reddit import MentionSignal, RedditPost
 
 SESSION_DATE = date(2026, 8, 31)
 EXPIRY = date(2026, 9, 4)
@@ -243,6 +245,9 @@ async def test_full_happy_path_produces_plan() -> None:
 
 
 async def test_mode_degraded_when_analyst_dropped() -> None:
+    """news_analyst only calls the LLM when there are headlines to read (a
+    token-efficiency fix -- an empty headline set never reaches the LLM at
+    all, so this test needs a real headline to exercise the drop path)."""
     from agent.tools.llm import LlmValidationDropped
 
     llm = ScriptedLlm()
@@ -250,9 +255,13 @@ async def test_mode_degraded_when_analyst_dropped() -> None:
     candidates = [_candidate(UNIVERSE[0])]
     chains = FakeChains({UNIVERSE[0]: _put_credit_chain(UNIVERSE[0])})
     sinks = {UNIVERSE[0]: []}
+    headline = Headline.build(
+        id="n1", symbol=UNIVERSE[0], headline="h", source="s", created_at=_TS, summary="s",
+    )
+    news = {UNIVERSE[0]: (headline,)}
 
     outcomes = await run_llm_pipeline(
-        llm, candidates, chains, {}, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
+        llm, candidates, chains, news, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
         sem=asyncio.Semaphore(6), sinks=sinks,
     )
     assert outcomes[0].mode == "llm-degraded"
@@ -273,3 +282,30 @@ async def test_budget_exceeded_propagates_out_of_pipeline() -> None:
             llm, candidates, chains, {}, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
             sem=asyncio.Semaphore(6), sinks=sinks,
         )
+
+
+async def test_full_cycle_call_count() -> None:
+    """docs/day3_llm_plan.md Group 5: 4 shortlisted, 2 debated, both
+    terminating at R1 -> exactly 12 (analysts) + 4 (R1 debate) + 2 (trader)
+    + 6 (risk) = 24 FakeLlm calls. Every candidate needs a real headline and
+    mention signal so all 12 analyst calls actually fire (news_analyst and
+    sentiment_analyst skip the call entirely with no input)."""
+    llm = ScriptedLlm()
+    candidates = [_candidate(UNIVERSE[i], score=float(i)) for i in range(4)]
+    symbols = [c.snapshot.symbol for c in candidates]
+    chains = FakeChains({s: _put_credit_chain(s) for s in symbols})
+    sinks = {s: [] for s in symbols}
+    news = {
+        s: (Headline.build(id=f"n{i}", symbol=s, headline="h", source="s", created_at=_TS, summary="s"),)
+        for i, s in enumerate(symbols)
+    }
+    post = RedditPost(id="p1", subreddit="stocks", title="t", created_utc=_TS, score=1, num_comments=0)
+    mentions = {s: MentionSignal(symbol=s, mentions=1, baseline=1.0, velocity=1.0, posts=(post,)) for s in symbols}
+
+    outcomes = await run_llm_pipeline(
+        llm, candidates, chains, news, mentions, FakeAccount(), FakePortfolio(), TRADING_DAYS,
+        sem=asyncio.Semaphore(6), sinks=sinks,
+    )
+    assert len(outcomes) == 4
+    assert sum(1 for o in outcomes if o.reason == "OK") == 2
+    assert len(llm.calls) == 24

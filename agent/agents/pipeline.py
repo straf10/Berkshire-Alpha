@@ -97,7 +97,9 @@ class PipelineOutcome:
     # directly rather than recomputing it from artifacts.analyst_rows, which
     # would require re-parsing every analyst's output_json back into a
     # Pydantic model just to re-derive a number already computed once here.
-    analyst_score: float = 0.0
+    # No default: a construction site that forgets to pass this must fail
+    # loudly at construction, not silently print 'score 0.00'.
+    analyst_score: float
 
 
 _ANALYST_FIELDS: tuple[tuple[str, str], ...] = (
@@ -235,10 +237,21 @@ async def run_llm_pipeline(
     survivors = [r for r in analyst_results if r.symbol in debated_symbols]
     others = [r for r in analyst_results if r.symbol not in debated_symbols]
 
-    survivor_outcomes = await asyncio.gather(*(_survivor(r) for r in survivors))
+    # return_exceptions=True: a bare gather() propagates the first exception
+    # but does NOT cancel sibling tasks, so a LlmBudgetExceeded from one
+    # candidate would leave another's _survivor still running after
+    # scan_cycle's caller has moved on and closed the DB connection.
+    survivor_outcomes = await asyncio.gather(*(_survivor(r) for r in survivors), return_exceptions=True)
+    first_exception = next((o for o in survivor_outcomes if isinstance(o, BaseException)), None)
+    if first_exception is not None:
+        raise first_exception
 
     other_outcomes = [
         PipelineOutcome(
+            # NOT_TOP_DEBATE_CANDIDATE never reaches the debate stage, so the
+            # spec's "both debate rounds produced valid output" clause for
+            # mode='llm' does not apply here by construction -- 'llm' means
+            # only that this candidate's own analysts all succeeded.
             symbol=r.symbol, plan=None, mode="llm-degraded" if r.failures else "llm",
             reason="NOT_TOP_DEBATE_CANDIDATE", analyst_score=analyst_score(r),
             artifacts=PipelineArtifacts(analyst_rows=_analyst_artifacts(r), llm_call_ids=tuple(sinks[r.symbol])),

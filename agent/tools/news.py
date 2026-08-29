@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Sequence
 
+import pydantic
+
 from agent.config import NEWS_MAX_HEADLINES
 from agent.execution.alpaca_client import AlpacaClients
 
@@ -39,9 +41,18 @@ async def fetch_headlines(
     news is additive evidence, not a precondition (docs/day3_llm_plan.md S2).
     Deliberately catches broadly rather than importing alpaca.APIError:
     tools/news.py imports AlpacaClients only, keeping
-    test_no_blocking_sdk.ALLOWED unchanged (docs/day3_llm_plan.md S0.2)."""
+    test_no_blocking_sdk.ALLOWED unchanged (docs/day3_llm_plan.md S0.2).
+    ValidationError/TypeError are let through rather than degraded to {} --
+    those mean the request we built is wrong (a bug in this module or its
+    caller), not that the provider is unavailable, and swallowing that class
+    of error is exactly what let the get_news comma-join bug run silent
+    since Group 2."""
+    if not symbols:
+        return {}
     try:
         news_set = await clients.get_news(list(symbols), since)
+    except (pydantic.ValidationError, TypeError):
+        raise
     except Exception:
         logger.warning("news.fetch_headlines: request failed -- degrading to no news evidence", exc_info=True)
         return {}

@@ -32,3 +32,22 @@ def test_confidence_never_reaches_sizing_or_gates() -> None:
         for path in (REPO_ROOT / rel).rglob("*.py"):
             src = path.read_text(encoding="utf-8")
             assert "confidence_score" not in src, f"{path}: confidence_score must never enter sizing/gates"
+
+
+def test_gate_never_sees_llm() -> None:
+    """docs/day3_llm_plan.md S0.2: no file under agent/risk/ or
+    agent/execution/ may import agent.agents -- the gate takes no LLM input,
+    no persona vote, and no confidence score, enforced here rather than by
+    convention."""
+    violations = []
+    for rel in ("agent/risk", "agent/execution"):
+        for path in (REPO_ROOT / rel).rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("agent.agents"):
+                    violations.append(f"{path.relative_to(REPO_ROOT)}: {node.module}")
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name.startswith("agent.agents"):
+                            violations.append(f"{path.relative_to(REPO_ROOT)}: {alias.name}")
+    assert not violations, f"agent/risk and agent/execution must never import agent.agents: {violations}"

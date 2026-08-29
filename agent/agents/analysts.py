@@ -42,20 +42,26 @@ async def quant_analyst(llm: LlmPort, q: QuantSnapshot, d: RegimeDecision, *, si
 
 async def news_analyst(
     llm: LlmPort, symbol: str, headlines: Sequence[Headline], *, sink: list[int]
-) -> NewsAnalystOutput:
+) -> NewsAnalystOutput | None:
+    """No headlines -> no call: asking a model to opine on '(none)' burns a
+    call and buys nothing. A skipped call is not a failure -- it leaves the
+    bundle field None exactly like a dropped call does, and analyst_score
+    already treats a missing news analyst as neutral (0.5)."""
+    if not headlines:
+        return None
     lines = "\n".join(f"[{h.id}] {h.headline} -- {h.summary}" for h in headlines[:NEWS_MAX_HEADLINES])
-    prompt = f"Ticker: {symbol}\nRecent headlines:\n{lines or '(none)'}"
+    prompt = f"Ticker: {symbol}\nRecent headlines:\n{lines}"
     return await llm.complete_json(prompt, NewsAnalystOutput, node="NEWS", system=NEWS_ANALYST_SYSTEM, sink=sink)
 
 
 async def sentiment_analyst(
     llm: LlmPort, symbol: str, signal: MentionSignal | None, *, sink: list[int]
-) -> SentimentAnalystOutput:
+) -> SentimentAnalystOutput | None:
+    """No posts -> no call, same reasoning as news_analyst above."""
     if signal is None or not signal.posts:
-        titles, mentions, velocity = "(no recent posts)", 0, 0.0
-    else:
-        titles = "\n".join(f"- {p.title[:160]}" for p in signal.posts[:SENTIMENT_MAX_POSTS_IN_PROMPT])
-        mentions, velocity = signal.mentions, signal.velocity
+        return None
+    titles = "\n".join(f"- {p.title[:160]}" for p in signal.posts[:SENTIMENT_MAX_POSTS_IN_PROMPT])
+    mentions, velocity = signal.mentions, signal.velocity
     prompt = f"Ticker: {symbol}\nMentions this scan: {mentions}  Velocity: {velocity:.2f}\nRecent post titles:\n{titles}"
     return await llm.complete_json(
         prompt, SentimentAnalystOutput, node="SENTIMENT", system=SENTIMENT_ANALYST_SYSTEM, sink=sink

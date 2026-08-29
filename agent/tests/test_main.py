@@ -281,7 +281,7 @@ async def test_dry_run_prints_llm_line(tmp_path, monkeypatch: pytest.MonkeyPatch
         p_success=0.72, spot=100.0, short_leg_delta=0.275,
     )
     outcome = PipelineOutcome(
-        symbol="SPY", plan=plan, mode="llm", reason="OK",
+        symbol="SPY", plan=plan, mode="llm", reason="OK", analyst_score=0.81,
         artifacts=PipelineArtifacts(
             debate_nodes=(
                 DebateArtifact(round=1, persona="BULL", doc_action="COMMIT", evidence_cited_json="[]",
@@ -320,6 +320,230 @@ async def test_dry_run_prints_llm_line(tmp_path, monkeypatch: pytest.MonkeyPatch
     out = capsys.readouterr().out
     assert "SPRT TERMINATED R1" in out
     assert "mode=llm" in out
+
+
+async def test_unanimous_approve_of_oversized_trade_rejected(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """plan.md's required adversarial test, run end to end through
+    scan_cycle rather than calling evaluate() directly (promoted from
+    test_risk_team.py -- the unit-level version could only prove evaluate()
+    ignores votes when called in isolation, not that scan_cycle's one gate
+    call site is actually reached with an untouched plan and that the
+    broker never sees an order). A unanimous APPROVE from every risk
+    persona on a trade over the 1.5%-of-equity cap must still be rejected by
+    the deterministic gate, with MockBroker.submitted left empty."""
+    from agent.agents.pipeline import PipelineArtifacts, PipelineOutcome, RiskVoteArtifact
+    from agent.schemas.execution import Intent, Leg, Regime, SpreadPlan, Structure
+    from agent.strategy.regime import RegimeDecision
+    from agent.strategy.regime import select as real_select
+
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    _patch_cli(monkeypatch)
+
+    import agent.strategy.ticker_screener as ticker_screener_module
+
+    def forced_select(q):
+        if q.symbol == "SPY" and q.data_ok:
+            return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
+        return real_select(q)
+
+    monkeypatch.setattr(main_module, "select", forced_select)
+    monkeypatch.setattr(ticker_screener_module, "select", forced_select)
+
+    # Strikes taken from the real chain_SPY.json fixture (both already used
+    # by FAKE_POSITIONS above) so the gate reaches Phase B's MAX_RISK check
+    # rather than rejecting earlier on STRIKE_NOT_IN_CHAIN. max_loss/profit
+    # are set independently of width -- gates.py reads
+    # plan.max_loss_per_spread directly, never re-derives it from the legs --
+    # 5% of $100k equity, over the 1.5% cap, profit scaled to keep the Kelly
+    # edge positive so the rejection is provably MAX_RISK_PER_TRADE and not a
+    # coincidental NEGATIVE_EDGE reject.
+    oversized_plan = SpreadPlan(
+        symbol="SPY", structure=Structure.BULL_PUT_SPREAD, regime=Regime.CREDIT,
+        expiry=date(2026, 9, 4), dte=4,
+        legs=(
+            Leg(occ_symbol="SPY260904P00772000", strike=772.0, right="P", side="SELL", ratio_qty=1,
+                intent=Intent.SELL_TO_OPEN, delta=-0.28, vega=0.05, bid=1.0, ask=1.1),
+            Leg(occ_symbol="SPY260904P00763000", strike=763.0, right="P", side="BUY", ratio_qty=1,
+                intent=Intent.BUY_TO_OPEN, delta=-0.10, vega=0.03, bid=0.2, ask=0.3),
+        ),
+        width=9.0, net_mid=Decimal("-0.90"), net_natural=Decimal("-0.75"),
+        max_profit_per_spread=Decimal("2000"), max_loss_per_spread=Decimal("5000"),
+        p_success=0.72, spot=770.0, short_leg_delta=0.28,
+    )
+    outcome = PipelineOutcome(
+        symbol="SPY", plan=oversized_plan, mode="llm", reason="OK", analyst_score=0.81,
+        artifacts=PipelineArtifacts(
+            risk_rows=(
+                RiskVoteArtifact(persona="AGGRESSIVE", decision="APPROVE", max_loss_acceptable=True,
+                                  risk_reward_ratio_acceptable=True, manager_notes="x"),
+                RiskVoteArtifact(persona="NEUTRAL", decision="APPROVE", max_loss_acceptable=True,
+                                  risk_reward_ratio_acceptable=True, manager_notes="x"),
+                RiskVoteArtifact(persona="CONSERVATIVE", decision="APPROVE", max_loss_acceptable=True,
+                                  risk_reward_ratio_acceptable=True, manager_notes="x"),
+            ),
+        ),
+    )
+
+    async def fake_run_llm_pipeline(*args, **kwargs):
+        return [outcome]
+
+    monkeypatch.setattr(main_module, "run_llm_pipeline", fake_run_llm_pipeline)
+
+    clients = FakeClients()
+    broker = MockBroker([])
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+    deps.llm_enabled = True
+    deps.http = object()  # never dereferenced: run_llm_pipeline is monkeypatched above
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.scan_cycle(deps, session, dry_run=False)
+
+    assert broker.submitted == []
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT gate_reason FROM decisions WHERE symbol = 'SPY'")
+        row = await cur.fetchone()
+    assert row[0] == "MAX_RISK_PER_TRADE"
+
+
+async def _run_llm_scan_with_full_artifacts(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """Shared setup for test_artifacts_persisted_with_decision_id and
+    test_llm_calls_backlinked (docs/day3_llm_plan.md Group 5 G2): a real
+    llm_calls row is inserted with decision_id=NULL, exactly as LlmClient
+    does mid-cycle, and referenced via artifacts.llm_call_ids so
+    _persist_pipeline_artifacts's FK-ordering and back-link logic actually
+    runs end to end rather than being asserted only against hand-seeded rows
+    (as test_api.py's test_decision_chain_serves_full_chain does)."""
+    from agent.agents.pipeline import (
+        AnalystArtifact,
+        DebateArtifact,
+        DebateSummaryArtifact,
+        PipelineArtifacts,
+        PipelineOutcome,
+        ProposalArtifact,
+        RiskVoteArtifact,
+    )
+    from agent.schemas.execution import Intent, Leg, Regime, SpreadPlan, Structure
+    from agent.storage.write import LlmCallRow, insert_llm_call
+    from agent.strategy.regime import RegimeDecision
+    from agent.strategy.regime import select as real_select
+
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    _patch_cli(monkeypatch)
+
+    import agent.strategy.ticker_screener as ticker_screener_module
+
+    def forced_select(q):
+        if q.symbol == "SPY" and q.data_ok:
+            return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
+        return real_select(q)
+
+    monkeypatch.setattr(main_module, "select", forced_select)
+    monkeypatch.setattr(ticker_screener_module, "select", forced_select)
+    monkeypatch.setattr(main_module, "fetch_headlines", lambda *a, **k: _immediate({}))
+    monkeypatch.setattr(main_module, "_fetch_reddit", lambda *a, **k: _immediate({}))
+
+    async with storage_db.connect(db_path) as conn:
+        call_id = await insert_llm_call(conn, LlmCallRow(
+            ts_utc=datetime.now(timezone.utc).isoformat(), node="QUANT", provider="featherless",
+            model="m", prompt_tokens=10, completion_tokens=5, latency_ms=10,
+            est_cost_usd=Decimal("0.001"), ok=True,
+        ))
+
+    plan = SpreadPlan(
+        symbol="SPY", structure=Structure.BULL_PUT_SPREAD, regime=Regime.CREDIT,
+        expiry=date(2026, 9, 4), dte=4,
+        legs=(
+            Leg(occ_symbol="SPY260904P00100000", strike=100.0, right="P", side="SELL", ratio_qty=1,
+                intent=Intent.SELL_TO_OPEN, delta=-0.275, vega=0.05, bid=1.0, ask=1.1),
+            Leg(occ_symbol="SPY260904P00097000", strike=97.0, right="P", side="BUY", ratio_qty=1,
+                intent=Intent.BUY_TO_OPEN, delta=-0.10, vega=0.03, bid=0.2, ask=0.3),
+        ),
+        width=3.0, net_mid=Decimal("-0.90"), net_natural=Decimal("-0.75"),
+        max_profit_per_spread=Decimal("90"), max_loss_per_spread=Decimal("210"),
+        p_success=0.72, spot=100.0, short_leg_delta=0.275,
+    )
+    outcome = PipelineOutcome(
+        symbol="SPY", plan=plan, mode="llm", reason="OK", analyst_score=0.81,
+        artifacts=PipelineArtifacts(
+            analyst_rows=(
+                AnalystArtifact(
+                    symbol="SPY", analyst="QUANT", ok=True, error=None,
+                    output_json=json.dumps({
+                        "ticker": "SPY", "iv_rv_interpretation": "RICH", "skew_bias": "BULLISH",
+                        "directional_momentum": "WEAK_UP", "key_levels": [100.0], "analyst_summary": "s",
+                    }),
+                ),
+            ),
+            debate_nodes=(
+                DebateArtifact(round=1, persona="BULL", doc_action="COMMIT", evidence_cited_json="[]",
+                               volatility_view="v", rebuttal_argument="r"),
+                DebateArtifact(round=1, persona="BEAR", doc_action="COMMIT", evidence_cited_json="[]",
+                               volatility_view="v", rebuttal_argument="r"),
+            ),
+            debate_summary=DebateSummaryArtifact(rounds_run=1, consensus_score=0.9,
+                                                  verdict="CONSENSUS_ROUND_1", terminated_early=True),
+            proposal_row=ProposalArtifact(
+                proposal_json='{"confidence_score": 0.8}', accepted=True, reject_reason=None,
+            ),
+            risk_rows=(RiskVoteArtifact(persona="AGGRESSIVE", decision="APPROVE", max_loss_acceptable=True,
+                                         risk_reward_ratio_acceptable=True, manager_notes="x"),),
+            llm_call_ids=(call_id,),
+        ),
+    )
+
+    async def fake_run_llm_pipeline(*args, **kwargs):
+        return [outcome]
+
+    monkeypatch.setattr(main_module, "run_llm_pipeline", fake_run_llm_pipeline)
+
+    clients = FakeClients()
+    broker = MockBroker([])
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+    deps.llm_enabled = True
+    deps.http = object()  # never dereferenced: run_llm_pipeline is monkeypatched above
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.scan_cycle(deps, session, dry_run=True)
+
+    return db_path, call_id
+
+
+async def test_artifacts_persisted_with_decision_id(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every analyst_outputs/debates/proposals/risk_votes row written by a
+    real scan_cycle LLM pass has a non-null decision_id resolving to a real
+    decisions row (docs/day3_llm_plan.md Group 5 / G2's FK-ordering fix)."""
+    db_path, _ = await _run_llm_scan_with_full_artifacts(tmp_path, monkeypatch)
+
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT id FROM decisions WHERE symbol = 'SPY'")
+        decision_id = (await cur.fetchone())[0]
+
+        for table in ("analyst_outputs", "debates", "proposals", "risk_votes"):
+            cur = await conn.execute(f"SELECT decision_id FROM {table}")
+            rows = await cur.fetchall()
+            assert rows, f"{table} has no rows"
+            for row in rows:
+                assert row[0] is not None
+                assert row[0] == decision_id
+
+
+async def test_llm_calls_backlinked(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """llm_calls rows written with decision_id=NULL at call time are updated
+    to the real decision id after insert_decision runs (docs/day3_llm_plan.md
+    Group 5 / G2)."""
+    db_path, call_id = await _run_llm_scan_with_full_artifacts(tmp_path, monkeypatch)
+
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT id FROM decisions WHERE symbol = 'SPY'")
+        decision_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute("SELECT decision_id FROM llm_calls WHERE id = ?", (call_id,))
+        row = await cur.fetchone()
+    assert row[0] == decision_id
 
 
 def _immediate(value):
@@ -579,10 +803,13 @@ async def test_aggregate_risk_accumulates_in_cycle(tmp_path, monkeypatch: pytest
 async def test_budget_ceiling_blocks_entries_not_management(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A spend ceiling blown earlier in the session must still block new
     entries on the quant-only path -- budget is loaded every cycle regardless
-    of deps.llm_enabled (docs/day3_llm_plan.md Group 5 property 3). Also
-    confirms zero LLM calls happen: deps.llm_enabled stays False here, so a
-    bug that routed around the ceiling check would show up as an approved
-    trade, not as an unexpected LLM call."""
+    of deps.llm_enabled (docs/day3_llm_plan.md Group 5 property 3). LLM is
+    enabled here (deps.llm_enabled=True) with run_llm_pipeline monkeypatched
+    to raise if called at all -- this is the spec's
+    test_budget_ceiling_makes_zero_llm_calls: a bug that routed around the
+    ceiling check would show up as run_llm_pipeline actually being invoked,
+    not merely as an approved trade (which llm_enabled=False could never
+    have caught, since run_llm_this_cycle short-circuits on that alone)."""
     from agent.config import LLM_DAILY_SPEND_CEILING_USD
     from agent.storage.write import LlmCallRow, insert_llm_call
 
@@ -610,11 +837,17 @@ async def test_budget_ceiling_blocks_entries_not_management(tmp_path, monkeypatc
     monkeypatch.setattr(main_module, "select", forced_select)
     monkeypatch.setattr(ticker_screener_module, "select", forced_select)
 
+    async def _boom(*args, **kwargs):
+        raise AssertionError("run_llm_pipeline must not be called once the budget ceiling is blown")
+
+    monkeypatch.setattr(main_module, "run_llm_pipeline", _boom)
+
     clients = FakeClients()
     broker = MockBroker([])
     clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
     deps = _deps(db_path, clients, broker, clock)
-    assert deps.llm_enabled is False
+    deps.llm_enabled = True
+    deps.http = object()  # never dereferenced: run_llm_pipeline must not be called at all
 
     session = await main_module.current_or_next_session(clients)
     await main_module.scan_cycle(deps, session, dry_run=True)

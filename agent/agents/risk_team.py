@@ -73,15 +73,19 @@ def _account_summary(account: AccountView, portfolio: PortfolioView) -> dict:
     }
 
 
-def _risk_prompt(plan: SpreadPlan, bundle: EvidenceBundle, account: AccountView, portfolio: PortfolioView) -> str:
+def _risk_prompt(plan: SpreadPlan, account: AccountView, portfolio: PortfolioView) -> str:
+    """No EvidenceBundle here -- the personas' job (plan.md: max theoretical
+    loss vs the equity cap, width-to-credit ratio) is fully determined by the
+    plan and account/portfolio state; the analyst/debate evidence cannot
+    change that judgment and would only add ~250 tokens x 3 calls of context
+    that can't move the vote."""
     max_loss_pct_of_equity = float(plan.max_loss_per_spread) / float(account.equity) if account.equity else 0.0
     return (
         f"Proposed trade: {json.dumps(_plan_summary(plan), separators=(',', ':'))}\n"
         f"Max loss as fraction of equity for ONE spread: {max_loss_pct_of_equity:.4f} "
         f"(informational only -- the deterministic gate enforces the {MAX_RISK_PER_TRADE_PCT:.3f} "
         f"cap and the actual position size regardless of your vote)\n"
-        f"Account/portfolio state: {json.dumps(_account_summary(account, portfolio), separators=(',', ':'))}\n"
-        f"Evidence: {bundle.to_prompt_json()}"
+        f"Account/portfolio state: {json.dumps(_account_summary(account, portfolio), separators=(',', ':'))}"
     )
 
 
@@ -89,8 +93,11 @@ async def run_risk_team(
     llm: LlmPort, plan: SpreadPlan, bundle: EvidenceBundle, account: AccountView, portfolio: PortfolioView,
     *, sem: asyncio.Semaphore, sink: list[int],
 ) -> RiskTeamResult:
-    """3 parallel calls, one per persona, same context. Never raises: a dropped
-    persona is simply absent from `votes` (docs/day3_llm_plan.md Group 5).
+    """3 parallel calls, one per persona, same context. Never raises except
+    LlmBudgetExceeded, which must abort the cycle rather than be treated as a
+    dropped persona (docs/day3_llm_plan.md Group 5 error table: "propagates
+    immediately; the whole LLM layer is off for the session"). Any other
+    dropped persona is simply absent from `votes`.
 
     Personas can tighten, never loosen -- enforced by construction, not by
     convention: RESIZE votes are logged here and nowhere applied (sizing is
@@ -99,7 +106,7 @@ async def run_risk_team(
     qty), and APPROVE does nothing but count toward `votes` -- it cannot
     relax a gate or resurrect a rejected plan. Only REJECT has any effect at
     all, and only through the veto count below."""
-    prompt = _risk_prompt(plan, bundle, account, portfolio)
+    prompt = _risk_prompt(plan, account, portfolio)
 
     async def _vote(persona: str, system: str) -> RiskManagerOutput | None:
         async with sem:
@@ -107,14 +114,23 @@ async def run_risk_team(
                 return await llm.complete_json(
                     prompt, RiskManagerOutput, node=f"RISK_{persona}", system=system, sink=sink
                 )
-            except (LlmValidationDropped, LlmUnavailable, LlmBudgetExceeded) as e:
+            except LlmBudgetExceeded:
+                raise
+            except (LlmValidationDropped, LlmUnavailable) as e:
                 logger.warning("risk persona %s dropped: %s", persona, e)
                 return None
             except Exception:
                 logger.exception("risk persona %s raised an unexpected error", persona)
                 return None
 
-    results = await asyncio.gather(*(_vote(persona, system) for persona, system in _PERSONAS))
+    # return_exceptions=True for the same reason as pipeline.py's survivor
+    # gather: a bare gather() would propagate the first LlmBudgetExceeded
+    # without cancelling the other two in-flight persona calls, orphaning
+    # them past this function's return.
+    results = await asyncio.gather(*(_vote(persona, system) for persona, system in _PERSONAS), return_exceptions=True)
+    first_exception = next((r for r in results if isinstance(r, BaseException)), None)
+    if first_exception is not None:
+        raise first_exception
     votes = tuple(v for v in results if v is not None)
 
     # The veto rule, stated as code (docs/day3_llm_plan.md Group 5): two of
