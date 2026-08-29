@@ -35,7 +35,9 @@ async def get_state(conn: aiosqlite.Connection, key: str) -> dict[str, Any] | No
 
 
 async def decision_chain(conn: aiosqlite.Connection, decision_id: int) -> dict[str, Any]:
-    """decision + debates + trade"""
+    """decision + analyst_outputs + debates + debate_summary + proposal +
+    risk_votes + trade + llm_calls -- the full reasoning chain in one request
+    (docs/day3_llm_plan.md Group 5)."""
     cur = await conn.execute("SELECT * FROM decisions WHERE id = ?", (decision_id,))
     decision_row = await cur.fetchone()
 
@@ -47,8 +49,38 @@ async def decision_chain(conn: aiosqlite.Connection, decision_id: int) -> dict[s
     )
     debates = [dict(row) for row in await cur.fetchall()]
 
+    cur = await conn.execute(
+        "SELECT * FROM analyst_outputs WHERE decision_id = ? ORDER BY id", (decision_id,)
+    )
+    analyst_outputs = [dict(row) for row in await cur.fetchall()]
+
+    cur = await conn.execute(
+        "SELECT * FROM debate_summaries WHERE decision_id = ?", (decision_id,)
+    )
+    debate_summary_row = await cur.fetchone()
+
+    cur = await conn.execute(
+        "SELECT * FROM proposals WHERE decision_id = ?", (decision_id,)
+    )
+    proposal_row = await cur.fetchone()
+
+    cur = await conn.execute(
+        "SELECT * FROM risk_votes WHERE decision_id = ? ORDER BY id", (decision_id,)
+    )
+    risk_votes = [dict(row) for row in await cur.fetchall()]
+
+    cur = await conn.execute(
+        "SELECT * FROM llm_calls WHERE decision_id = ? ORDER BY id", (decision_id,)
+    )
+    llm_calls = [dict(row) for row in await cur.fetchall()]
+
     return {
         "decision": dict(decision_row) if decision_row is not None else None,
-        "trades": trades,
+        "analyst_outputs": analyst_outputs,
         "debates": debates,
+        "debate_summary": dict(debate_summary_row) if debate_summary_row is not None else None,
+        "proposal": dict(proposal_row) if proposal_row is not None else None,
+        "risk_votes": risk_votes,
+        "trades": trades,
+        "llm_calls": llm_calls,
     }

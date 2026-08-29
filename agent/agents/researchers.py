@@ -39,6 +39,14 @@ def _missing_node(persona: Literal["BULL", "BEAR"]) -> DebateNodeOutput:
     )
 
 
+def is_missing_node(node: DebateNodeOutput) -> bool:
+    """True iff this node was synthesised because its real call dropped or
+    was unavailable, rather than an actual model response -- used by
+    pipeline.py to decide 'llm' vs 'llm-degraded' mode (docs/day3_llm_plan.md
+    Group 5)."""
+    return node.volatility_view == _MISSING_VIEW
+
+
 def valid_citations(node: DebateNodeOutput, keys: frozenset[str]) -> int:
     """Count of node.evidence_cited entries containing a bundle key as a
     case-insensitive substring. Fabricated citations score zero -- this is what

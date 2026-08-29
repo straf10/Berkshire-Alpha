@@ -7,17 +7,24 @@ import json
 import logging
 import os
 import uuid
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
 import aiosqlite
+import httpx
 
+from agent.agents.pipeline import PipelineArtifacts, PipelineOutcome, run_llm_pipeline
 from agent.config import (
     ACCOUNT_START_EQUITY,
+    CONSENSUS_HIGH_THRESHOLD,
     EARNINGS_VERIFIED_ON,
+    LLM_SEMAPHORE_LIMIT,
     MANAGEMENT_INTERVAL_S,
+    NEWS_LOOKBACK_H,
+    REDDIT_POST_LIMIT,
+    REDDIT_SUBS,
     UNIVERSE,
     Settings,
     load_settings,
@@ -35,8 +42,11 @@ from agent.storage import write as storage_write
 from agent.strategy.regime import select
 from agent.strategy.spread_builder import BuildFailure, build
 from agent.strategy.ticker_screener import shortlist
+from agent.tools.llm import LlmBudget, LlmClient, LlmPort, LlmUnavailable, load_budget
 from agent.tools.market_data import ChainCache, fetch_universe_bars
+from agent.tools.news import Headline, fetch_headlines
 from agent.tools.quant import compute_all
+from agent.tools.reddit import MentionSignal, PrawReddit, mention_signals
 
 logger = logging.getLogger(__name__)
 
@@ -48,12 +58,21 @@ class Deps:
     broker: BrokerPort
     clock: ClockPort
     feed: Any  # alpaca.data.enums.DataFeed
+    # Day 3 (docs/day3_llm_plan.md Group 5): appended LAST so every Day-2
+    # Deps(...) call site keeps constructing without change.
+    llm_enabled: bool = False
+    http: httpx.AsyncClient | None = None
 
 
 async def build_deps(settings: Settings) -> Deps:
     clients = AlpacaClients(settings)
     feed = await probe_equity_feed(clients)
-    return Deps(settings=settings, clients=clients, broker=AlpacaBroker(clients), clock=RealClock(), feed=feed)
+    http = httpx.AsyncClient(base_url=settings.llm_base_url)
+    llm_enabled = bool(settings.llm_api_key)
+    return Deps(
+        settings=settings, clients=clients, broker=AlpacaBroker(clients), clock=RealClock(), feed=feed,
+        llm_enabled=llm_enabled, http=http,
+    )
 
 
 def _feed_str(feed: Any) -> str:
@@ -90,6 +109,61 @@ async def _open_defined_risk(conn: aiosqlite.Connection) -> Decimal:
     return Decimal(str(row[0]))
 
 
+def _build_llm_client(http: httpx.AsyncClient, conn: aiosqlite.Connection, budget: LlmBudget, settings: Settings) -> LlmPort:
+    """A thin, patchable factory (docs/day3_llm_plan.md Group 5) -- tests
+    monkeypatch this attribute on the module to inject a FakeLlm, the same
+    pattern already used for `select`/`build`/`ChainCache.get` in test_main.py."""
+    return LlmClient(http, conn, budget, provider=settings.llm_provider, model=settings.llm_model, api_key=settings.llm_api_key)
+
+
+async def _fetch_reddit(deps: Deps, conn: aiosqlite.Connection) -> dict[str, MentionSignal]:
+    """Reddit is Tier-2 cuttable (plan.md scope ladder): no credentials -> {}
+    without constructing PrawReddit at all, so offline tests never trip
+    conftest's PrawReddit.__init__ block by accident."""
+    if not deps.settings.reddit_client_id:
+        return {}
+    port = PrawReddit(deps.settings.reddit_client_id, deps.settings.reddit_client_secret, deps.settings.reddit_user_agent)
+    return await mention_signals(port, conn, UNIVERSE, subs=REDDIT_SUBS, limit=REDDIT_POST_LIMIT)
+
+
+async def _persist_pipeline_artifacts(conn: aiosqlite.Connection, decision_id: int, artifacts: PipelineArtifacts) -> None:
+    """Writes every artifact table AFTER the decisions row exists (FK
+    ordering, docs/day3_llm_plan.md S1c/G2), then back-links the llm_calls
+    rows written at call time with decision_id=NULL."""
+    ts = datetime.now(timezone.utc).isoformat()
+    for a in artifacts.analyst_rows:
+        await storage_write.insert_analyst_output(conn, storage_write.AnalystOutputRow(
+            decision_id=decision_id, ts_utc=ts, symbol=a.symbol, analyst=a.analyst,
+            ok=a.ok, output_json=a.output_json, error=a.error,
+        ))
+    for n in artifacts.debate_nodes:
+        await storage_write.insert_debate(conn, storage_write.DebateRow(
+            decision_id=decision_id, ts_utc=ts, round=n.round, persona=n.persona,
+            doc_action=n.doc_action, evidence_cited_json=n.evidence_cited_json,
+            volatility_view=n.volatility_view, rebuttal_argument=n.rebuttal_argument,
+        ))
+    if artifacts.debate_summary is not None:
+        s = artifacts.debate_summary
+        await storage_write.insert_debate_summary(conn, storage_write.DebateSummaryRow(
+            decision_id=decision_id, ts_utc=ts, rounds_run=s.rounds_run,
+            consensus_score=s.consensus_score, verdict=s.verdict, terminated_early=s.terminated_early,
+        ))
+    if artifacts.proposal_row is not None:
+        p = artifacts.proposal_row
+        await storage_write.insert_proposal(conn, storage_write.ProposalRow(
+            decision_id=decision_id, ts_utc=ts, proposal_json=p.proposal_json,
+            accepted=p.accepted, reject_reason=p.reject_reason,
+        ))
+    for v in artifacts.risk_rows:
+        await storage_write.insert_risk_vote(conn, storage_write.RiskVoteRow(
+            decision_id=decision_id, ts_utc=ts, persona=v.persona, decision=v.decision,
+            max_loss_acceptable=v.max_loss_acceptable,
+            risk_reward_ratio_acceptable=v.risk_reward_ratio_acceptable, manager_notes=v.manager_notes,
+        ))
+    if artifacts.llm_call_ids:
+        await storage_write.update_llm_calls_decision_id(conn, artifacts.llm_call_ids, decision_id)
+
+
 def _format_metrics_line(q) -> str:
     return (
         f"[{q.symbol:<4}] VRP {q.vrp_ratio:.2f}  RV20 {q.rv_20:.3f}  IV_ATM {q.iv_atm:.3f}  "
@@ -112,21 +186,93 @@ def _format_regime_action_line(regime_decision, plan: SpreadPlan | None) -> str:
     )
 
 
-def _format_gate_line(gate_decision: GateDecision | None) -> str:
+def _format_analysts_line(outcome: PipelineOutcome) -> str:
+    """docs/day3_llm_plan.md Group 5 DoD block: 'Analysts: quant=.../...  news=...  sentiment=+x.xx(c)  score N.NN'."""
+    quant = news = sentiment = None
+    for a in outcome.artifacts.analyst_rows:
+        if not a.ok or not a.output_json:
+            continue
+        data = json.loads(a.output_json)
+        if a.analyst == "QUANT":
+            quant = f"{data['iv_rv_interpretation']}/{data['directional_momentum']}"
+        elif a.analyst == "NEWS":
+            news = data["expected_impact"]
+        elif a.analyst == "SENTIMENT":
+            sentiment = f"{data['sentiment_score']:+.2f}({data['confidence']:.1f})"
+    parts = []
+    if quant is not None:
+        parts.append(f"quant={quant}")
+    if news is not None:
+        parts.append(f"news={news}")
+    if sentiment is not None:
+        parts.append(f"sentiment={sentiment}")
+    parts.append(f"score {outcome.analyst_score:.2f}")
+    return f"       Analysts: {'  '.join(parts)}"
+
+
+def _format_debate_line(outcome: PipelineOutcome) -> str:
+    nodes = outcome.artifacts.debate_nodes
+    summary = outcome.artifacts.debate_summary
+    if not nodes or summary is None:
+        return ""
+    pair = nodes[:2] if (summary.terminated_early or summary.rounds_run == 1) else nodes[-2:]
+    bull = next((n for n in pair if n.persona == "BULL"), None)
+    bear = next((n for n in pair if n.persona == "BEAR"), None)
+    bull_str = f"BULL {bull.doc_action} ({len(json.loads(bull.evidence_cited_json))} cites)" if bull else "BULL --"
+    bear_str = f"BEAR {bear.doc_action} ({len(json.loads(bear.evidence_cited_json))} cites)" if bear else "BEAR --"
+    if summary.terminated_early:
+        verdict_str = f"SPRT TERMINATED R{summary.rounds_run}"
+    elif summary.verdict == "CONSENSUS_ROUND_2":
+        verdict_str = "CONSENSUS R2"
+    else:
+        verdict_str = "UNRESOLVED"
+    op = ">=" if summary.consensus_score >= CONSENSUS_HIGH_THRESHOLD else "<"
+    return (
+        f"       Debate:   {bull_str} | {bear_str} -> consensus {summary.consensus_score:.2f} "
+        f"{op} {CONSENSUS_HIGH_THRESHOLD:.2f}, {verdict_str}"
+    )
+
+
+def _format_trader_line(outcome: PipelineOutcome) -> str:
+    if outcome.plan is None or outcome.artifacts.proposal_row is None:
+        return ""
+    plan = outcome.plan
+    proposal = json.loads(outcome.artifacts.proposal_row.proposal_json)
+    side = "SELL" if STRUCTURE_IS_CREDIT[plan.structure] else "BUY"
+    short_leg = next(leg for leg in plan.legs if leg.side == "SELL")
+    long_leg = next(leg for leg in plan.legs if leg.side == "BUY")
+    legs_str = f"{int(short_leg.strike)}{short_leg.right}/{int(long_leg.strike)}{long_leg.right}"
+    return (
+        f"       Trader:   {side} {plan.structure.value.replace('_', ' ')} {plan.expiry.isoformat()}  "
+        f"{legs_str}  conf {proposal['confidence_score']:.2f}"
+    )
+
+
+def _format_risk_line(outcome: PipelineOutcome) -> str:
+    votes = outcome.artifacts.risk_rows
+    if not votes:
+        return ""
+    return f"       Risk:     {' | '.join(f'{v.persona} {v.decision}' for v in votes)}"
+
+
+def _format_gate_line(gate_decision: GateDecision | None, *, mode: str, budget: LlmBudget | None) -> str:
     if gate_decision is None:
         return ""
+    spend_str = f"  spend ${float(budget.spent_usd):.3f}/${float(budget.ceiling_usd):.2f}" if budget is not None else ""
     if gate_decision.approved:
-        return f"       Gate: APPROVED (qty={gate_decision.qty})"
+        return f"       Gate: APPROVED (qty={gate_decision.qty})  mode={mode}{spend_str}"
     detail = ""
     if gate_decision.observed_value is not None:
         detail = f" observed={gate_decision.observed_value:.2f} threshold={gate_decision.threshold_value:.2f}"
-    return f"       Gate: REJECTED ({gate_decision.reason.value}{detail})"
+    return f"       Gate: REJECTED ({gate_decision.reason.value}{detail})  mode={mode}{spend_str}"
 
 
 async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list[GateDecision]:
     """One entry scan. Order is fixed by data dependency (docs/day2_spine_plan.md
-    Group 6): CLI health -> bars -> chains -> quant -> shortlist -> positions/greeks
-    -> per-candidate regime/build/gate -> persist every candidate -> walk approved."""
+    Group 6, extended by docs/day3_llm_plan.md Group 5 step 8): CLI health ->
+    bars -> chains -> quant -> shortlist -> positions/greeks -> news/reddit ->
+    LLM pipeline (or quant-only fallback) -> per-candidate gate -> persist
+    every candidate (+ LLM artifacts) -> walk approved."""
     cycle_id = str(uuid.uuid4())
     ts_utc = datetime.now(timezone.utc).isoformat()
     earnings_armed = EARNINGS_VERIFIED_ON is not None
@@ -174,6 +320,35 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
         drawdown_pct = float((account.equity - ACCOUNT_START_EQUITY) / ACCOUNT_START_EQUITY)
         buying_power = account.options_buying_power if account.options_buying_power is not None else account.buying_power
 
+        # docs/day3_llm_plan.md Group 5 step 6b/9: the budget is loaded on
+        # EVERY cycle, LLM-enabled or not -- a ceiling blown earlier in the
+        # session must still block new entries on the quant-only path.
+        budget = await load_budget(conn, session.session_date.isoformat())
+
+        outcomes_by_symbol: dict[str, PipelineOutcome] = {}
+        run_llm_this_cycle = deps.llm_enabled and not budget.exhausted and bool(candidates) and deps.http is not None
+        if run_llm_this_cycle:
+            since = now_utc - timedelta(hours=NEWS_LOOKBACK_H)
+            news_by_symbol, mentions_by_symbol = await asyncio.gather(
+                fetch_headlines(deps.clients, UNIVERSE, since),
+                _fetch_reddit(deps, conn),
+            )
+            llm_client = _build_llm_client(deps.http, conn, budget, deps.settings)
+            sem = asyncio.Semaphore(LLM_SEMAPHORE_LIMIT)
+            sinks: dict[str, list[int]] = {c.snapshot.symbol: [] for c in candidates}
+            try:
+                outcomes = await run_llm_pipeline(
+                    llm_client, candidates, chain_cache, news_by_symbol, mentions_by_symbol,
+                    account, portfolio, session.trading_days, sem=sem, sinks=sinks,
+                )
+                outcomes_by_symbol = {o.symbol: o for o in outcomes}
+            except LlmUnavailable as e:
+                # Covers LlmBudgetExceeded too (a subclass) -- either way the
+                # remainder of THIS cycle degrades to quant-only. The shared
+                # `budget` object was already mutated by every attempted call,
+                # so ctx.llm_budget_exhausted below still reflects reality.
+                logger.warning("LLM pipeline degraded to quant-only for this cycle: %s", e)
+
         for q in snapshots:
             regime_decision = select(q)
             plan: SpreadPlan | None = None
@@ -185,6 +360,9 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
             observed_value = regime_decision.observed
             threshold_value = regime_decision.threshold
             qty_val: int | None = None
+            mode = "quant-only"
+            outcome: PipelineOutcome | None = None
+            build_failure: str | None = None
 
             if regime_decision.regime != Regime.NO_TRADE:
                 if q.symbol not in shortlisted_symbols:
@@ -192,12 +370,26 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
                     observed_value = threshold_value = None
                 else:
                     chain = chain_cache.get(q.symbol)
-                    build_result = build(q, regime_decision, chain) if chain is not None else BuildFailure.NO_LONG_STRIKE_AVAILABLE
-                    if isinstance(build_result, BuildFailure):
-                        gate_reason = gate_detail = build_result.value
+                    outcome = outcomes_by_symbol.get(q.symbol)
+                    if outcome is not None:
+                        mode = outcome.mode
+                        plan = outcome.plan
+                        build_failure = None if plan is not None else outcome.reason
+                    else:
+                        build_result = build(q, regime_decision, chain) if chain is not None else BuildFailure.NO_LONG_STRIKE_AVAILABLE
+                        if isinstance(build_result, BuildFailure):
+                            build_failure = build_result.value
+                        else:
+                            plan = build_result
+
+                    if plan is None:
+                        gate_reason = gate_detail = build_failure
                         observed_value = threshold_value = None
                     else:
-                        plan = build_result
+                        # docs/day3_llm_plan.md Group 5 property 1: exactly ONE
+                        # evaluate(plan, ctx) call site -- an LLM-sourced plan
+                        # and a deterministic plan are the same SpreadPlan type
+                        # reaching the same function, here.
                         plan_json = json.dumps(dataclasses.asdict(plan), default=str)
                         chain_symbols = chain.symbols() if chain is not None else frozenset()
                         ctx = GateContext(
@@ -208,6 +400,7 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
                             portfolio=portfolio, session_date=session.session_date,
                             past_entry_cutoff=past_entry_cutoff, reduce_only=reduce_only,
                             chain_symbols=chain_symbols, earnings_armed=earnings_armed,
+                            llm_budget_exhausted=budget.exhausted,
                         )
                         gate_decision = evaluate(plan, ctx)
                         decisions.append(gate_decision)
@@ -220,7 +413,7 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
 
             row = storage_write.DecisionRow(
                 ts_utc=ts_utc, cycle_id=cycle_id, session_date=session.session_date.isoformat(),
-                symbol=q.symbol, mode="quant-only", regime=regime_decision.regime.value,
+                symbol=q.symbol, mode=mode, regime=regime_decision.regime.value,
                 structure=plan.structure.value if plan is not None else None, action=action,
                 gate_reason=gate_reason, gate_detail=gate_detail, observed_value=observed_value,
                 threshold_value=threshold_value, qty=qty_val, equity_feed=_feed_str(deps.feed),
@@ -229,9 +422,19 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
             )
             decision_id = await storage_write.insert_decision(conn, row)
 
+            if outcome is not None:
+                await _persist_pipeline_artifacts(conn, decision_id, outcome.artifacts)
+
             print(_format_metrics_line(q))
             print(_format_regime_action_line(regime_decision, plan))
-            gate_line = _format_gate_line(gate_decision)
+            if outcome is not None:
+                for line in (
+                    _format_analysts_line(outcome), _format_debate_line(outcome),
+                    _format_trader_line(outcome), _format_risk_line(outcome),
+                ):
+                    if line:
+                        print(line)
+            gate_line = _format_gate_line(gate_decision, mode=mode, budget=budget if run_llm_this_cycle else None)
             if gate_line:
                 print(gate_line)
 
@@ -262,7 +465,8 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
 async def management_tick(deps: Deps, session: SessionPlan) -> None:
     """Day-2 scope only: re-snapshot greeks for held legs (one batched call),
     write greeks_snapshots, and refresh agent_state. Exits, the 2-DTE time
-    stop, and the unwind are Day 3."""
+    stop, and the unwind are Day 4 (docs/day3_llm_plan.md S0.1). Makes no LLM
+    call and reads no budget -- the spend ceiling halts new entries only."""
     async with storage_db.connect(deps.settings.db_path) as conn:
         try:
             account = await cli_bridge.get_account()
@@ -344,6 +548,11 @@ async def main() -> None:
     parser.add_argument("--live", action="store_true", help="place real paper orders")
     parser.add_argument("--i-will-supervise", action="store_true", dest="i_will_supervise")
     parser.add_argument("--once", action="store_true", help="run a single scan_cycle and exit")
+    parser.add_argument("--llm", dest="llm", action="store_true", default=None, help="force-enable the LLM pipeline")
+    parser.add_argument(
+        "--no-llm", dest="llm", action="store_false",
+        help="force-disable the LLM pipeline -- reproduces the Day-2 quant-only spine byte-for-byte",
+    )
     args = parser.parse_args()
 
     if args.live and not args.i_will_supervise:
@@ -363,6 +572,10 @@ async def main() -> None:
 
     await storage_db.init_db(settings.db_path)
     deps = await build_deps(settings)
+    if args.llm is not None:
+        deps.llm_enabled = args.llm
+    if not deps.llm_enabled:
+        logger.info("LLM pipeline disabled for this run (--no-llm or no FEATHERLESS_API_KEY) -- quant-only spine")
 
     try:
         open_orders = await cli_bridge.list_orders(status="open")
