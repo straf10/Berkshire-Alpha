@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Mapping, Sequence
 
-from agent.agents.analysts import AnalystResult, run_analysts, select_top
+from agent.agents.analysts import AnalystResult, analyst_score, run_analysts, select_top
 from agent.agents.researchers import DebateResult, Verdict, is_missing_node, run_debate
 from agent.agents.risk_team import AccountView, PortfolioView, RiskTeamResult, run_risk_team
 from agent.agents.trader import ProposalFailure, propose
@@ -93,6 +93,11 @@ class PipelineOutcome:
     mode: str                          # 'llm' | 'llm-degraded'
     reason: str                        # DEBATE_UNRESOLVED | RISK_TEAM_VETO | ProposalFailure member | NOT_TOP_DEBATE_CANDIDATE | 'OK'
     artifacts: PipelineArtifacts
+    # main.py's DoD print line ('Analysts: ... score N.NN') reads this
+    # directly rather than recomputing it from artifacts.analyst_rows, which
+    # would require re-parsing every analyst's output_json back into a
+    # Pydantic model just to re-derive a number already computed once here.
+    analyst_score: float = 0.0
 
 
 _ANALYST_FIELDS: tuple[tuple[str, str], ...] = (
@@ -178,6 +183,7 @@ async def run_llm_pipeline(
         if debate.verdict == Verdict.UNRESOLVED:
             return PipelineOutcome(
                 symbol=symbol, plan=None, mode=mode, reason="DEBATE_UNRESOLVED",
+                analyst_score=analyst_score(r),
                 artifacts=PipelineArtifacts(
                     analyst_rows=analyst_artifacts, debate_nodes=_debate_artifacts(debate),
                     debate_summary=_debate_summary_artifact(debate), llm_call_ids=tuple(sink),
@@ -193,6 +199,7 @@ async def run_llm_pipeline(
         if isinstance(proposal_result, ProposalFailure):
             return PipelineOutcome(
                 symbol=symbol, plan=None, mode=mode, reason=proposal_result.value,
+                analyst_score=analyst_score(r),
                 artifacts=PipelineArtifacts(
                     analyst_rows=analyst_artifacts, debate_nodes=_debate_artifacts(debate),
                     debate_summary=_debate_summary_artifact(debate), llm_call_ids=tuple(sink),
@@ -205,6 +212,7 @@ async def run_llm_pipeline(
         if risk_result.vetoed:
             return PipelineOutcome(
                 symbol=symbol, plan=None, mode=mode, reason="RISK_TEAM_VETO",
+                analyst_score=analyst_score(r),
                 artifacts=PipelineArtifacts(
                     analyst_rows=analyst_artifacts, debate_nodes=_debate_artifacts(debate),
                     debate_summary=_debate_summary_artifact(debate),
@@ -215,6 +223,7 @@ async def run_llm_pipeline(
 
         return PipelineOutcome(
             symbol=symbol, plan=plan, mode=mode, reason="OK",
+            analyst_score=analyst_score(r),
             artifacts=PipelineArtifacts(
                 analyst_rows=analyst_artifacts, debate_nodes=_debate_artifacts(debate),
                 debate_summary=_debate_summary_artifact(debate),
@@ -231,7 +240,7 @@ async def run_llm_pipeline(
     other_outcomes = [
         PipelineOutcome(
             symbol=r.symbol, plan=None, mode="llm-degraded" if r.failures else "llm",
-            reason="NOT_TOP_DEBATE_CANDIDATE",
+            reason="NOT_TOP_DEBATE_CANDIDATE", analyst_score=analyst_score(r),
             artifacts=PipelineArtifacts(analyst_rows=_analyst_artifacts(r), llm_call_ids=tuple(sinks[r.symbol])),
         )
         for r in others

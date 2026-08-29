@@ -222,6 +222,110 @@ async def test_dry_run_prints_expected_line(tmp_path, monkeypatch: pytest.Monkey
     assert "SELL BULL PUT SPREAD" in out
 
 
+async def test_dry_run_prints_llm_line(tmp_path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    """The Day-3 definition of done (docs/day3_llm_plan.md): with the LLM
+    pipeline enabled, scan_cycle's printed output shows the debate verdict
+    and mode=llm on the gate line. run_llm_pipeline's own internals (analysts
+    -> debate -> trader -> risk) are exercised by test_pipeline.py; this test
+    is about scan_cycle actually reaching and printing an 'OK' PipelineOutcome
+    end to end, not re-deriving pipeline.py's logic."""
+    from agent.agents.pipeline import (
+        DebateArtifact,
+        DebateSummaryArtifact,
+        PipelineArtifacts,
+        PipelineOutcome,
+        ProposalArtifact,
+        RiskVoteArtifact,
+    )
+    from agent.execution.broker import OrderState
+    from agent.schemas.execution import (
+        Intent,
+        Leg,
+        OrderStatus as _OrderStatus,
+        Regime,
+        SpreadPlan,
+        Structure,
+    )
+    from agent.strategy.regime import RegimeDecision
+    from agent.strategy.regime import select as real_select
+
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    _patch_cli(monkeypatch)
+
+    import agent.strategy.ticker_screener as ticker_screener_module
+
+    def forced_select(q):
+        if q.symbol == "SPY" and q.data_ok:
+            return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
+        return real_select(q)
+
+    monkeypatch.setattr(main_module, "select", forced_select)
+    monkeypatch.setattr(ticker_screener_module, "select", forced_select)
+    monkeypatch.setattr(main_module, "fetch_headlines", lambda *a, **k: _immediate({}))
+    monkeypatch.setattr(main_module, "_fetch_reddit", lambda *a, **k: _immediate({}))
+
+    plan = SpreadPlan(
+        symbol="SPY", structure=Structure.BULL_PUT_SPREAD, regime=Regime.CREDIT,
+        expiry=date(2026, 9, 4), dte=4,
+        legs=(
+            Leg(occ_symbol="SPY260904P00100000", strike=100.0, right="P", side="SELL", ratio_qty=1,
+                intent=Intent.SELL_TO_OPEN, delta=-0.275, vega=0.05, bid=1.0, ask=1.1),
+            Leg(occ_symbol="SPY260904P00097000", strike=97.0, right="P", side="BUY", ratio_qty=1,
+                intent=Intent.BUY_TO_OPEN, delta=-0.10, vega=0.03, bid=0.2, ask=0.3),
+        ),
+        width=3.0, net_mid=Decimal("-0.90"), net_natural=Decimal("-0.75"),
+        max_profit_per_spread=Decimal("90"), max_loss_per_spread=Decimal("210"),
+        p_success=0.72, spot=100.0, short_leg_delta=0.275,
+    )
+    outcome = PipelineOutcome(
+        symbol="SPY", plan=plan, mode="llm", reason="OK",
+        artifacts=PipelineArtifacts(
+            debate_nodes=(
+                DebateArtifact(round=1, persona="BULL", doc_action="COMMIT", evidence_cited_json="[]",
+                               volatility_view="v", rebuttal_argument="r"),
+                DebateArtifact(round=1, persona="BEAR", doc_action="COMMIT", evidence_cited_json="[]",
+                               volatility_view="v", rebuttal_argument="r"),
+            ),
+            debate_summary=DebateSummaryArtifact(rounds_run=1, consensus_score=0.9,
+                                                  verdict="CONSENSUS_ROUND_1", terminated_early=True),
+            proposal_row=ProposalArtifact(
+                proposal_json='{"confidence_score": 0.8}', accepted=True, reject_reason=None,
+            ),
+            risk_rows=(RiskVoteArtifact(persona="AGGRESSIVE", decision="APPROVE", max_loss_acceptable=True,
+                                         risk_reward_ratio_acceptable=True, manager_notes="x"),),
+        ),
+    )
+
+    async def fake_run_llm_pipeline(*args, **kwargs):
+        return [outcome]
+
+    monkeypatch.setattr(main_module, "run_llm_pipeline", fake_run_llm_pipeline)
+
+    clients = FakeClients()
+    broker = MockBroker([
+        OrderState(order_id="o1", status=_OrderStatus.FILLED, limit_price=Decimal("-0.90"),
+                   filled_qty=1, total_qty=1, fill_avg_price=Decimal("-0.90"), reject_code=None, reject_message=None),
+    ])
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+    deps.llm_enabled = True
+    deps.http = object()  # never dereferenced: run_llm_pipeline is monkeypatched above
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.scan_cycle(deps, session, dry_run=True)
+
+    out = capsys.readouterr().out
+    assert "SPRT TERMINATED R1" in out
+    assert "mode=llm" in out
+
+
+def _immediate(value):
+    async def _coro():
+        return value
+    return _coro()
+
+
 async def test_scan_cycle_call_counts(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_path = str(tmp_path / "agent.db")
     await storage_db.init_db(db_path)
@@ -468,6 +572,92 @@ async def test_aggregate_risk_accumulates_in_cycle(tmp_path, monkeypatch: pytest
         rows = {r[0]: r[1] for r in await cur.fetchall()}
     assert rows["SPY"] == "APPROVED"
     assert rows["NVDA"] == "MAX_AGGREGATE_RISK"
+
+
+async def test_budget_ceiling_blocks_entries_not_management(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A spend ceiling blown earlier in the session must still block new
+    entries on the quant-only path -- budget is loaded every cycle regardless
+    of deps.llm_enabled (docs/day3_llm_plan.md Group 5 property 3). Also
+    confirms zero LLM calls happen: deps.llm_enabled stays False here, so a
+    bug that routed around the ceiling check would show up as an approved
+    trade, not as an unexpected LLM call."""
+    from agent.config import LLM_DAILY_SPEND_CEILING_USD
+    from agent.storage.write import LlmCallRow, insert_llm_call
+
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    async with storage_db.connect(db_path) as conn:
+        await insert_llm_call(conn, LlmCallRow(
+            ts_utc=f"{SESSION_DATE.isoformat()}T12:00:00+00:00", node="QUANT", provider="featherless",
+            model="m", prompt_tokens=0, completion_tokens=0, latency_ms=0,
+            est_cost_usd=LLM_DAILY_SPEND_CEILING_USD + Decimal("1.00"), ok=True,
+        ))
+
+    _patch_cli(monkeypatch, positions=[])
+
+    import agent.strategy.ticker_screener as ticker_screener_module
+    from agent.strategy.regime import RegimeDecision
+    from agent.strategy.regime import select as real_select
+    from agent.schemas.execution import Regime, Structure
+
+    def forced_select(q):
+        if q.symbol == "SPY" and q.data_ok:
+            return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
+        return real_select(q)
+
+    monkeypatch.setattr(main_module, "select", forced_select)
+    monkeypatch.setattr(ticker_screener_module, "select", forced_select)
+
+    clients = FakeClients()
+    broker = MockBroker([])
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+    assert deps.llm_enabled is False
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.scan_cycle(deps, session, dry_run=True)
+
+    assert broker.submitted == []
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT gate_reason FROM decisions WHERE symbol = 'SPY'")
+        row = await cur.fetchone()
+    assert row[0] == "LLM_BUDGET_CEILING"
+
+    # management_tick makes no LLM call and reads no budget -- it must still
+    # write a greeks_snapshots row with the ceiling blown.
+    await main_module.management_tick(deps, session)
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT COUNT(*) FROM greeks_snapshots")
+        count = (await cur.fetchone())[0]
+    assert count == 1
+
+
+async def test_llm_disabled_never_calls_pipeline(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """deps.llm_enabled=False (the --no-llm / no-API-key default) must never
+    invoke run_llm_pipeline -- the Day-2 quant-only spine, byte for byte
+    (docs/day3_llm_plan.md Group 5 property 5)."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    _patch_cli(monkeypatch, positions=[])
+
+    async def _boom(*args, **kwargs):
+        raise AssertionError("run_llm_pipeline must not be called when llm_enabled is False")
+
+    monkeypatch.setattr(main_module, "run_llm_pipeline", _boom)
+
+    clients = FakeClients()
+    broker = MockBroker([])
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+    assert deps.llm_enabled is False and deps.http is None
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.scan_cycle(deps, session, dry_run=True)
+
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT DISTINCT mode FROM decisions")
+        modes = {r[0] for r in await cur.fetchall()}
+    assert modes == {"quant-only"}
 
 
 async def test_supervised_loop_restarts(monkeypatch: pytest.MonkeyPatch) -> None:
