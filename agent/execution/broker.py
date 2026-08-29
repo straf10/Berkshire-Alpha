@@ -4,14 +4,14 @@ import asyncio
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Protocol, Sequence
+from typing import Any, Literal, Protocol, Sequence
 
 from alpaca.common.exceptions import APIError
 from alpaca.trading.enums import OrderClass, OrderSide, PositionIntent, TimeInForce
 from alpaca.trading.requests import LimitOrderRequest, OptionLegRequest
 
 from agent.execution.alpaca_client import AlpacaClients
-from agent.schemas.execution import OrderStatus, RejectCode, SpreadPlan
+from agent.schemas.execution import Intent, OrderStatus, RejectCode, SpreadPlan
 
 # alpaca.* imports confined to this module, alpaca_client.py, and
 # tools/market_data.py -- enforced by agent/tests/test_no_blocking_sdk.py.
@@ -34,6 +34,8 @@ class BrokerPort(Protocol):
     async def get_order(self, order_id: str) -> OrderState: ...
     async def replace_order(self, order_id: str, limit: Decimal) -> OrderState: ...
     async def cancel_order(self, order_id: str) -> None: ...
+    async def submit_close(self, symbol: str, qty: int, side: Literal["BUY", "SELL"],
+                            limit: Decimal, intent: Intent) -> OrderState: ...
 
 
 class ClockPort(Protocol):
@@ -87,6 +89,28 @@ def _build_mleg_request(plan: SpreadPlan, qty: int, limit: Decimal) -> LimitOrde
             )
             for leg in plan.legs
         ],
+    )
+
+
+def _build_close_request(symbol: str, qty: int, side: Literal["BUY", "SELL"],
+                          limit: Decimal, intent: Intent) -> LimitOrderRequest:
+    """Single-instrument marketable-limit CLOSE -- the only non-mleg order
+    shape in the project. Serves both the assigned-equity liquidation and
+    the orphaned single option leg (OrderClass.MLEG requires 2-4 legs, so a
+    lone option leg cannot go through _build_mleg_request either).
+
+    Raises on a non-closing intent: plan.md's C3 carve-out permits
+    liquidating an ASSIGNED equity position and nothing else, so 'this path
+    can never open a position' is enforced here rather than asserted in a
+    comment -- position_intent is also broker-enforced, so if the position
+    vanishes between detection and submission Alpaca rejects rather than
+    opening a fresh one."""
+    if intent not in (Intent.BUY_TO_CLOSE, Intent.SELL_TO_CLOSE):
+        raise ValueError(f"_build_close_request is closing-only, got {intent}")
+    return LimitOrderRequest(
+        symbol=symbol, qty=qty, side=OrderSide(side.lower()),
+        limit_price=float(limit), time_in_force=TimeInForce.DAY,
+        position_intent=PositionIntent(intent.value.lower()),
     )
 
 
@@ -150,6 +174,20 @@ class AlpacaBroker:
     async def cancel_order(self, order_id: str) -> None:
         await self._clients.cancel_order(order_id)
 
+    async def submit_close(self, symbol: str, qty: int, side: Literal["BUY", "SELL"],
+                            limit: Decimal, intent: Intent) -> OrderState:
+        req = _build_close_request(symbol, qty, side, limit, intent)
+        try:
+            order = await self._clients.submit_order(req)
+        except APIError as e:
+            code = classify_reject(e.status_code or 0, str(e))
+            return OrderState(
+                order_id="", status=OrderStatus.REJECTED, limit_price=limit,
+                filled_qty=0, total_qty=qty, fill_avg_price=None,
+                reject_code=code, reject_message=str(e)[:500],
+            )
+        return _order_state_from_sdk(order)
+
 
 class MockBroker:
     """Fixture-driven, deterministic -- the only broker any default-marked
@@ -162,6 +200,7 @@ class MockBroker:
         self._i = 0
         self.replace_mints_new_id = replace_mints_new_id
         self.submitted: list[tuple[SpreadPlan, int, Decimal]] = []
+        self.closes: list[tuple[str, int, str, Decimal, Intent]] = []
         self.replaced: list[tuple[str, Decimal]] = []
         self.cancelled: list[str] = []
         self.get_order_calls: list[str] = []
@@ -190,3 +229,8 @@ class MockBroker:
 
     async def cancel_order(self, order_id: str) -> None:
         self.cancelled.append(order_id)
+
+    async def submit_close(self, symbol: str, qty: int, side: Literal["BUY", "SELL"],
+                            limit: Decimal, intent: Intent) -> OrderState:
+        self.closes.append((symbol, qty, side, limit, intent))
+        return self._next()

@@ -31,7 +31,7 @@ EARNINGS_DATES: Final[dict[str, date | None]] = {
 # Judged paper account, created Day 1 (README.md). Not a secret — an account
 # number, not a credential. cli_bridge.health() refuses to report healthy
 # against any other account.
-JUDGED_ACCOUNT_NUMBER: Final[str] = "PA3319FCQCPN"
+JUDGED_ACCOUNT_NUMBER: Final[str] = "PA3UM9X4MN5X"
 
 VRP_CREDIT_MIN: Final[float] = 1.25
 VRP_DEBIT_MAX: Final[float] = 1.00
@@ -117,6 +117,13 @@ NEWS_LOOKBACK_H: Final[int] = 24
 NEWS_MAX_HEADLINES: Final[int] = 10
 SENTIMENT_MAX_POSTS_IN_PROMPT: Final[int] = 8
 STRIKE_TABLE_SPAN: Final[int] = 6
+
+# Values introduced by the assignment reconciliation plan
+# (docs/assignment_reconciliation_plan.md §0.3). plan.md is silent on all
+# three; each is reviewable here rather than buried at its call site.
+EQUITY_LIQUIDATION_SLIP_PCT: Final[Decimal] = Decimal("0.01")
+ASSIGNMENT_ORDER_POLL_S: Final[float] = 30.0
+SHARES_PER_CONTRACT: Final[int] = 100
 
 
 @dataclass(frozen=True)
