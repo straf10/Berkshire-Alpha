@@ -3,7 +3,7 @@ this project. Not vendored, forked, or paraphrased from the TauricResearch
 TradingAgents repo -- that paper is cited in the README as a design
 reference for the multi-agent debate pattern, nothing more. This is the one
 file in the tree where that originality boundary actually matters
-(docs/day3-llm-plan.md Group 3), so it is stated here rather than only in
+(docs/day3_llm_plan.md Group 3), so it is stated here rather than only in
 prose elsewhere.
 """
 

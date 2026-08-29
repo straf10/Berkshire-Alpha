@@ -11,7 +11,7 @@ from agent.tools.reddit import MentionSignal
 
 # The DoC protocol is only meaningful if "cited evidence" is checkable. This
 # structure produces both the prompt payload and the citation whitelist, so
-# they cannot drift (docs/day3-llm-plan.md Group 3).
+# they cannot drift (docs/day3_llm_plan.md Group 3).
 
 
 @dataclass(frozen=True)

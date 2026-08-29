@@ -76,7 +76,7 @@ async def run_analysts(
 ) -> list[AnalystResult]:
     """3 x len(candidates) calls, ONE asyncio.gather, bounded by `sem`. Never
     raises except LlmBudgetExceeded (propagates immediately) or LlmUnavailable
-    when >= half the wave failed (docs/day3-llm-plan.md Group 3)."""
+    when >= half the wave failed (docs/day3_llm_plan.md Group 3)."""
 
     async def _bounded(coro):
         async with sem:
@@ -139,7 +139,7 @@ async def run_analysts(
 
 
 def analyst_score(r: AnalystResult) -> float:
-    """[NEW] docs/day3-llm-plan.md Group 3: 0.50*quant + 0.30*news + 0.20*sentiment,
+    """[NEW] docs/day3_llm_plan.md Group 3: 0.50*quant + 0.30*news + 0.20*sentiment,
     each in [0,1], measuring AGREEMENT WITH THE DETERMINISTIC STRUCTURE'S
     DIRECTION. A missing analyst scores 0.5 (neutral) and its weight is NOT
     redistributed, so a candidate is never advantaged by having fewer opinions."""

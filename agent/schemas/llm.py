@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 # 2.10.4, where those kwargs still work but emit DeprecationWarning (removed
 # in v3), so they are transcribed here using pydantic v2's equivalent
 # length-constraint kwargs instead -- identical semantics, identical JSON
-# Schema output, no warning (docs/day3-llm-plan.md S0.5).
+# Schema output, no warning (docs/day3_llm_plan.md S0.5).
 
 
 class QuantAnalystOutput(BaseModel):
@@ -56,7 +56,7 @@ class RiskManagerOutput(BaseModel):
 
 
 # plan.md defines no schema for the sentiment and news analysts -- [NEW],
-# docs/day3-llm-plan.md Group 3, same house style as the five models above.
+# docs/day3_llm_plan.md Group 3, same house style as the five models above.
 
 
 class SentimentAnalystOutput(BaseModel):

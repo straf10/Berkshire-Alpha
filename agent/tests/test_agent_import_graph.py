@@ -1,4 +1,4 @@
-"""The invariant docs/day3-llm-plan.md S0.2 exists to protect: the LLM
+"""The invariant docs/day3_llm_plan.md S0.2 exists to protect: the LLM
 proposes, the deterministic gate sizes and approves. agent/agents/* returns
 values; the orchestrator (agent/main.py, agent/agents/pipeline.py) is the
 only code that persists or executes."""
