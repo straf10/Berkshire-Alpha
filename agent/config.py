@@ -12,11 +12,17 @@ UNIVERSE: Final[tuple[str, ...]] = (
     "SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMD", "TSLA", "META", "AMZN", "GOOGL",
 )
 
-# Manually verified on Day 1 per plan.md ("Alpaca provides no earnings calendar").
+# Verified 2026-08-29 per plan.md ("Alpaca provides no earnings calendar").
 # None == verified as having no scheduled report inside the hackathon window.
+# SPY/QQQ are ETFs, no earnings. AMD (reported Aug 4) and NVDA (reported
+# Aug 26) already reported before this window; their next reports are
+# ~Nov 3 and ~Nov 25 respectively. AAPL (Oct 29), AMZN (Oct 31), META
+# (Oct 28), MSFT (~Oct 28, estimated), TSLA (~Oct 28, estimated), and GOOGL
+# (~Oct 27, estimated) all report in late October -- well outside any 3-7
+# DTE expiry this window can produce (latest possible expiry ~11 Sep).
 # EARNINGS_VERIFIED_ON must be set by a human; main.py refuses to arm the
 # earnings gate while it is None.
-EARNINGS_VERIFIED_ON: Final[date | None] = None
+EARNINGS_VERIFIED_ON: Final[date | None] = date(2026, 8, 29)
 EARNINGS_DATES: Final[dict[str, date | None]] = {
     "SPY": None, "QQQ": None, "AAPL": None, "MSFT": None, "NVDA": None,
     "AMD": None, "TSLA": None, "META": None, "AMZN": None, "GOOGL": None,

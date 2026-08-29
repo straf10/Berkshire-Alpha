@@ -27,4 +27,4 @@ ENV AGENT_DB_PATH=/data/agent.db ALPACA_CLI_PATH=/usr/local/bin/alpaca
 # /data is a Railway Volume mounted at deploy time, not a Docker VOLUME --
 # Railway's builder rejects the VOLUME instruction outright.
 
-CMD ["python", "-m", "agent.main"]
+CMD ["python", "-m", "agent.main", "--live"]
