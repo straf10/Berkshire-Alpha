@@ -585,6 +585,37 @@ async def management_tick(deps: Deps, session: SessionPlan) -> None:
         await storage_write.put_state(conn, "positions", [p.symbol for p in positions])
 
 
+def _next_action(session: SessionPlan, now_utc: datetime, completed: int) -> tuple[str, datetime]:
+    """Pure -- what the loop will do next and when, for the dashboard's
+    live/next-action indicator. Mirrors trading_loop's own branch order
+    exactly so this can never drift out of sync with what actually runs."""
+    if not session.is_open:
+        return "market open", session.open_utc
+    if now_utc < session.scan_1_utc and completed < 1:
+        return "entry scan 1", session.scan_1_utc
+    if now_utc < session.scan_2_utc and completed < 2:
+        return "entry scan 2", session.scan_2_utc
+    return "management tick", now_utc + timedelta(seconds=MANAGEMENT_INTERVAL_S)
+
+
+async def _publish_status(conn: aiosqlite.Connection, deps: Deps, session: SessionPlan, now_utc: datetime, completed: int) -> None:
+    label, at_utc = _next_action(session, now_utc, completed)
+    await storage_write.put_state(conn, "status", {
+        "live": not deps.settings.dry_run,
+        "llm_enabled": deps.llm_enabled,
+        "is_open": session.is_open,
+        "session_date": session.session_date.isoformat(),
+        "open_utc": session.open_utc.isoformat(),
+        "close_utc": session.close_utc.isoformat(),
+        "scan_1_utc": session.scan_1_utc.isoformat(),
+        "scan_2_utc": session.scan_2_utc.isoformat(),
+        "completed_scans": completed,
+        "next_action": label,
+        "next_action_utc": at_utc.isoformat(),
+        "now_utc": now_utc.isoformat(),
+    })
+
+
 async def trading_loop(deps: Deps) -> None:
     """CLOSED: sleep min(seconds_until_next_open, CLOSED_SLEEP_CEILING_S).
     OPEN: management_tick every MANAGEMENT_INTERVAL_S; scan_cycle once at
@@ -595,12 +626,13 @@ async def trading_loop(deps: Deps) -> None:
         session = await current_or_next_session(deps.clients)
         now = deps.clock.now()
 
+        async with storage_db.connect(deps.settings.db_path) as conn:
+            completed = await _completed_scan_count(conn, session.session_date.isoformat()) if session.is_open else 0
+            await _publish_status(conn, deps, session, now, completed)
+
         if not session.is_open:
             await deps.clock.sleep(seconds_until_next_boundary(session, now))
             continue
-
-        async with storage_db.connect(deps.settings.db_path) as conn:
-            completed = await _completed_scan_count(conn, session.session_date.isoformat())
 
         if now >= session.scan_1_utc and completed < 1:
             await scan_cycle(deps, session, dry_run=deps.settings.dry_run)

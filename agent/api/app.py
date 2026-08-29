@@ -38,6 +38,15 @@ async def health(conn: aiosqlite.Connection = Depends(get_conn)) -> dict[str, An
     return {"ok": True, "db": True, "last_cycle_utc": state["ts_utc"] if state else None}
 
 
+@app.get("/status")
+async def status(conn: aiosqlite.Connection = Depends(get_conn)) -> dict[str, Any]:
+    """Live/dry-run + next-action timing, published once per trading_loop
+    iteration (main._publish_status) -- so this is empty until the loop has
+    run at least once, same as every other agent_state key."""
+    state = await read.get_state(conn, "status")
+    return state["value_json"] if state else {}
+
+
 @app.get("/state/account")
 async def state_account(conn: aiosqlite.Connection = Depends(get_conn)) -> dict[str, Any]:
     state = await read.get_state(conn, "account")

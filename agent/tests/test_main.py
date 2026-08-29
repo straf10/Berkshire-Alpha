@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass
+from dataclasses import replace as dataclasses_replace
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -793,3 +794,88 @@ async def test_exit_tick_holds_with_no_open_trades(tmp_path, monkeypatch: pytest
     await main_module.management_tick(deps, session)
 
     assert broker.submitted == []
+
+
+def _fixed_session(*, is_open: bool) -> SessionPlan:
+    return SessionPlan(
+        session_date=SESSION_DATE,
+        open_utc=datetime(2026, 8, 31, 13, 30, tzinfo=timezone.utc),
+        close_utc=datetime(2026, 8, 31, 20, 0, tzinfo=timezone.utc),
+        scan_1_utc=datetime(2026, 8, 31, 14, 15, tzinfo=timezone.utc),
+        scan_2_utc=datetime(2026, 8, 31, 18, 0, tzinfo=timezone.utc),
+        cutoff_utc=datetime(2026, 8, 31, 19, 0, tzinfo=timezone.utc),
+        last_session_utc=(datetime(2026, 8, 28, 13, 30, tzinfo=timezone.utc), datetime(2026, 8, 28, 20, 0, tzinfo=timezone.utc)),
+        trading_days=frozenset({SESSION_DATE}),
+        is_open=is_open,
+    )
+
+
+def test_next_action_closed_market_points_at_open() -> None:
+    session = _fixed_session(is_open=False)
+    label, at = main_module._next_action(session, datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc), 0)
+    assert label == "market open"
+    assert at == session.open_utc
+
+
+def test_next_action_before_scan_1() -> None:
+    session = _fixed_session(is_open=True)
+    label, at = main_module._next_action(session, datetime(2026, 8, 31, 13, 45, tzinfo=timezone.utc), 0)
+    assert label == "entry scan 1"
+    assert at == session.scan_1_utc
+
+
+def test_next_action_between_scans() -> None:
+    session = _fixed_session(is_open=True)
+    label, at = main_module._next_action(session, datetime(2026, 8, 31, 15, 0, tzinfo=timezone.utc), 1)
+    assert label == "entry scan 2"
+    assert at == session.scan_2_utc
+
+
+def test_next_action_after_both_scans_is_management() -> None:
+    session = _fixed_session(is_open=True)
+    now = datetime(2026, 8, 31, 19, 30, tzinfo=timezone.utc)
+    label, at = main_module._next_action(session, now, 2)
+    assert label == "management tick"
+    assert at == now + timedelta(seconds=main_module.MANAGEMENT_INTERVAL_S)
+
+
+async def test_status_published_by_trading_loop(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The dashboard's live/next-action indicator reads this -- confirms
+    trading_loop actually publishes it, not just that _next_action is pure-
+    correct in isolation."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    _patch_cli(monkeypatch)
+
+    session = _fixed_session(is_open=False)
+
+    async def fake_session(clients):
+        return session
+
+    monkeypatch.setattr(main_module, "current_or_next_session", fake_session)
+
+    clients = FakeClients()
+    broker = MockBroker([])
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+    deps.settings = dataclasses_replace(deps.settings, dry_run=False)
+
+    async def stop_after_one_iteration(seconds):
+        raise asyncio.CancelledError
+
+    clock.sleep = stop_after_one_iteration  # type: ignore[method-assign]
+
+    try:
+        await main_module.trading_loop(deps)
+    except asyncio.CancelledError:
+        pass
+
+    from agent.storage import read as storage_read
+    async with storage_db.connect(db_path) as conn:
+        state = await storage_read.get_state(conn, "status")
+    assert state is not None
+    status = state["value_json"]
+    assert status["live"] is True
+    assert status["is_open"] is False
+    assert status["next_action"] == "market open"
+    assert status["next_action_utc"] == session.open_utc.isoformat()

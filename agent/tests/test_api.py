@@ -139,3 +139,32 @@ async def test_decision_chain_serves_full_chain(tmp_path) -> None:
     assert len(detail["trades"]) == 1
     assert len(detail["llm_calls"]) == 1
     assert detail["llm_calls"][0]["decision_id"] == decision_id
+
+
+async def test_status_endpoint_serves_published_state(tmp_path) -> None:
+    db_path = str(tmp_path / "test_agent.db")
+    await storage_db.init_db(db_path)
+
+    async with storage_db.connect(db_path) as conn:
+        await storage_write.put_state(conn, "status", {
+            "live": True, "llm_enabled": True, "is_open": False,
+            "next_action": "market open", "next_action_utc": "2026-08-31T13:30:00+00:00",
+        })
+
+    from agent.api import app as api_app
+
+    async with storage_db.connect(db_path) as conn:
+        status = await api_app.status(conn=conn)
+    assert status["live"] is True
+    assert status["next_action"] == "market open"
+
+
+async def test_status_endpoint_empty_before_first_publish(tmp_path) -> None:
+    db_path = str(tmp_path / "test_agent.db")
+    await storage_db.init_db(db_path)
+
+    from agent.api import app as api_app
+
+    async with storage_db.connect(db_path) as conn:
+        status = await api_app.status(conn=conn)
+    assert status == {}
