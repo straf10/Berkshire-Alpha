@@ -7,11 +7,14 @@ from decimal import Decimal
 
 from alpaca.common.exceptions import APIError
 from alpaca.data.enums import DataFeed
+from alpaca.data.historical.news import NewsClient
 from alpaca.data.historical.option import OptionHistoricalDataClient
 from alpaca.data.historical.stock import StockHistoricalDataClient
 from alpaca.data.models.bars import BarSet
+from alpaca.data.models.news import NewsSet
 from alpaca.data.models.snapshots import OptionsSnapshot
 from alpaca.data.requests import (
+    NewsRequest,
     OptionChainRequest,
     OptionSnapshotRequest,
     StockBarsRequest,
@@ -37,6 +40,7 @@ class AlpacaClients:
         self.trading = TradingClient(s.api_key, s.secret_key, paper=True)
         self.stock = StockHistoricalDataClient(s.api_key, s.secret_key)
         self.option = OptionHistoricalDataClient(s.api_key, s.secret_key)
+        self.news = NewsClient(s.api_key, s.secret_key)
 
     async def get_clock(self) -> Clock:
         return await asyncio.to_thread(self.trading.get_clock)
@@ -69,6 +73,13 @@ class AlpacaClients:
 
     async def cancel_order(self, order_id: str) -> None:
         await asyncio.to_thread(self.trading.cancel_order_by_id, order_id)
+
+    async def get_news(self, symbols: list[str], since: datetime) -> NewsSet:
+        """Day 3 (docs/day3-llm-plan.md S0.2) -- builds the NewsRequest itself so
+        tools/news.py never imports alpaca.* directly, keeping
+        test_no_blocking_sdk.ALLOWED unchanged."""
+        req = NewsRequest(symbols=symbols, start=since, include_content=False, exclude_contentless=True)
+        return await asyncio.to_thread(self.news.get_news, req)
 
 
 async def probe_equity_feed(clients: AlpacaClients) -> DataFeed:

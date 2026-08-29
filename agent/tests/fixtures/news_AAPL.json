@@ -1,0 +1,14 @@
+[
+  {
+    "id": "n1", "headline": "Apple supplier signals stronger iPhone demand into Q4",
+    "source": "benzinga", "created_at": "2026-08-28T13:00:00+00:00",
+    "summary": "A key Apple supplier raised guidance, citing stronger-than-expected iPhone component orders heading into the holiday quarter.",
+    "symbols": ["AAPL"]
+  },
+  {
+    "id": "n2", "headline": "Apple and Google discuss expanded search deal terms",
+    "source": "reuters", "created_at": "2026-08-28T10:15:00+00:00",
+    "summary": "Reports indicate Apple and Google are in talks to extend their default search engine agreement on new terms.",
+    "symbols": ["AAPL", "GOOGL"]
+  }
+]

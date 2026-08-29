@@ -36,6 +36,20 @@ def block_network(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatc
     else:
         monkeypatch.setattr("agent.execution.broker.AlpacaBroker.__init__", _raise_sync)
 
+    # Day 3 (docs/day3-llm-plan.md S0.6): PrawReddit is the real network-touching
+    # implementation, blocked the same way AlpacaBroker is above. LlmClient is
+    # deliberately NOT blocked here -- its constructor takes an injected
+    # httpx.AsyncClient rather than building one, and agent/tests/test_llm.py
+    # constructs it directly with respx mocking the transport layer, exactly as
+    # docs/day3-llm-plan.md S0.6 describes ("respx intercepts at the httpx
+    # transport layer, so the llm.py unit tests construct LlmClient explicitly").
+    try:
+        import agent.tools.reddit  # noqa: F401
+    except ImportError:
+        pass
+    else:
+        monkeypatch.setattr("agent.tools.reddit.PrawReddit.__init__", _raise_sync)
+
 
 @pytest.fixture
 def fake_clients() -> AlpacaClients:
