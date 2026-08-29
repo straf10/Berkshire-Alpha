@@ -204,7 +204,7 @@ def build_from_proposal(
     net_natural, width, max_profit, max_loss, p_success -- is re-derived from
     `chain` by the same code path as build(). The LLM chooses WHICH
     contracts; it never supplies a price, a greek, or a size
-    (docs/day3-llm-plan.md Group 4). `p` is assumed already validated by
+    (docs/day3_llm_plan.md Group 4). `p` is assumed already validated by
     trader.validate_proposal() -- this function re-derives from the chain
     regardless, so a stale/inconsistent caller still fails one of build()'s
     own self-checks rather than fabricating a plan."""

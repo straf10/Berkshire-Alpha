@@ -13,7 +13,7 @@ from agent.tools.llm import LlmBudgetExceeded, LlmPort, LlmUnavailable, LlmValid
 # The DoC protocol's safety-critical line: a node that never responds must
 # never be treated as absent (which would let a lone COMMIT clear the
 # threshold). It is synthesised as DISAGREE with zero citations, capping the
-# round's score at 0.65 (docs/day3-llm-plan.md Group 4).
+# round's score at 0.65 (docs/day3_llm_plan.md Group 4).
 _MISSING_VIEW = "(no response -- provider call failed or was dropped)"
 
 
@@ -53,7 +53,7 @@ def valid_citations(node: DebateNodeOutput, keys: frozenset[str]) -> int:
 
 
 def consensus_score(bull: DebateNodeOutput, bear: DebateNodeOutput, keys: frozenset[str]) -> float:
-    """[NEW] docs/day3-llm-plan.md S0.4. Range [0, 1]."""
+    """[NEW] docs/day3_llm_plan.md S0.4. Range [0, 1]."""
     commit = 0.5 * (int(bull.doc_action == "COMMIT") + int(bear.doc_action == "COMMIT"))
     grounding = 0.5 * sum(
         min(valid_citations(n, keys), EVIDENCE_CITES_EXPECTED) / EVIDENCE_CITES_EXPECTED

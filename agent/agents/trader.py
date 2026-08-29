@@ -36,7 +36,7 @@ _RIGHT: dict[str, Literal["C", "P"]] = {"CALL": "C", "PUT": "P"}
 # Maps (right, sell_strike > buy_strike) -> the structure it forms. Mirrors
 # spread_builder.build()'s own strike-ordering logic exactly, so a proposal
 # is only ever accepted if it describes the same vertical the deterministic
-# builder would have (docs/day3-llm-plan.md Group 4).
+# builder would have (docs/day3_llm_plan.md Group 4).
 _CREDIT_STRUCTURE: dict[Literal["C", "P"], Structure] = {
     "P": Structure.BULL_PUT_SPREAD, "C": Structure.BEAR_CALL_SPREAD,
 }
