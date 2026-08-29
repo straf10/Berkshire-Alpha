@@ -8,6 +8,8 @@ from typing import Any
 
 import aiosqlite
 
+from agent.execution.order_manager import WalkResult
+
 # imported only by main.py, execution/, risk/
 
 
@@ -108,10 +110,7 @@ async def insert_trade(conn: aiosqlite.Connection, t: TradeRow) -> int:
     return cur.lastrowid
 
 
-async def update_trade_result(conn: aiosqlite.Connection, trade_id: int, r: Any) -> None:
-    """`r` is Group 5's WalkResult -- duck-typed here since execution/order_manager.py
-    (status, order_id, final_limit, fill_price, filled_qty, steps, reject_code, events)
-    lands in Group 5, after this module."""
+async def update_trade_result(conn: aiosqlite.Connection, trade_id: int, r: WalkResult) -> None:
     await conn.execute(
         """UPDATE trades SET status=?, final_order_id=?, final_limit=?, fill_price=?,
            filled_qty=?, walk_steps=?, reject_code=?, events_json=? WHERE id=?""",

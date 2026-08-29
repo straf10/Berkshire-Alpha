@@ -19,6 +19,7 @@ from agent.schemas.execution import (
     SpreadPlan,
     Structure,
 )
+from agent.risk.sizing import p_success
 from agent.schemas.market import ChainSnapshot, OptionQuote, QuantSnapshot
 from agent.strategy.regime import RegimeDecision
 
@@ -174,10 +175,7 @@ def build(q: QuantSnapshot, d: RegimeDecision, chain: ChainSnapshot) -> SpreadPl
         bid=long.bid, ask=long.ask,
     )
 
-    # Credit: p = 1 - |delta_short| (short strike finishes OTM -> max profit).
-    # Debit: p = |delta_short| (short strike finishes ITM -> max profit); mirror
-    # of plan.md's stated credit case. [NEW -- disclosed extension]
-    p_success = (1.0 - abs(short.delta)) if is_credit else abs(short.delta)
+    p_success_value = p_success(structure, short.delta)
 
     return SpreadPlan(
         symbol=q.symbol,
@@ -191,7 +189,7 @@ def build(q: QuantSnapshot, d: RegimeDecision, chain: ChainSnapshot) -> SpreadPl
         net_natural=_quantize(net_natural),
         max_profit_per_spread=_quantize(max_profit),
         max_loss_per_spread=_quantize(max_loss),
-        p_success=p_success,
+        p_success=p_success_value,
         spot=q.spot,
         short_leg_delta=abs(short.delta),
     )
