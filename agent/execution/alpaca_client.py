@@ -78,7 +78,10 @@ class AlpacaClients:
         """Day 3 (docs/day3_llm_plan.md S0.2) -- builds the NewsRequest itself so
         tools/news.py never imports alpaca.* directly, keeping
         test_no_blocking_sdk.ALLOWED unchanged."""
-        req = NewsRequest(symbols=symbols, start=since, include_content=False, exclude_contentless=True)
+        # NewsRequest.symbols is Optional[str] -- a comma-separated list, not
+        # a Python list -- despite every other batched request in this class
+        # taking a list of symbols directly.
+        req = NewsRequest(symbols=",".join(symbols), start=since, include_content=False, exclude_contentless=True)
         return await asyncio.to_thread(self.news.get_news, req)
 
 
