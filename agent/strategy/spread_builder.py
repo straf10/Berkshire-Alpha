@@ -20,6 +20,7 @@ from agent.schemas.execution import (
     Structure,
 )
 from agent.risk.sizing import p_success
+from agent.schemas.llm import SpreadProposal
 from agent.schemas.market import ChainSnapshot, OptionQuote, QuantSnapshot
 from agent.strategy.regime import RegimeDecision
 
@@ -144,6 +145,89 @@ def build(q: QuantSnapshot, d: RegimeDecision, chain: ChainSnapshot) -> SpreadPl
         if not beyond:
             return BuildFailure.NO_LONG_STRIKE_AVAILABLE
         short = min(beyond, key=lambda c: (abs(c.strike - target), c.strike))
+
+    net_mid, net_natural = _net_mid_and_natural(short, long)
+    if is_credit != (net_mid < 0):
+        return BuildFailure.SIGN_MISMATCH
+
+    width = abs(short.strike - long.strike)
+    if width <= 0:
+        return BuildFailure.ZERO_OR_NEGATIVE_WIDTH
+
+    width_dec = Decimal(str(width))
+    if is_credit:
+        max_profit = abs(net_mid) * 100
+        max_loss = (width_dec - abs(net_mid)) * 100
+    else:
+        max_profit = (width_dec - net_mid) * 100
+        max_loss = net_mid * 100
+
+    if max_loss <= 0:
+        return BuildFailure.NON_POSITIVE_MAX_LOSS
+
+    short_leg = Leg(
+        occ_symbol=short.occ_symbol, strike=short.strike, right=right, side="SELL",
+        ratio_qty=1, intent=Intent.SELL_TO_OPEN, delta=short.delta, vega=short.vega,
+        bid=short.bid, ask=short.ask,
+    )
+    long_leg = Leg(
+        occ_symbol=long.occ_symbol, strike=long.strike, right=right, side="BUY",
+        ratio_qty=1, intent=Intent.BUY_TO_OPEN, delta=long.delta, vega=long.vega,
+        bid=long.bid, ask=long.ask,
+    )
+
+    p_success_value = p_success(structure, short.delta)
+
+    return SpreadPlan(
+        symbol=q.symbol,
+        structure=structure,
+        regime=d.regime,
+        expiry=q.target_expiry,
+        dte=(q.target_expiry - q.session_date).days,
+        legs=(short_leg, long_leg),
+        width=width,
+        net_mid=_quantize(net_mid),
+        net_natural=_quantize(net_natural),
+        max_profit_per_spread=_quantize(max_profit),
+        max_loss_per_spread=_quantize(max_loss),
+        p_success=p_success_value,
+        spot=q.spot,
+        short_leg_delta=abs(short.delta),
+    )
+
+
+def build_from_proposal(
+    q: QuantSnapshot, d: RegimeDecision, chain: ChainSnapshot, p: SpreadProposal
+) -> SpreadPlan | BuildFailure:
+    """Takes ONLY (underlying, expiry, strikes, rights, sides) from the LLM's
+    `p`. Every number -- occ_symbol, bid, ask, delta, vega, net_mid,
+    net_natural, width, max_profit, max_loss, p_success -- is re-derived from
+    `chain` by the same code path as build(). The LLM chooses WHICH
+    contracts; it never supplies a price, a greek, or a size
+    (docs/day3-llm-plan.md Group 4). `p` is assumed already validated by
+    trader.validate_proposal() -- this function re-derives from the chain
+    regardless, so a stale/inconsistent caller still fails one of build()'s
+    own self-checks rather than fabricating a plan."""
+    assert d.structure is not None and q.target_expiry is not None
+    structure = d.structure
+    is_credit = STRUCTURE_IS_CREDIT[structure]
+    right: Literal["C", "P"] = _CREDIT_RIGHT[structure] if is_credit else _DEBIT_RIGHT[structure]
+    proposal_contract_type = "CALL" if right == "C" else "PUT"
+
+    side = chain.for_expiry(q.target_expiry, right)
+    by_strike = {round(c.strike, 4): c for c in side}
+
+    buy_leg = next((leg for leg in p.legs if leg.contract_type == proposal_contract_type and leg.side == "BUY"), None)
+    sell_leg = next((leg for leg in p.legs if leg.contract_type == proposal_contract_type and leg.side == "SELL"), None)
+    if buy_leg is None or sell_leg is None:
+        return BuildFailure.NO_LONG_STRIKE_AVAILABLE if buy_leg is None else BuildFailure.NO_SHORT_STRIKE_IN_DELTA_BAND
+
+    long = by_strike.get(round(buy_leg.strike_price, 4))
+    short = by_strike.get(round(sell_leg.strike_price, 4))
+    if long is None:
+        return BuildFailure.NO_LONG_STRIKE_AVAILABLE
+    if short is None:
+        return BuildFailure.NO_SHORT_STRIKE_IN_DELTA_BAND
 
     net_mid, net_natural = _net_mid_and_natural(short, long)
     if is_credit != (net_mid < 0):

@@ -1,0 +1,119 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Literal
+
+from agent.agents.evidence import EvidenceBundle
+from agent.agents.prompts import BEAR_SYSTEM, BULL_SYSTEM, doc_proposition
+from agent.config import CONSENSUS_HIGH_THRESHOLD, DEBATE_MAX_ROUNDS, EVIDENCE_CITES_EXPECTED
+from agent.schemas.llm import DebateNodeOutput
+from agent.tools.llm import LlmBudgetExceeded, LlmPort, LlmUnavailable, LlmValidationDropped
+
+# The DoC protocol's safety-critical line: a node that never responds must
+# never be treated as absent (which would let a lone COMMIT clear the
+# threshold). It is synthesised as DISAGREE with zero citations, capping the
+# round's score at 0.65 (docs/day3-llm-plan.md Group 4).
+_MISSING_VIEW = "(no response -- provider call failed or was dropped)"
+
+
+class Verdict(StrEnum):
+    CONSENSUS_ROUND_1 = "CONSENSUS_ROUND_1"
+    CONSENSUS_ROUND_2 = "CONSENSUS_ROUND_2"
+    UNRESOLVED = "UNRESOLVED"
+
+
+@dataclass(frozen=True)
+class DebateResult:
+    nodes: tuple[DebateNodeOutput, ...]      # 2 or 4, in emission order
+    rounds_run: int
+    consensus_score: float
+    verdict: Verdict
+    terminated_early: bool
+
+
+def _missing_node(persona: Literal["BULL", "BEAR"]) -> DebateNodeOutput:
+    return DebateNodeOutput(
+        agent_persona=persona, doc_action="DISAGREE", evidence_cited=[],
+        volatility_view=_MISSING_VIEW, rebuttal_argument=_MISSING_VIEW,
+    )
+
+
+def valid_citations(node: DebateNodeOutput, keys: frozenset[str]) -> int:
+    """Count of node.evidence_cited entries containing a bundle key as a
+    case-insensitive substring. Fabricated citations score zero -- this is what
+    makes DoC enforceable in code rather than by prompt."""
+    lowered_keys = tuple(k.lower() for k in keys)
+    count = 0
+    for cite in node.evidence_cited:
+        c = cite.lower()
+        if any(k in c for k in lowered_keys):
+            count += 1
+    return count
+
+
+def consensus_score(bull: DebateNodeOutput, bear: DebateNodeOutput, keys: frozenset[str]) -> float:
+    """[NEW] docs/day3-llm-plan.md S0.4. Range [0, 1]."""
+    commit = 0.5 * (int(bull.doc_action == "COMMIT") + int(bear.doc_action == "COMMIT"))
+    grounding = 0.5 * sum(
+        min(valid_citations(n, keys), EVIDENCE_CITES_EXPECTED) / EVIDENCE_CITES_EXPECTED
+        for n in (bull, bear)
+    )
+    return 0.70 * commit + 0.30 * grounding
+
+
+async def run_debate(llm: LlmPort, bundle: EvidenceBundle, *, sink: list[int]) -> DebateResult:
+    """Round 1: BULL (bundle) then BEAR (bundle + bull's output). Score.
+    score >= CONSENSUS_HIGH_THRESHOLD -> terminate, CONSENSUS_ROUND_1.
+    Otherwise round 2 (each sees the other's round-1 node), rescore.
+    Capped at DEBATE_MAX_ROUNDS=2; nothing extends it. A dropped/unavailable
+    node counts as DISAGREE with 0 citations -- a silent agent never
+    manufactures consensus."""
+    keys = bundle.keys()
+    evidence_json = bundle.to_prompt_json()
+    structure = bundle.regime.structure
+    proposition = doc_proposition(
+        bundle.symbol, structure.value if structure else "UNKNOWN", str(bundle.quant.target_expiry)
+    )
+    citable_keys = ", ".join(sorted(keys))
+
+    async def _turn(persona: Literal["BULL", "BEAR"], system: str, opposing: DebateNodeOutput | None) -> DebateNodeOutput:
+        opposing_block = f"\nThe opposing researcher argued: {opposing.model_dump_json()}" if opposing else ""
+        prompt = (
+            f"{proposition}\n"
+            f"Evidence bundle: {evidence_json}\n"
+            f"Citable evidence keys: {citable_keys}\n"
+            f"Cite exactly {EVIDENCE_CITES_EXPECTED} of them by their exact key."
+            f"{opposing_block}"
+        )
+        node = "DEBATE_BULL" if persona == "BULL" else "DEBATE_BEAR"
+        try:
+            return await llm.complete_json(prompt, DebateNodeOutput, node=node, system=system, sink=sink)
+        except LlmBudgetExceeded:
+            raise
+        except (LlmValidationDropped, LlmUnavailable):
+            return _missing_node(persona)
+
+    bull_r1 = await _turn("BULL", BULL_SYSTEM, None)
+    bear_r1 = await _turn("BEAR", BEAR_SYSTEM, bull_r1)
+    score_r1 = consensus_score(bull_r1, bear_r1, keys)
+    if score_r1 >= CONSENSUS_HIGH_THRESHOLD:
+        return DebateResult(
+            nodes=(bull_r1, bear_r1), rounds_run=1, consensus_score=score_r1,
+            verdict=Verdict.CONSENSUS_ROUND_1, terminated_early=True,
+        )
+
+    if DEBATE_MAX_ROUNDS < 2:
+        return DebateResult(
+            nodes=(bull_r1, bear_r1), rounds_run=1, consensus_score=score_r1,
+            verdict=Verdict.UNRESOLVED, terminated_early=False,
+        )
+
+    bull_r2 = await _turn("BULL", BULL_SYSTEM, bear_r1)
+    bear_r2 = await _turn("BEAR", BEAR_SYSTEM, bull_r2)
+    score_r2 = consensus_score(bull_r2, bear_r2, keys)
+    verdict = Verdict.CONSENSUS_ROUND_2 if score_r2 >= CONSENSUS_HIGH_THRESHOLD else Verdict.UNRESOLVED
+    return DebateResult(
+        nodes=(bull_r1, bear_r1, bull_r2, bear_r2), rounds_run=2, consensus_score=score_r2,
+        verdict=verdict, terminated_early=False,
+    )
