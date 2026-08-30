@@ -1,20 +1,33 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Literal
+from typing import Literal, Sequence
 
 from agent.agents.evidence import EvidenceBundle
 from agent.agents.prompts import BEAR_SYSTEM, BULL_SYSTEM, doc_proposition
-from agent.config import CONSENSUS_HIGH_THRESHOLD, DEBATE_MAX_ROUNDS, EVIDENCE_CITES_EXPECTED
+from agent.config import (
+    CONSENSUS_HIGH_THRESHOLD,
+    CONVICTION_DEGRADED_FLOOR,
+    CONVICTION_GROUNDING_FLOOR,
+    DEBATE_MAX_ROUNDS,
+    EVIDENCE_CITES_EXPECTED,
+)
 from agent.schemas.llm import DebateNodeOutput
 from agent.tools.llm import LlmBudgetExceeded, LlmPort, LlmUnavailable, LlmValidationDropped
 
 # The DoC protocol's safety-critical line: a node that never responds must
 # never be treated as absent (which would let a lone COMMIT clear the
-# threshold). It is synthesised as DISAGREE with zero citations, capping the
-# round's score at 0.65 (docs/day3_llm_plan.md Group 4).
+# threshold). It is synthesised as DISAGREE with zero citations -- excluded
+# from conviction()'s "real" nodes so an outage defers to the deterministic
+# layer instead of manufacturing a bearish verdict (docs/day4_track_ab_plan.md
+# §2.1).
 _MISSING_VIEW = "(no response -- provider call failed or was dropped)"
+
+# Segments this short false-positive substring-match too easily ("rsi" inside
+# "chris" etc.) -- require a word boundary for these (docs/day4_track_ab_plan.md §2.5).
+_SHORT_SEGMENT_LEN = 5
 
 
 class Verdict(StrEnum):
@@ -30,6 +43,10 @@ class DebateResult:
     consensus_score: float
     verdict: Verdict
     terminated_early: bool
+    # Day 4 (docs/day4_track_ab_plan.md §2.1): the size multiplier that
+    # replaces `verdict` as control flow. consensus_score/verdict are kept
+    # for logging and the dashboard only.
+    conviction: float
 
 
 def _missing_node(persona: Literal["BULL", "BEAR"]) -> DebateNodeOutput:
@@ -48,16 +65,55 @@ def is_missing_node(node: DebateNodeOutput) -> bool:
 
 
 def valid_citations(node: DebateNodeOutput, keys: frozenset[str]) -> int:
-    """Count of node.evidence_cited entries containing a bundle key as a
-    case-insensitive substring. Fabricated citations score zero -- this is what
-    makes DoC enforceable in code rather than by prompt."""
+    """Count of node.evidence_cited entries matching a bundle key, either the
+    full dotted key ("quant.vrp_ratio") or its bare last segment
+    ("vrp_ratio") case-insensitively -- a model writing "the IV/RV ratio of
+    1.31" cites nothing, but "the vrp_ratio of 1.31" does
+    (docs/day4_track_ab_plan.md §2.5). Segments shorter than
+    `_SHORT_SEGMENT_LEN` (e.g. "rsi") require a word-boundary match so they
+    don't substring-match inside unrelated words. Fabricated citations still
+    score zero -- this is what makes DoC enforceable in code rather than by
+    prompt."""
     lowered_keys = tuple(k.lower() for k in keys)
+    segments = tuple(k.rsplit(".", 1)[-1] for k in lowered_keys)
     count = 0
     for cite in node.evidence_cited:
         c = cite.lower()
         if any(k in c for k in lowered_keys):
             count += 1
+            continue
+        for seg in segments:
+            if len(seg) < _SHORT_SEGMENT_LEN:
+                if re.search(rf"\b{re.escape(seg)}\b", c):
+                    count += 1
+                    break
+            elif seg in c:
+                count += 1
+                break
     return count
+
+
+def conviction(nodes: Sequence[DebateNodeOutput], keys: frozenset[str]) -> float:
+    """Debate outcome scales position size; it never sets it. Returns [0.0, 1.0]
+    (docs/day4_track_ab_plan.md §2.1).
+
+    Synthesised nodes are EXCLUDED: `_missing_node` fabricates a DISAGREE when a
+    provider call fails, and an LLM outage must degrade to the deterministic
+    layer, never to a fabricated unanimous bearish verdict.
+    """
+    real = [n for n in nodes if not is_missing_node(n)]
+    if not real:
+        return 1.0                                   # total outage -> defer to the gate
+    commit_ratio = sum(n.doc_action == "COMMIT" for n in real) / len(real)
+    grounding = sum(min(valid_citations(n, keys), EVIDENCE_CITES_EXPECTED)
+                    for n in real) / (EVIDENCE_CITES_EXPECTED * len(real))
+    # Grounding is a haircut, never a veto -- this is what keeps the DoC citation
+    # check meaningful without reintroducing the D6 pathology.
+    c = commit_ratio * (CONVICTION_GROUNDING_FLOOR
+                         + (1.0 - CONVICTION_GROUNDING_FLOOR) * grounding)
+    if len(real) < 2 and commit_ratio > 0:
+        c = max(c, CONVICTION_DEGRADED_FLOOR)         # one voice may halve, never veto
+    return c
 
 
 def consensus_score(bull: DebateNodeOutput, bear: DebateNodeOutput, keys: frozenset[str]) -> float:
@@ -71,12 +127,14 @@ def consensus_score(bull: DebateNodeOutput, bear: DebateNodeOutput, keys: frozen
 
 
 async def run_debate(llm: LlmPort, bundle: EvidenceBundle, *, sink: list[int]) -> DebateResult:
-    """Round 1: BULL (bundle) then BEAR (bundle + bull's output). Score.
-    score >= CONSENSUS_HIGH_THRESHOLD -> terminate, CONSENSUS_ROUND_1.
-    Otherwise round 2 (each sees the other's round-1 node), rescore.
-    Capped at DEBATE_MAX_ROUNDS=2; nothing extends it. A dropped/unavailable
-    node counts as DISAGREE with 0 citations -- a silent agent never
-    manufactures consensus."""
+    """Round 1: BULL (bundle) then BEAR (bundle + bull's output).
+    docs/day4_track_ab_plan.md §2.2 -- round 2 triggers on round-1 doc_action
+    agreement, not on the (now advisory) consensus_score: unanimous COMMIT or
+    unanimous DISAGREE both terminate at round 1 (nothing to litigate either
+    way); a split runs round 2. Capped at DEBATE_MAX_ROUNDS=2; nothing extends
+    it. A dropped/unavailable node counts as DISAGREE with 0 citations for
+    consensus_score, but is excluded from conviction()'s "real" nodes so an
+    outage never manufactures a fabricated bearish verdict."""
     keys = bundle.keys()
     evidence_json = bundle.to_prompt_json()
     structure = bundle.regime.structure
@@ -105,23 +163,24 @@ async def run_debate(llm: LlmPort, bundle: EvidenceBundle, *, sink: list[int]) -
     bull_r1 = await _turn("BULL", BULL_SYSTEM, None)
     bear_r1 = await _turn("BEAR", BEAR_SYSTEM, bull_r1)
     score_r1 = consensus_score(bull_r1, bear_r1, keys)
-    if score_r1 >= CONSENSUS_HIGH_THRESHOLD:
-        return DebateResult(
-            nodes=(bull_r1, bear_r1), rounds_run=1, consensus_score=score_r1,
-            verdict=Verdict.CONSENSUS_ROUND_1, terminated_early=True,
-        )
+    commit_ratio_r1 = 0.5 * (int(bull_r1.doc_action == "COMMIT") + int(bear_r1.doc_action == "COMMIT"))
 
-    if DEBATE_MAX_ROUNDS < 2:
+    if commit_ratio_r1 in (0.0, 1.0) or DEBATE_MAX_ROUNDS < 2:
+        nodes = (bull_r1, bear_r1)
+        verdict = Verdict.CONSENSUS_ROUND_1 if commit_ratio_r1 == 1.0 else Verdict.UNRESOLVED
         return DebateResult(
-            nodes=(bull_r1, bear_r1), rounds_run=1, consensus_score=score_r1,
-            verdict=Verdict.UNRESOLVED, terminated_early=False,
+            nodes=nodes, rounds_run=1, consensus_score=score_r1,
+            verdict=verdict, terminated_early=commit_ratio_r1 in (0.0, 1.0),
+            conviction=conviction(nodes, keys),
         )
 
     bull_r2 = await _turn("BULL", BULL_SYSTEM, bear_r1)
     bear_r2 = await _turn("BEAR", BEAR_SYSTEM, bull_r2)
     score_r2 = consensus_score(bull_r2, bear_r2, keys)
     verdict = Verdict.CONSENSUS_ROUND_2 if score_r2 >= CONSENSUS_HIGH_THRESHOLD else Verdict.UNRESOLVED
+    round2_nodes = (bull_r2, bear_r2)
     return DebateResult(
         nodes=(bull_r1, bear_r1, bull_r2, bear_r2), rounds_run=2, consensus_score=score_r2,
         verdict=verdict, terminated_early=False,
+        conviction=conviction(round2_nodes, keys),
     )

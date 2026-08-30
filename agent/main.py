@@ -450,7 +450,7 @@ def _format_debate_line(outcome: PipelineOutcome) -> str:
     bull_str = f"BULL {bull.doc_action} ({len(json.loads(bull.evidence_cited_json))} cites)" if bull else "BULL --"
     bear_str = f"BEAR {bear.doc_action} ({len(json.loads(bear.evidence_cited_json))} cites)" if bear else "BEAR --"
     if summary.terminated_early:
-        verdict_str = f"SPRT TERMINATED R{summary.rounds_run}"
+        verdict_str = f"TERMINATED EARLY R{summary.rounds_run}"
     elif summary.verdict == "CONSENSUS_ROUND_2":
         verdict_str = "CONSENSUS R2"
     else:
@@ -458,7 +458,7 @@ def _format_debate_line(outcome: PipelineOutcome) -> str:
     op = ">=" if summary.consensus_score >= CONSENSUS_HIGH_THRESHOLD else "<"
     return (
         f"       Debate:   {bull_str} | {bear_str} -> consensus {summary.consensus_score:.2f} "
-        f"{op} {CONSENSUS_HIGH_THRESHOLD:.2f}, {verdict_str}"
+        f"{op} {CONSENSUS_HIGH_THRESHOLD:.2f}, {verdict_str}, conviction {outcome.conviction:.2f}"
     )
 
 
@@ -647,6 +647,7 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
                             past_entry_cutoff=past_entry_cutoff, reduce_only=reduce_only,
                             chain_symbols=chain_symbols, earnings_armed=earnings_armed,
                             llm_budget_exhausted=budget.exhausted,
+                            conviction=outcome.conviction if outcome is not None else 1.0,
                         )
                         gate_decision = evaluate(plan, ctx)
                         decisions.append(gate_decision)

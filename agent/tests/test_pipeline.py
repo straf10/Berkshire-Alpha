@@ -189,10 +189,12 @@ async def test_not_top_candidates_get_not_top_debate_outcome() -> None:
         assert o.artifacts.debate_nodes == ()
 
 
-async def test_debate_unresolved_stops_before_trader() -> None:
+async def test_debate_unanimous_disagree_stops_before_trader() -> None:
+    """docs/day4_track_ab_plan.md §2.3: unanimous DISAGREE terminates at round
+    1 (conviction 0.0) and is the only remaining debate-driven no-trade."""
     llm = ScriptedLlm()
-    llm.script("DEBATE_BULL", [_debate_node("BULL", "DISAGREE", [])] * 2)
-    llm.script("DEBATE_BEAR", [_debate_node("BEAR", "DISAGREE", [])] * 2)
+    llm.script("DEBATE_BULL", [_debate_node("BULL", "DISAGREE", [])])
+    llm.script("DEBATE_BEAR", [_debate_node("BEAR", "DISAGREE", [])])
     candidates = [_candidate(UNIVERSE[0])]
     chains = FakeChains({UNIVERSE[0]: _put_credit_chain(UNIVERSE[0])})
     sinks = {UNIVERSE[0]: []}
@@ -202,10 +204,34 @@ async def test_debate_unresolved_stops_before_trader() -> None:
         sem=asyncio.Semaphore(6), sinks=sinks,
     )
     assert len(outcomes) == 1
-    assert outcomes[0].reason == "DEBATE_UNRESOLVED"
+    assert outcomes[0].reason == "DEBATE_UNANIMOUS_DISAGREE"
     assert outcomes[0].plan is None
+    assert outcomes[0].conviction == 0.0
     assert "TRADER" not in llm.calls
     assert not any(c.startswith("RISK_") for c in llm.calls)
+
+
+async def test_pipeline_no_unresolved_drop() -> None:
+    """docs/day4_track_ab_plan.md §2.3: a split debate that never reaches
+    CONSENSUS_HIGH_THRESHOLD (old-style UNRESOLVED) no longer drops the
+    candidate -- it proceeds to a plan with reduced (but nonzero) conviction."""
+    llm = ScriptedLlm()
+    cites = ["quant.vrp_ratio", "regime.structure"]
+    llm.script("DEBATE_BULL", [_debate_node("BULL", "COMMIT", cites), _debate_node("BULL", "COMMIT", cites)])
+    llm.script("DEBATE_BEAR", [_debate_node("BEAR", "DISAGREE", []), _debate_node("BEAR", "DISAGREE", [])])
+    candidates = [_candidate(UNIVERSE[0])]
+    chains = FakeChains({UNIVERSE[0]: _put_credit_chain(UNIVERSE[0])})
+    sinks = {UNIVERSE[0]: []}
+
+    outcomes = await run_llm_pipeline(
+        llm, candidates, chains, {}, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
+        sem=asyncio.Semaphore(6), sinks=sinks,
+    )
+    outcome = outcomes[0]
+    assert outcome.artifacts.debate_summary.verdict == "UNRESOLVED"
+    assert 0.0 < outcome.conviction < 1.0
+    assert outcome.plan is not None
+    assert outcome.reason == "OK"
 
 
 async def test_risk_veto_stops_before_gate() -> None:

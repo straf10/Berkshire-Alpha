@@ -49,6 +49,7 @@ class GateReason(StrEnum):
     MAX_POSITIONS_PER_UNDERLYING = "MAX_POSITIONS_PER_UNDERLYING"
     NEGATIVE_EDGE = "NEGATIVE_EDGE"
     QTY_FLOORS_TO_ZERO = "QTY_FLOORS_TO_ZERO"
+    LOW_CONVICTION = "LOW_CONVICTION"
     MAX_RISK_PER_TRADE = "MAX_RISK_PER_TRADE"
     MAX_AGGREGATE_RISK = "MAX_AGGREGATE_RISK"
     INSUFFICIENT_BUYING_POWER = "INSUFFICIENT_BUYING_POWER"
@@ -75,6 +76,9 @@ class GateContext:
     # Day 3 (docs/day3_llm_plan.md S1b): appended LAST so every Day-2 GateContext(...)
     # call site keeps constructing positionally without change.
     llm_budget_exhausted: bool = False
+    # Day 4 (docs/day4_track_ab_plan.md §2.4): the debate's conviction, [0.0,
+    # 1.0]. Same trailing-default convention as llm_budget_exhausted above.
+    conviction: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -163,6 +167,8 @@ def evaluate(plan: SpreadPlan, ctx: GateContext) -> GateDecision:
     q = sized.qty
     if conservative_mode:
         q //= 2  # halve size; credit structures were already blocked above
+    pre_conviction_q = q
+    q = int(q * ctx.conviction)   # [0,1] -- can only ever reduce. Never applied to `cap`.
 
     marginal_delta, marginal_vega = marginal(plan, 1)
     per_contract_risk = float(plan.max_loss_per_spread)
@@ -190,8 +196,13 @@ def evaluate(plan: SpreadPlan, ctx: GateContext) -> GateDecision:
 
     if q_final < 1:
         if cap >= 1:
-            # Every independent cap allows at least one contract -- the floor
-            # comes from Kelly sizing itself, not from any of the five caps.
+            # Every independent cap allows at least one contract. If Kelly
+            # sizing itself already floored to zero pre-conviction, that's
+            # QTY_FLOORS_TO_ZERO as before; if sizing cleared >=1 and the
+            # conviction multiplier is what took it to zero, say so instead
+            # of reporting a misleading QTY_FLOORS_TO_ZERO.
+            if pre_conviction_q >= 1:
+                return _reject(GateReason.LOW_CONVICTION, ctx.conviction, 1.0)
             return _reject(GateReason.QTY_FLOORS_TO_ZERO, sized.kelly_fraction, 0.0)
         observed = {
             GateReason.MAX_RISK_PER_TRADE: per_contract_risk,

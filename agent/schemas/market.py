@@ -71,7 +71,7 @@ class QuantSnapshot:
     rv_20: float
     iv_atm: float
     vrp_ratio: float
-    skew_abs: float             # IV POINTS
+    skew_abs: float             # IV POINTS -- SIGNED put-over-ATM IV difference; no absolute value is taken
     vwap: float
     vwap_dev_pct: float
     rsi: float

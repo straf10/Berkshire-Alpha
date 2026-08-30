@@ -15,7 +15,7 @@ from datetime import date
 from typing import Mapping, Sequence
 
 from agent.agents.analysts import AnalystResult, analyst_score, run_analysts, select_top
-from agent.agents.researchers import DebateResult, Verdict, is_missing_node, run_debate
+from agent.agents.researchers import DebateResult, is_missing_node, run_debate
 from agent.agents.risk_team import AccountView, PortfolioView, RiskTeamResult, run_risk_team
 from agent.agents.trader import ProposalFailure, propose
 from agent.schemas.execution import SpreadPlan
@@ -91,7 +91,7 @@ class PipelineOutcome:
     symbol: str
     plan: SpreadPlan | None            # None => this candidate is a no-trade
     mode: str                          # 'llm' | 'llm-degraded'
-    reason: str                        # DEBATE_UNRESOLVED | RISK_TEAM_VETO | ProposalFailure member | NOT_TOP_DEBATE_CANDIDATE | 'OK'
+    reason: str                        # DEBATE_UNANIMOUS_DISAGREE | RISK_TEAM_VETO | ProposalFailure member | NOT_TOP_DEBATE_CANDIDATE | 'OK'
     artifacts: PipelineArtifacts
     # main.py's DoD print line ('Analysts: ... score N.NN') reads this
     # directly rather than recomputing it from artifacts.analyst_rows, which
@@ -100,6 +100,11 @@ class PipelineOutcome:
     # No default: a construction site that forgets to pass this must fail
     # loudly at construction, not silently print 'score 0.00'.
     analyst_score: float
+    # Day 4 (docs/day4_track_ab_plan.md §2.3): the debate's size multiplier,
+    # threaded to GateContext.conviction. Same no-default convention as
+    # analyst_score above -- 1.0 is set explicitly on every construction
+    # site that has no debate to draw it from.
+    conviction: float
 
 
 _ANALYST_FIELDS: tuple[tuple[str, str], ...] = (
@@ -164,7 +169,7 @@ async def run_llm_pipeline(
     """1. run_analysts over all shortlisted candidates (<=12 calls, one gather)
        2. rank by analyst_score, take DEBATE_CANDIDATES (2)
        3. per surviving candidate, concurrently with the others:
-            run_debate -> UNRESOLVED? stop, no_trade
+            run_debate -> conviction == 0.0 (unanimous DISAGREE)? stop, no_trade
             propose    -> ProposalFailure? stop, no_trade
             run_risk_team -> vetoed? stop, no_trade
        4. return one PipelineOutcome per SHORTLISTED candidate (not just the
@@ -182,10 +187,14 @@ async def run_llm_pipeline(
         debate = await run_debate(llm, r.bundle, sink=sink)
         mode = _mode(r, debate)
 
-        if debate.verdict == Verdict.UNRESOLVED:
+        # docs/day4_track_ab_plan.md §2.3: the old UNRESOLVED early-return
+        # (D5/D6 -- a lone bear veto, or unanimous COMMIT with thin
+        # citations) is gone. The only remaining debate-driven no-trade is
+        # unanimous DISAGREE, which conviction() scores exactly 0.0.
+        if debate.conviction == 0.0:
             return PipelineOutcome(
-                symbol=symbol, plan=None, mode=mode, reason="DEBATE_UNRESOLVED",
-                analyst_score=analyst_score(r),
+                symbol=symbol, plan=None, mode=mode, reason="DEBATE_UNANIMOUS_DISAGREE",
+                analyst_score=analyst_score(r), conviction=debate.conviction,
                 artifacts=PipelineArtifacts(
                     analyst_rows=analyst_artifacts, debate_nodes=_debate_artifacts(debate),
                     debate_summary=_debate_summary_artifact(debate), llm_call_ids=tuple(sink),
@@ -201,7 +210,7 @@ async def run_llm_pipeline(
         if isinstance(proposal_result, ProposalFailure):
             return PipelineOutcome(
                 symbol=symbol, plan=None, mode=mode, reason=proposal_result.value,
-                analyst_score=analyst_score(r),
+                analyst_score=analyst_score(r), conviction=debate.conviction,
                 artifacts=PipelineArtifacts(
                     analyst_rows=analyst_artifacts, debate_nodes=_debate_artifacts(debate),
                     debate_summary=_debate_summary_artifact(debate), llm_call_ids=tuple(sink),
@@ -214,7 +223,7 @@ async def run_llm_pipeline(
         if risk_result.vetoed:
             return PipelineOutcome(
                 symbol=symbol, plan=None, mode=mode, reason="RISK_TEAM_VETO",
-                analyst_score=analyst_score(r),
+                analyst_score=analyst_score(r), conviction=debate.conviction,
                 artifacts=PipelineArtifacts(
                     analyst_rows=analyst_artifacts, debate_nodes=_debate_artifacts(debate),
                     debate_summary=_debate_summary_artifact(debate),
@@ -225,7 +234,7 @@ async def run_llm_pipeline(
 
         return PipelineOutcome(
             symbol=symbol, plan=plan, mode=mode, reason="OK",
-            analyst_score=analyst_score(r),
+            analyst_score=analyst_score(r), conviction=debate.conviction,
             artifacts=PipelineArtifacts(
                 analyst_rows=analyst_artifacts, debate_nodes=_debate_artifacts(debate),
                 debate_summary=_debate_summary_artifact(debate),
@@ -253,7 +262,7 @@ async def run_llm_pipeline(
             # mode='llm' does not apply here by construction -- 'llm' means
             # only that this candidate's own analysts all succeeded.
             symbol=r.symbol, plan=None, mode="llm-degraded" if r.failures else "llm",
-            reason="NOT_TOP_DEBATE_CANDIDATE", analyst_score=analyst_score(r),
+            reason="NOT_TOP_DEBATE_CANDIDATE", analyst_score=analyst_score(r), conviction=1.0,
             artifacts=PipelineArtifacts(analyst_rows=_analyst_artifacts(r), llm_call_ids=tuple(sinks[r.symbol])),
         )
         for r in others

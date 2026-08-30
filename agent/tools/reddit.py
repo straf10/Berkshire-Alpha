@@ -32,8 +32,10 @@ class RedditPost:
 class MentionSignal:
     symbol: str
     mentions: int              # raw count this scan -- persisted to sentiment_snapshots.mentions
-    baseline: float            # mean of the trailing REDDIT_MENTION_BASELINE_N raw COUNTS (docs/day3_llm_plan.md S1e)
-    velocity: float            # mentions / max(baseline, 1.0)
+    baseline: float            # the baseline actually used: mean of the trailing REDDIT_MENTION_BASELINE_N
+                                # raw COUNTS (docs/day3_llm_plan.md S1e) once warm, else this scan's
+                                # cross-sectional universe mean (docs/day4_track_ab_plan.md §3.2)
+    velocity: float            # mentions / baseline
     posts: tuple[RedditPost, ...]   # matched posts, newest first, for the analyst prompt
 
 
@@ -88,20 +90,26 @@ def match_symbols(posts: Sequence[RedditPost], universe: Sequence[str]) -> dict[
     return result
 
 
-async def _baseline(conn: aiosqlite.Connection, symbol: str) -> float:
+async def _baseline(conn: aiosqlite.Connection, symbol: str) -> float | None:
     """Mean of the trailing raw mention COUNTS, never of the stored velocities
     (docs/day3_llm_plan.md S1e). `mentions > 0` excludes rows backfilled to 0
     by the migration, so a partially migrated table reports "no baseline yet"
-    rather than a baseline biased toward zero."""
+    rather than a baseline biased toward zero.
+
+    Returns None with fewer than REDDIT_MENTION_BASELINE_N qualifying rows,
+    instead of fabricating 1.0 -- a cold start otherwise reads raw mention
+    count as velocity, inflating every name's first scans into a false spike
+    (docs/day4_track_ab_plan.md §3.2, D7)."""
     cur = await conn.execute(
-        """SELECT AVG(mentions) FROM (
-             SELECT mentions FROM sentiment_snapshots
-             WHERE symbol = ? AND source = 'reddit' AND mentions > 0
-             ORDER BY ts_utc DESC LIMIT ?)""",
+        """SELECT mentions FROM sentiment_snapshots
+           WHERE symbol = ? AND source = 'reddit' AND mentions > 0
+           ORDER BY ts_utc DESC LIMIT ?""",
         (symbol, REDDIT_MENTION_BASELINE_N),
     )
-    row = await cur.fetchone()
-    return float(row[0]) if row and row[0] is not None else 1.0
+    rows = await cur.fetchall()
+    if len(rows) < REDDIT_MENTION_BASELINE_N:
+        return None
+    return sum(r[0] for r in rows) / len(rows)
 
 
 async def mention_signals(
@@ -121,13 +129,21 @@ async def mention_signals(
 
     matched = match_symbols(posts, universe)
     ts = datetime.now(timezone.utc).isoformat()
+    # Cross-sectional cold-start fallback (docs/day4_track_ab_plan.md §3.2, D7):
+    # with insufficient per-symbol history, normalise against THIS scan's
+    # universe mean rather than a fabricated 1.0. Meaningful on scan #1, no
+    # history required -- the same relative-value reasoning as the
+    # cross-sectional VRP rank in ticker_screener.
+    counts = {sym: len(matched[sym]) for sym in universe}
+    universe_mean = max(sum(counts.values()) / len(universe), 1.0)
     signals: dict[str, MentionSignal] = {}
     for sym in universe:
         sym_posts = tuple(sorted(matched[sym], key=lambda p: p.created_utc, reverse=True))
-        mentions = len(sym_posts)
-        baseline = await _baseline(conn, sym)
-        velocity = mentions / max(baseline, 1.0)
-        signals[sym] = MentionSignal(symbol=sym, mentions=mentions, baseline=baseline, velocity=velocity, posts=sym_posts)
+        mentions = counts[sym]
+        baseline = await _baseline(conn, sym)          # None until N rows exist
+        used_baseline = baseline if baseline is not None else universe_mean
+        velocity = mentions / used_baseline
+        signals[sym] = MentionSignal(symbol=sym, mentions=mentions, baseline=used_baseline, velocity=velocity, posts=sym_posts)
         await storage_write.insert_sentiment_snapshot(
             conn,
             storage_write.SentimentSnapshotRow(

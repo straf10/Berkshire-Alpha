@@ -281,7 +281,7 @@ async def test_dry_run_prints_llm_line(tmp_path, monkeypatch: pytest.MonkeyPatch
         p_success=0.72, spot=100.0, short_leg_delta=0.275,
     )
     outcome = PipelineOutcome(
-        symbol="SPY", plan=plan, mode="llm", reason="OK", analyst_score=0.81,
+        symbol="SPY", plan=plan, mode="llm", reason="OK", analyst_score=0.81, conviction=1.0,
         artifacts=PipelineArtifacts(
             debate_nodes=(
                 DebateArtifact(round=1, persona="BULL", doc_action="COMMIT", evidence_cited_json="[]",
@@ -318,8 +318,118 @@ async def test_dry_run_prints_llm_line(tmp_path, monkeypatch: pytest.MonkeyPatch
     await main_module.scan_cycle(deps, session, dry_run=True)
 
     out = capsys.readouterr().out
-    assert "SPRT TERMINATED R1" in out
+    assert "TERMINATED EARLY R1" in out
+    assert "conviction 1.00" in out
     assert "mode=llm" in out
+
+
+async def test_conviction_reaches_gate(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """docs/day4_track_ab_plan.md §2.4: outcome.conviction arrives in
+    GateContext.conviction unmodified and Phase D applies it as a size
+    multiplier on top of whatever the deterministic caps already allow --
+    verified by comparing a full-conviction run against a halved-conviction
+    run on the identical plan/account rather than hand-computing the caps."""
+    from agent.agents.pipeline import (
+        DebateArtifact,
+        DebateSummaryArtifact,
+        PipelineArtifacts,
+        PipelineOutcome,
+        ProposalArtifact,
+        RiskVoteArtifact,
+    )
+    from agent.schemas.execution import Intent, Leg, Regime, SpreadPlan, Structure
+    from agent.strategy.regime import RegimeDecision
+    from agent.strategy.regime import select as real_select
+
+    import agent.strategy.ticker_screener as ticker_screener_module
+
+    def forced_select(q, assigned):
+        if q.symbol == "SPY" and q.data_ok:
+            return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
+        return real_select(q, assigned)
+
+    monkeypatch.setattr(main_module, "select", forced_select)
+    monkeypatch.setattr(ticker_screener_module, "select", forced_select)
+    monkeypatch.setattr(main_module, "fetch_headlines", lambda *a, **k: _immediate({}))
+    monkeypatch.setattr(main_module, "_fetch_reddit", lambda *a, **k: _immediate({}))
+
+    plan = SpreadPlan(
+        # Strikes taken from the real chain_SPY.json fixture (same pair
+        # test_unanimous_approve_of_oversized_trade_rejected uses) so the
+        # gate reaches Phase D's sizing/conviction logic instead of rejecting
+        # earlier on STRIKE_NOT_IN_CHAIN.
+        symbol="SPY", structure=Structure.BULL_PUT_SPREAD, regime=Regime.CREDIT,
+        expiry=date(2026, 9, 4), dte=4,
+        legs=(
+            Leg(occ_symbol="SPY260904P00772000", strike=772.0, right="P", side="SELL", ratio_qty=1,
+                intent=Intent.SELL_TO_OPEN, delta=-0.275, vega=0.05, bid=1.0, ask=1.1),
+            Leg(occ_symbol="SPY260904P00763000", strike=763.0, right="P", side="BUY", ratio_qty=1,
+                intent=Intent.BUY_TO_OPEN, delta=-0.10, vega=0.03, bid=0.2, ask=0.3),
+        ),
+        width=9.0, net_mid=Decimal("-0.90"), net_natural=Decimal("-0.75"),
+        max_profit_per_spread=Decimal("90"), max_loss_per_spread=Decimal("210"),
+        # spot is deliberately small (not the real ~770 SPY level the 772/763
+        # strikes imply) so marginal delta-dollars stay small and
+        # MAX_RISK_PER_TRADE, not the portfolio delta cap, is what binds --
+        # gates.py never cross-checks spot against strike, so this is safe.
+        p_success=0.72, spot=100.0, short_leg_delta=0.275,
+    )
+
+    def _outcome(conviction: float):
+        return PipelineOutcome(
+            symbol="SPY", plan=plan, mode="llm", reason="OK", analyst_score=0.81, conviction=conviction,
+            artifacts=PipelineArtifacts(
+                debate_nodes=(
+                    DebateArtifact(round=1, persona="BULL", doc_action="COMMIT", evidence_cited_json="[]",
+                                   volatility_view="v", rebuttal_argument="r"),
+                    DebateArtifact(round=1, persona="BEAR", doc_action="DISAGREE", evidence_cited_json="[]",
+                                   volatility_view="v", rebuttal_argument="r"),
+                ),
+                debate_summary=DebateSummaryArtifact(rounds_run=2, consensus_score=0.45,
+                                                      verdict="UNRESOLVED", terminated_early=False),
+                proposal_row=ProposalArtifact(
+                    proposal_json='{"confidence_score": 0.8}', accepted=True, reject_reason=None,
+                ),
+                risk_rows=(RiskVoteArtifact(persona="AGGRESSIVE", decision="APPROVE", max_loss_acceptable=True,
+                                             risk_reward_ratio_acceptable=True, manager_notes="x"),),
+            ),
+        )
+
+    async def _run(conviction: float) -> tuple[str, int | None]:
+        db_path = str(tmp_path / f"agent_{conviction}.db")
+        await storage_db.init_db(db_path)
+        _patch_cli(monkeypatch)
+
+        async def fake_run_llm_pipeline(*args, **kwargs):
+            return [_outcome(conviction)]
+
+        monkeypatch.setattr(main_module, "run_llm_pipeline", fake_run_llm_pipeline)
+
+        clients = FakeClients()
+        broker = MockBroker([])
+        clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+        deps = _deps(db_path, clients, broker, clock)
+        deps.llm_enabled = True
+        deps.http = object()  # never dereferenced: run_llm_pipeline is monkeypatched above
+
+        session = await main_module.current_or_next_session(clients)
+        await main_module.scan_cycle(deps, session, dry_run=True)
+
+        async with storage_db.connect(db_path) as conn:
+            cur = await conn.execute("SELECT gate_reason, qty FROM decisions WHERE symbol = 'SPY'")
+            gate_reason, qty = await cur.fetchone()
+        return gate_reason, qty
+
+    full_reason, full_qty = await _run(1.0)
+    half_reason, half_qty = await _run(0.5)
+    zero_reason, zero_qty = await _run(0.0)
+
+    assert full_reason == "APPROVED"
+    assert full_qty >= 2  # otherwise halving/zeroing below can't be distinguished
+    assert half_reason == "APPROVED"
+    assert half_qty == full_qty // 2
+    assert zero_reason == "LOW_CONVICTION"
+    assert zero_qty is None
 
 
 async def test_unanimous_approve_of_oversized_trade_rejected(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -380,7 +490,7 @@ async def test_unanimous_approve_of_oversized_trade_rejected(tmp_path, monkeypat
         p_success=0.72, spot=770.0, short_leg_delta=0.28,
     )
     outcome = PipelineOutcome(
-        symbol="SPY", plan=oversized_plan, mode="llm", reason="OK", analyst_score=0.81,
+        symbol="SPY", plan=oversized_plan, mode="llm", reason="OK", analyst_score=0.81, conviction=1.0,
         artifacts=PipelineArtifacts(
             risk_rows=(
                 RiskVoteArtifact(persona="AGGRESSIVE", decision="APPROVE", max_loss_acceptable=True,
@@ -474,7 +584,7 @@ async def _run_llm_scan_with_full_artifacts(tmp_path, monkeypatch: pytest.Monkey
         p_success=0.72, spot=100.0, short_leg_delta=0.275,
     )
     outcome = PipelineOutcome(
-        symbol="SPY", plan=plan, mode="llm", reason="OK", analyst_score=0.81,
+        symbol="SPY", plan=plan, mode="llm", reason="OK", analyst_score=0.81, conviction=1.0,
         artifacts=PipelineArtifacts(
             analyst_rows=(
                 AnalystArtifact(

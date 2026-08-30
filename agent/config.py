@@ -98,6 +98,8 @@ CLOSED_SLEEP_CEILING_S: Final[float] = 900.0
 # Day 4 (docs/day4_track_ab_plan.md §0.4).
 RV_WINSOR_Z: Final[float] = 3.0
 CROSS_SECTION_N: Final[int] = 3
+CONVICTION_GROUNDING_FLOOR: Final[float] = 0.75
+CONVICTION_DEGRADED_FLOOR: Final[float] = 0.5
 
 # Values introduced by the Day-3 LLM plan (docs/day3_llm_plan.md S0.3).
 # plan.md is silent on each of these; they are reviewable here rather than
@@ -119,7 +121,7 @@ DEBATE_MAX_ROUNDS: Final[int] = 2
 DEBATE_CANDIDATES: Final[int] = 2
 EVIDENCE_CITES_EXPECTED: Final[int] = 3
 REDDIT_SUBS: Final[tuple[str, ...]] = ("wallstreetbets", "stocks", "options")
-REDDIT_POST_LIMIT: Final[int] = 100
+REDDIT_POST_LIMIT: Final[int] = 250
 REDDIT_MENTION_BASELINE_N: Final[int] = 6
 NEWS_LOOKBACK_H: Final[int] = 24
 NEWS_MAX_HEADLINES: Final[int] = 10

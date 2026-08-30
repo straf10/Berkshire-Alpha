@@ -325,6 +325,37 @@ def test_gate_context_default_keeps_day2_tests_green() -> None:
     assert ctx.llm_budget_exhausted is False
 
 
+def test_conviction_only_reduces_qty() -> None:
+    # docs/day4_track_ab_plan.md §2.4: default plan's sized.qty is 8 (Kelly
+    # capped by MAX_RISK_PER_TRADE_PCT), well under every other cap here, so
+    # conviction is the only thing moving the final qty.
+    plan = _plan()
+    baseline = evaluate(plan, _ctx())
+    assert baseline.approved and baseline.qty == 8
+
+    full = evaluate(plan, _ctx(conviction=1.0))
+    assert full.qty == baseline.qty
+
+    halved = evaluate(plan, _ctx(conviction=0.5))
+    assert halved.approved
+    assert halved.qty == baseline.qty // 2
+
+    zeroed = evaluate(plan, _ctx(conviction=0.0))
+    assert not zeroed.approved
+    assert zeroed.reason == GateReason.LOW_CONVICTION
+
+
+def test_conviction_cannot_exceed_cap() -> None:
+    """conviction is applied to q, never to any of the independent caps --
+    a lower conviction can only ever tighten the binding cap's ceiling, never
+    loosen it (docs/day4_track_ab_plan.md §2.4's invariant)."""
+    plan = _plan()
+    full = evaluate(plan, _ctx(buying_power=Decimal("300"), conviction=1.0))
+    half = evaluate(plan, _ctx(buying_power=Decimal("300"), conviction=0.5))
+    assert full.approved and full.qty == 1
+    assert half.approved and half.qty == 1
+
+
 def test_binding_constraint_reported() -> None:
     plan = _plan(max_loss=Decimal("5000"), max_profit=Decimal("2000"), width=100.0)
     decision = evaluate(plan, _ctx(buying_power=Decimal("100")))
