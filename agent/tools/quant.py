@@ -77,6 +77,21 @@ def _winsorise(returns: list[float], z: float = RV_WINSOR_Z) -> list[float]:
     return [max(lo, min(hi, r)) for r in returns]
 
 
+def winsor_clip_count(returns: list[float], z: float = RV_WINSOR_Z) -> int:
+    """Count of returns _winsorise actually moved -- observability for how much the
+    estimator intervened on a given window (docs/IMMEDIATE_IMPROVEMENT.md #2 follow-up).
+    Pure, reuses _winsorise rather than re-deriving the band."""
+    winsorised = _winsorise(returns, z)
+    return sum(1 for original, capped in zip(returns, winsorised) if original != capped)
+
+
+def _log_returns(window: Sequence[float]) -> list[float]:
+    """R_i = ln(P_i / P_{i-1}) over a closes window. Factored out so callers needing
+    the raw returns (e.g. winsor_clip_count observability) don't re-derive this loop
+    divergently from realised_vol_20's own use of it."""
+    return [math.log(window[i] / window[i - 1]) for i in range(1, len(window))]
+
+
 def realised_vol_20(closes: Sequence[float]) -> float:
     """R_i = ln(P_i / P_{i-1});  RV_20 = sqrt(252) * stdev(R_1..R_20), sample stdev (N-1),
     winsorised at RV_WINSOR_Z sample sigma before the stdev. Requires len(closes) >=
@@ -84,7 +99,7 @@ def realised_vol_20(closes: Sequence[float]) -> float:
     if len(closes) < RV_WINDOW + 1:
         raise ValueError(f"need at least {RV_WINDOW + 1} closes, got {len(closes)}")
     window = closes[-(RV_WINDOW + 1):]
-    log_returns = [math.log(window[i] / window[i - 1]) for i in range(1, len(window))]
+    log_returns = _log_returns(window)
     return math.sqrt(ANNUALISATION_DAYS) * statistics.stdev(_winsorise(log_returns))
 
 
@@ -267,6 +282,7 @@ def compute_snapshot(
     rv20 = realised_vol_20(closes)
     if rv20 == 0.0:
         return _dropped(symbol, session_date, "ZERO_RV")
+    rv_clips = winsor_clip_count(_log_returns(closes_21))
 
     if chain is None:
         return _dropped(symbol, session_date, "NO_CHAIN")
@@ -309,6 +325,7 @@ def compute_snapshot(
         dte=dte,
         data_ok=True,
         drop_reason=None,
+        rv_clips=rv_clips,
     )
 
 

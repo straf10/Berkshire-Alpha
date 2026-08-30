@@ -140,6 +140,15 @@ def test_winsorise_caps_single_gap() -> None:
     assert quant._winsorise(stable) == stable
 
 
+def test_winsor_clip_count() -> None:
+    stable = [0.001, -0.001, 0.002, -0.002, 0.001, -0.001, 0.002, -0.001,
+              0.001, -0.002, 0.001, -0.001, 0.002, -0.001, 0.001, -0.002,
+              0.001, -0.001, 0.001, -0.001]
+    with_gap = stable[:18] + [0.28, -0.001]  # one +28% earnings-gap return
+    assert quant.winsor_clip_count(with_gap) == 1
+    assert quant.winsor_clip_count(stable) == 0
+
+
 def test_winsorise_preserves_length() -> None:
     returns = [0.01 * ((-1) ** i) for i in range(25)]
     assert len(quant._winsorise(returns)) == len(returns)

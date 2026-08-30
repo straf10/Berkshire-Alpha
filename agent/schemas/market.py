@@ -81,3 +81,4 @@ class QuantSnapshot:
     dte: int
     data_ok: bool
     drop_reason: str | None
+    rv_clips: int = 0          # count of returns _winsorise moved in the RV_20 window -- observability only
