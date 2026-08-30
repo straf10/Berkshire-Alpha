@@ -18,6 +18,9 @@ jobs:
           cache: "pip"
       - run: pip install -r requirements.txt
       - run: pytest -m "not live"
+        env:
+          APCA_API_KEY_ID: test-key-id
+          APCA_API_SECRET_KEY: test-secret-key
 
   test-frontend:
     name: Test frontend (lint + build)
