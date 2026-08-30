@@ -27,18 +27,37 @@ from agent.tools.market_data import ChainCache, UniverseBars
 
 
 def _winsorise(returns: list[float], z: float = RV_WINSOR_Z) -> list[float]:
-    """Cap |r| at z sample-sigma. A single earnings gap in a 20-bar window adds ~28
-    annualised vol points to the estimate and mechanically pushes the richest-premium
-    names below VRP 1.0 -- the inverse of the correct routing (docs/day4_track_ab_plan.md
-    §1.2, A2). Caps outliers rather than dropping them -- deletion is a systematically
-    downward-biased estimator applied uniformly to every name."""
+    """Cap |r| at z robust-sigma, median/MAD rather than mean/stdev. A single earnings
+    gap in a 20-bar window adds ~28 annualised vol points to the estimate and
+    mechanically pushes the richest-premium names below VRP 1.0 -- the inverse of the
+    correct routing (docs/day4_track_ab_plan.md §1.2, A2). Caps outliers rather than
+    dropping them -- deletion is a systematically downward-biased estimator applied
+    uniformly to every name.
+
+    mean/stdev is self-masking: the outlier this function exists to catch is itself
+    included in the sigma it's tested against, inflating the band around it. Day 4's
+    mandatory validation caught this on real data -- at RV_WINSOR_Z = 3.0, rv_old ==
+    rv_new for all ten UNIVERSE names, e.g. NVDA's +8.41% single-day return sat inside
+    its own mean/stdev 3-sigma bound of +/-9.19% (docs/IMMEDIATE_IMPROVEMENT.md #2). The
+    median and MAD (median absolute deviation) are each themselves robust to a single
+    outlier, so the gap can't widen the band it needs to clear."""
     if len(returns) < 3:
         return list(returns)
-    mu = statistics.mean(returns)
-    sd = statistics.stdev(returns)
+    med = statistics.median(returns)
+    mad = statistics.median([abs(r - med) for r in returns])
+    sd = 1.4826 * mad
     if sd == 0:
-        return list(returns)
-    lo, hi = mu - z * sd, mu + z * sd
+        # MAD collapses to zero whenever a majority of returns are identical (a
+        # halted or thinly-traded name) -- fall back to the sample-stdev band rather
+        # than winsorising with a zero-width band, which would clip every return to
+        # the median.
+        mu = statistics.mean(returns)
+        sd = statistics.stdev(returns)
+        if sd == 0:
+            return list(returns)
+        lo, hi = mu - z * sd, mu + z * sd
+        return [max(lo, min(hi, r)) for r in returns]
+    lo, hi = med - z * sd, med + z * sd
     return [max(lo, min(hi, r)) for r in returns]
 
 

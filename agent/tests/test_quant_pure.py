@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import statistics
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -142,6 +143,45 @@ def test_winsorise_caps_single_gap() -> None:
 def test_winsorise_preserves_length() -> None:
     returns = [0.01 * ((-1) ** i) for i in range(25)]
     assert len(quant._winsorise(returns)) == len(returns)
+
+
+def test_winsorise_mad_catches_what_mean_stdev_missed() -> None:
+    # Pins docs/IMMEDIATE_IMPROVEMENT.md #2 / docs/day4_track_ab_plan.md's mandatory
+    # validation: AMD's real 20-bar log-return window (agent/tests/fixtures/
+    # bars_daily.json) is self-masking under mean/stdev -- the two earnings-gap
+    # returns inflate the very sigma they're tested against, so the old band leaves
+    # both untouched. The median/MAD band is not moved by the outliers it's scoring
+    # and clips both.
+    import math
+
+    from agent.tests.fixture_helpers import load_bar_data
+
+    bars = load_bar_data("bars_daily.json")
+    closes = [b.close for b in bars["AMD"]][-21:]
+    returns = [math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes))]
+
+    mu = statistics.mean(returns)
+    sd = statistics.stdev(returns)
+    old_band = (mu - config.RV_WINSOR_Z * sd, mu + config.RV_WINSOR_Z * sd)
+    uncaught_by_old = [r for r in returns if r < old_band[0] or r > old_band[1]]
+    assert uncaught_by_old == []  # confirms the old estimator's blind spot on real data
+
+    result = quant._winsorise(returns)
+    assert max(result) < max(returns)
+    assert min(result) > min(returns)
+
+
+def test_winsorise_mad_zero_falls_back_without_collapsing() -> None:
+    # A majority-identical return series (a halted/thinly-traded name) drives MAD to
+    # zero. The fallback must use the sample-stdev band, not a zero-width band that
+    # would clip every return down to the median.
+    returns = [0.001] * 15 + [0.002, -0.002, 0.003, -0.003, 0.05]
+    assert statistics.median([abs(r - statistics.median(returns)) for r in returns]) == 0.0
+
+    result = quant._winsorise(returns)
+    assert result[:15] == returns[:15]  # untouched majority is not dragged to the median
+    assert result[15:19] == returns[15:19]  # the small non-degenerate returns pass through
+    assert max(result) < 0.05  # the real outlier still gets capped, not ignored
 
 
 def test_vwm_zscore_is_scale_free() -> None:
