@@ -14,3 +14,6 @@ a checkpoint.
 - Merge to `main` only when you actually want the current state tested and
   deployed. Batch unrelated small changes (docs tweaks, WIP, etc.) into one
   branch instead of landing each on `main` separately.
+- If a merge to `main` genuinely doesn't need a redeploy (docs-only, CI
+  tweaks), include `[skip deploy]` anywhere in the commit message. Tests
+  still run either way — this only skips `deploy-backend`/`deploy-frontend`.
