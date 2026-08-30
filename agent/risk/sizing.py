@@ -13,12 +13,21 @@ from agent.schemas.execution import STRUCTURE_IS_CREDIT, SpreadPlan, Structure
 L_UNIT: Final[float] = 1.0
 
 
-def p_success(structure: Structure, short_leg_delta: float) -> float:
-    """Credit: p = 1 - |delta_short| (short strike finishes OTM -> max profit).
-    Debit: p = |delta_short| (short strike finishes ITM -> max profit); mirror
-    of plan.md's stated credit case. [NEW -- disclosed extension]"""
-    d = abs(short_leg_delta)
-    return (1.0 - d) if STRUCTURE_IS_CREDIT[structure] else d
+def p_success(structure: Structure, short_leg_delta: float, vrp_ratio: float) -> float:
+    """Delta is the RISK-NEUTRAL breach probability. Our thesis is that the physical
+    measure differs from it by the measured volatility risk premium: when IV overstates
+    subsequent realised movement by `vrp_ratio`, the short strike is proportionally less
+    likely to be breached. Deflate accordingly, then clamp.
+
+    Credit (VRP > 1): breach probability shrinks -> p_success rises.
+    Debit  (VRP < 1): IV understates movement -> the long strike is MORE likely to be
+    reached -> p_success also rises. The single transform is correct in both directions.
+    (docs/day4_track_ab_plan.md §1.1 -- D3: feeding the risk-neutral delta straight into
+    Kelly asserts the market is fairly priced, which contradicts the VRP thesis and
+    produces NEGATIVE_EDGE on correctly-priced spreads.)"""
+    d_rn = abs(short_leg_delta)
+    d_phys = max(0.05, min(0.95, d_rn / max(vrp_ratio, 0.5)))
+    return (1.0 - d_phys) if STRUCTURE_IS_CREDIT[structure] else d_phys
 
 
 @dataclass(frozen=True)

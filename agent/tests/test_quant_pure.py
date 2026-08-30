@@ -118,14 +118,30 @@ def test_atm_iv_picks_nearest_strike() -> None:
     assert quant.atm_iv(tie_chain, expiry, spot=100.0) == pytest.approx((0.11 + 0.13) / 2, abs=1e-9)
 
 
-def test_vrp_regime_boundaries() -> None:
-    assert config.VRP_CREDIT_MIN == 1.25
+def test_vrp_sign_guards() -> None:
+    # Renamed from test_vrp_regime_boundaries -- docs/day4_track_ab_plan.md
+    # §1.3 retired the absolute 1.25/1.00 entry thresholds; VRP_CREDIT_MIN/
+    # VRP_DEBIT_MAX now serve only as cross-sectional sign guards in
+    # ticker_screener.assign_regimes (both at 1.0).
+    assert config.VRP_CREDIT_MIN == 1.00
     assert config.VRP_DEBIT_MAX == 1.00
 
-    assert 1.25 >= config.VRP_CREDIT_MIN                                    # -> CREDIT
-    assert not (1.2499 >= config.VRP_CREDIT_MIN)                            # -> NO_TRADE
-    assert 0.9999 < config.VRP_DEBIT_MAX                                    # -> DEBIT-eligible
-    assert not (1.00 < config.VRP_DEBIT_MAX or 1.00 >= config.VRP_CREDIT_MIN)  # -> NO_TRADE
+
+def test_winsorise_caps_single_gap() -> None:
+    stable = [0.001, -0.001, 0.002, -0.002, 0.001, -0.001, 0.002, -0.001,
+              0.001, -0.002, 0.001, -0.001, 0.002, -0.001, 0.001, -0.002,
+              0.001, -0.001, 0.001, -0.001]
+    with_gap = stable[:18] + [0.28, -0.001]  # one +28% earnings-gap return
+    result = quant._winsorise(with_gap)
+    assert max(result) < 0.28
+    assert len(result) == len(with_gap)
+    # No outlier present -> nothing is capped, values pass through unchanged.
+    assert quant._winsorise(stable) == stable
+
+
+def test_winsorise_preserves_length() -> None:
+    returns = [0.01 * ((-1) ** i) for i in range(25)]
+    assert len(quant._winsorise(returns)) == len(returns)
 
 
 def test_vwm_zscore_is_scale_free() -> None:

@@ -204,10 +204,10 @@ async def test_dry_run_prints_expected_line(tmp_path, monkeypatch: pytest.Monkey
     from agent.strategy.regime import RegimeDecision
     from agent.strategy.regime import select as real_select
 
-    def forced_select(q):
+    def forced_select(q, assigned):
         if q.symbol == "SPY" and q.data_ok:
             return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
-        return real_select(q)
+        return real_select(q, assigned)
 
     monkeypatch.setattr(main_module, "select", forced_select)
     monkeypatch.setattr(ticker_screener_module, "select", forced_select)
@@ -257,10 +257,10 @@ async def test_dry_run_prints_llm_line(tmp_path, monkeypatch: pytest.MonkeyPatch
 
     import agent.strategy.ticker_screener as ticker_screener_module
 
-    def forced_select(q):
+    def forced_select(q, assigned):
         if q.symbol == "SPY" and q.data_ok:
             return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
-        return real_select(q)
+        return real_select(q, assigned)
 
     monkeypatch.setattr(main_module, "select", forced_select)
     monkeypatch.setattr(ticker_screener_module, "select", forced_select)
@@ -342,13 +342,21 @@ async def test_unanimous_approve_of_oversized_trade_rejected(tmp_path, monkeypat
 
     import agent.strategy.ticker_screener as ticker_screener_module
 
-    def forced_select(q):
+    def forced_select(q, assigned):
         if q.symbol == "SPY" and q.data_ok:
             return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
-        return real_select(q)
+        return real_select(q, assigned)
 
     monkeypatch.setattr(main_module, "select", forced_select)
     monkeypatch.setattr(ticker_screener_module, "select", forced_select)
+    # docs/day4_track_ab_plan.md §1.3: assign_regimes is cross-sectional over
+    # the real NVDA/AMD fixture data too, and Correction 3's skew-sided
+    # fallback means a CREDIT-assigned, data_ok symbol always builds SOME
+    # plan now -- isolate this adversarial test to SPY alone so a real,
+    # independently-approvable AMD/NVDA trade can't slip into
+    # broker.submitted and mask the assertion below.
+    monkeypatch.setattr(main_module, "assign_regimes", lambda snapshots: {})
+    monkeypatch.setattr(ticker_screener_module, "assign_regimes", lambda snapshots: {})
 
     # Strikes taken from the real chain_SPY.json fixture (both already used
     # by FAKE_POSITIONS above) so the gate reaches Phase B's MAX_RISK check
@@ -435,10 +443,10 @@ async def _run_llm_scan_with_full_artifacts(tmp_path, monkeypatch: pytest.Monkey
 
     import agent.strategy.ticker_screener as ticker_screener_module
 
-    def forced_select(q):
+    def forced_select(q, assigned):
         if q.symbol == "SPY" and q.data_ok:
             return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
-        return real_select(q)
+        return real_select(q, assigned)
 
     monkeypatch.setattr(main_module, "select", forced_select)
     monkeypatch.setattr(ticker_screener_module, "select", forced_select)
@@ -728,7 +736,10 @@ async def test_aggregate_risk_accumulates_in_cycle(tmp_path, monkeypatch: pytest
     db_path = str(tmp_path / "agent.db")
     await storage_db.init_db(db_path)
     async with storage_db.connect(db_path) as conn:
-        await _seed_trade(conn, max_loss=Decimal("7000"), filled_qty=1)  # aggregate starts at 7000
+        # aggregate starts at 8000 -- with the Day-4 10% aggregate ceiling
+        # ($10000) and 2%-per-trade cap ($2000), SPY's 2-contract fill exactly
+        # saturates the ceiling, leaving NVDA's cap at 0 (docs/day4_track_ab_plan.md §0.4).
+        await _seed_trade(conn, max_loss=Decimal("8000"), filled_qty=1)
 
     _patch_cli(monkeypatch, positions=[])
 
@@ -739,10 +750,10 @@ async def test_aggregate_risk_accumulates_in_cycle(tmp_path, monkeypatch: pytest
     from agent.schemas.market import ChainSnapshot, OptionQuote
     from datetime import datetime as dt_cls, timezone as tz
 
-    def forced_select(q):
+    def forced_select(q, assigned):
         if q.symbol in ("SPY", "NVDA") and q.data_ok:
             return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
-        return real_select(q)
+        return real_select(q, assigned)
 
     monkeypatch.setattr(main_module, "select", forced_select)
     monkeypatch.setattr(ticker_screener_module, "select", forced_select)
@@ -829,10 +840,10 @@ async def test_budget_ceiling_blocks_entries_not_management(tmp_path, monkeypatc
     from agent.strategy.regime import select as real_select
     from agent.schemas.execution import Regime, Structure
 
-    def forced_select(q):
+    def forced_select(q, assigned):
         if q.symbol == "SPY" and q.data_ok:
             return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
-        return real_select(q)
+        return real_select(q, assigned)
 
     monkeypatch.setattr(main_module, "select", forced_select)
     monkeypatch.setattr(ticker_screener_module, "select", forced_select)

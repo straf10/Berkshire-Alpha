@@ -176,7 +176,7 @@ def build(q: QuantSnapshot, d: RegimeDecision, chain: ChainSnapshot) -> SpreadPl
         bid=long.bid, ask=long.ask,
     )
 
-    p_success_value = p_success(structure, short.delta)
+    p_success_value = p_success(structure, short.delta, q.vrp_ratio)
 
     return SpreadPlan(
         symbol=q.symbol,
@@ -259,7 +259,7 @@ def build_from_proposal(
         bid=long.bid, ask=long.ask,
     )
 
-    p_success_value = p_success(structure, short.delta)
+    p_success_value = p_success(structure, short.delta, q.vrp_ratio)
 
     return SpreadPlan(
         symbol=q.symbol,

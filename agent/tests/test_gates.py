@@ -88,11 +88,13 @@ def test_gate_is_pure() -> None:
 
 
 def test_oversized_trade_rejected() -> None:
+    # threshold is 2000.0 (2% of $100k) -- docs/day4_track_ab_plan.md §0.4
+    # raised MAX_RISK_PER_TRADE_PCT 1.5% -> 2%.
     plan = _plan(max_loss=Decimal("5000"), max_profit=Decimal("2000"))
     decision = evaluate(plan, _ctx())
     assert not decision.approved
     assert decision.reason == GateReason.MAX_RISK_PER_TRADE
-    assert decision.threshold_value == 1500.0
+    assert decision.threshold_value == 2000.0
 
 
 def test_credit_plan_with_positive_mid_rejected() -> None:
@@ -186,9 +188,11 @@ def test_max_per_underlying() -> None:
 
 
 def test_daily_kill_switch() -> None:
+    # Boundary is -5% now -- docs/day4_track_ab_plan.md §0.4 (Correction 4,
+    # coupled with the 2% per-trade cap so two bad trades don't trip it).
     plan = _plan()
-    assert evaluate(plan, _ctx(day_pnl_pct=-0.031)).reason == GateReason.DAILY_LOSS_KILL_SWITCH
-    assert evaluate(plan, _ctx(day_pnl_pct=-0.029)).approved
+    assert evaluate(plan, _ctx(day_pnl_pct=-0.051)).reason == GateReason.DAILY_LOSS_KILL_SWITCH
+    assert evaluate(plan, _ctx(day_pnl_pct=-0.049)).approved
 
 
 def test_drawdown_conservative_halves_and_blocks_credit() -> None:
@@ -198,10 +202,15 @@ def test_drawdown_conservative_halves_and_blocks_credit() -> None:
 
     debit_legs = (_leg("BUY", 100.0, 0.50, occ="TST260904C00100000"),
                   _leg("SELL", 105.0, 0.30, occ="TST260904C00105000"))
+    # max_profit/max_loss sized so sizing's own MAX_RISK_PER_TRADE cap (now 2%
+    # of equity, docs/day4_track_ab_plan.md §0.4) stays the binding constraint
+    # in both branches below -- at the old 1.5% cap this pair coincidentally
+    # tied with the portfolio delta cap at exactly 7, which is what let the
+    # un-halved "// 2" assertion pass; the tie no longer holds at 2%.
     debit_plan = SpreadPlan(
         symbol="TST", structure=Structure.BULL_CALL_SPREAD, regime=Regime.DEBIT, expiry=EXPIRY, dte=4,
         legs=debit_legs, width=5.0, net_mid=Decimal("2.06"), net_natural=Decimal("2.40"),
-        max_profit_per_spread=Decimal("294"), max_loss_per_spread=Decimal("206"),
+        max_profit_per_spread=Decimal("428"), max_loss_per_spread=Decimal("300"),
         p_success=0.50, spot=100.0, short_leg_delta=0.30,
     )
     ctx = _ctx(drawdown_pct=-0.09, chain_symbols=frozenset(leg.occ_symbol for leg in debit_legs))
@@ -222,14 +231,32 @@ def test_drawdown_terminal() -> None:
 
 
 def test_aggregate_risk_cap() -> None:
-    # Aggregate cap = floor((0.08*100000 - 7600) / 100) = 4; sizing's own cap
-    # (floor(1500/100) = 15) is looser, so the aggregate cap must bind.
+    # Aggregate cap = floor((0.10*100000 - 9600) / 100) = 4; sizing's own cap
+    # (floor(2000/100) = 20) is looser, so the aggregate cap must bind.
+    # docs/day4_track_ab_plan.md §0.4 raised MAX_AGGREGATE_RISK_PCT 8% -> 10%
+    # (coupled with MAX_RISK_PER_TRADE_PCT's 1.5% -> 2% rise).
     plan = _plan(max_loss=Decimal("100"), max_profit=Decimal("40"), p_success=0.95)
-    decision = evaluate(plan, _ctx(aggregate_defined_risk=Decimal("7600")))
+    decision = evaluate(plan, _ctx(aggregate_defined_risk=Decimal("9600")))
     assert decision.approved
     assert decision.qty == 4
-    total_after = 7600 + float(plan.max_loss_per_spread) * decision.qty
-    assert total_after <= 8000.0 + 1e-9
+    total_after = 9600 + float(plan.max_loss_per_spread) * decision.qty
+    assert total_after <= 10000.0 + 1e-9
+
+
+def test_aggregate_cap_admits_five_positions() -> None:
+    # docs/day4_track_ab_plan.md F2: at 2%/trade ($2000 max_loss) and a 10%
+    # aggregate ceiling ($10000), the book saturates at exactly 5 positions --
+    # slot 5 is admissible, slot 6 is not (deliberate: raising the ceiling to
+    # make slot 6 reachable would put 12% of equity at defined risk against
+    # an 8% conservative-mode brake).
+    plan = _plan(max_loss=Decimal("2000"), max_profit=Decimal("1000"), p_success=0.95)
+    fifth = evaluate(plan, _ctx(aggregate_defined_risk=Decimal("8000")))
+    assert fifth.approved
+    assert fifth.qty == 1
+
+    sixth = evaluate(plan, _ctx(aggregate_defined_risk=Decimal("10000")))
+    assert not sixth.approved
+    assert sixth.reason == GateReason.MAX_AGGREGATE_RISK
 
 
 def test_buying_power_cap() -> None:

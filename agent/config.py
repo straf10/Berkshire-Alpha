@@ -33,7 +33,11 @@ EARNINGS_DATES: Final[dict[str, date | None]] = {
 # against any other account.
 JUDGED_ACCOUNT_NUMBER: Final[str] = "PA3UM9X4MN5X"
 
-VRP_CREDIT_MIN: Final[float] = 1.25
+# Day 4 (docs/day4_track_ab_plan.md §0.4): retained at 1.0 as CROSS-SECTIONAL
+# SIGN GUARDS only (ticker_screener.assign_regimes) -- no longer absolute
+# entry thresholds. A 4-day sample's median VRP was 0.96 against the old 1.25
+# credit threshold, which is why the cross-section is ranked instead.
+VRP_CREDIT_MIN: Final[float] = 1.00
 VRP_DEBIT_MAX: Final[float] = 1.00
 SKEW_PUT_BIAS_POINTS: Final[float] = 5.0
 RV_WINDOW: Final[int] = 20
@@ -50,13 +54,13 @@ DEBIT_STOP_LOSS_PCT: Final[Decimal] = Decimal("0.50")    # 50% of debit paid
 UNWIND_DATE: Final[date] = date(2026, 9, 3)
 UNWIND_ET_HOUR: Final[int] = 15
 UNWIND_ET_MINUTE: Final[int] = 30
-MAX_RISK_PER_TRADE_PCT: Final[float] = 0.015
-MAX_AGGREGATE_RISK_PCT: Final[float] = 0.08
+MAX_RISK_PER_TRADE_PCT: Final[float] = 0.02
+MAX_AGGREGATE_RISK_PCT: Final[float] = 0.10
 MAX_CONCURRENT_POSITIONS: Final[int] = 6
 MAX_POSITIONS_PER_UNDERLYING: Final[int] = 1
 PORTFOLIO_DELTA_PCT: Final[float] = 0.15
 PORTFOLIO_VEGA_PCT: Final[float] = 0.02
-DAILY_LOSS_KILL_PCT: Final[float] = -0.03
+DAILY_LOSS_KILL_PCT: Final[float] = -0.05
 DRAWDOWN_CONSERVATIVE_PCT: Final[float] = -0.08
 DRAWDOWN_TERMINAL_PCT: Final[float] = -0.12
 KELLY_FRACTION: Final[float] = 0.5
@@ -79,7 +83,7 @@ RSI_OVERSOLD: Final[float] = 30.0
 VWAP_DEV_THRESHOLD_PCT: Final[float] = 0.30
 VWM_LOOKBACK_N: Final[int] = 3
 VWM_Z_WINDOW: Final[int] = 60
-VWM_Z_STRONG: Final[float] = 1.0
+VWM_Z_STRONG: Final[float] = 0.75
 SHORT_DELTA_TARGET: Final[float] = 0.275
 SHORT_DELTA_BAND: Final[tuple[float, float]] = (0.22, 0.33)
 LONG_LEG_STRIKE_OFFSET: Final[int] = 1
@@ -90,6 +94,10 @@ DEGENERATE_CHAIN_MAX_DROP: Final[float] = 0.30
 SEMAPHORE_LIMIT: Final[int] = 4
 ACCOUNT_START_EQUITY: Final[Decimal] = Decimal("100000")
 CLOSED_SLEEP_CEILING_S: Final[float] = 900.0
+
+# Day 4 (docs/day4_track_ab_plan.md §0.4).
+RV_WINSOR_Z: Final[float] = 3.0
+CROSS_SECTION_N: Final[int] = 3
 
 # Values introduced by the Day-3 LLM plan (docs/day3_llm_plan.md S0.3).
 # plan.md is silent on each of these; they are reviewable here rather than

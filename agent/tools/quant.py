@@ -11,6 +11,7 @@ from agent.config import (
     DTE_MIN,
     RSI_PERIOD,
     RV_WINDOW,
+    RV_WINSOR_Z,
     UNIVERSE,
     VWM_LOOKBACK_N,
     VWM_Z_WINDOW,
@@ -25,14 +26,31 @@ from agent.tools.market_data import ChainCache, UniverseBars
 # ---------------------------------------------------------------------------
 
 
+def _winsorise(returns: list[float], z: float = RV_WINSOR_Z) -> list[float]:
+    """Cap |r| at z sample-sigma. A single earnings gap in a 20-bar window adds ~28
+    annualised vol points to the estimate and mechanically pushes the richest-premium
+    names below VRP 1.0 -- the inverse of the correct routing (docs/day4_track_ab_plan.md
+    §1.2, A2). Caps outliers rather than dropping them -- deletion is a systematically
+    downward-biased estimator applied uniformly to every name."""
+    if len(returns) < 3:
+        return list(returns)
+    mu = statistics.mean(returns)
+    sd = statistics.stdev(returns)
+    if sd == 0:
+        return list(returns)
+    lo, hi = mu - z * sd, mu + z * sd
+    return [max(lo, min(hi, r)) for r in returns]
+
+
 def realised_vol_20(closes: Sequence[float]) -> float:
-    """R_i = ln(P_i / P_{i-1});  RV_20 = sqrt(252) * stdev(R_1..R_20), sample stdev (N-1).
-    Requires len(closes) >= RV_WINDOW + 1; uses the LAST 21 closes."""
+    """R_i = ln(P_i / P_{i-1});  RV_20 = sqrt(252) * stdev(R_1..R_20), sample stdev (N-1),
+    winsorised at RV_WINSOR_Z sample sigma before the stdev. Requires len(closes) >=
+    RV_WINDOW + 1; uses the LAST 21 closes."""
     if len(closes) < RV_WINDOW + 1:
         raise ValueError(f"need at least {RV_WINDOW + 1} closes, got {len(closes)}")
     window = closes[-(RV_WINDOW + 1):]
     log_returns = [math.log(window[i] / window[i - 1]) for i in range(1, len(window))]
-    return math.sqrt(ANNUALISATION_DAYS) * statistics.stdev(log_returns)
+    return math.sqrt(ANNUALISATION_DAYS) * statistics.stdev(_winsorise(log_returns))
 
 
 def atm_iv(chain: ChainSnapshot, expiry: date, spot: float) -> float | None:
