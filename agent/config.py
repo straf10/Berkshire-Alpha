@@ -39,7 +39,6 @@ JUDGED_ACCOUNT_NUMBER: Final[str] = "PA3UM9X4MN5X"
 # credit threshold, which is why the cross-section is ranked instead.
 VRP_CREDIT_MIN: Final[float] = 1.00
 VRP_DEBIT_MAX: Final[float] = 1.00
-SKEW_PUT_BIAS_POINTS: Final[float] = 5.0
 RV_WINDOW: Final[int] = 20
 ANNUALISATION_DAYS: Final[int] = 252
 DTE_MIN: Final[int] = 3

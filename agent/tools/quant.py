@@ -27,19 +27,69 @@ from agent.tools.market_data import ChainCache, UniverseBars
 
 
 def _winsorise(returns: list[float], z: float = RV_WINSOR_Z) -> list[float]:
-    """Cap |r| at z sample-sigma. A single earnings gap in a 20-bar window adds ~28
-    annualised vol points to the estimate and mechanically pushes the richest-premium
-    names below VRP 1.0 -- the inverse of the correct routing (docs/day4_track_ab_plan.md
-    §1.2, A2). Caps outliers rather than dropping them -- deletion is a systematically
-    downward-biased estimator applied uniformly to every name."""
+    """Cap |r| at z robust-sigma, median/MAD rather than mean/stdev. A single earnings
+    gap in a 20-bar window adds ~28 annualised vol points to the estimate and
+    mechanically pushes the richest-premium names below VRP 1.0 -- the inverse of the
+    correct routing (docs/day4_track_ab_plan.md §1.2, A2). Caps outliers rather than
+    dropping them -- deletion is a systematically downward-biased estimator applied
+    uniformly to every name.
+
+    mean/stdev is self-masking: the outlier this function exists to catch is itself
+    included in the sigma it's tested against, inflating the band around it. Day 4's
+    mandatory validation caught this on real data -- at RV_WINSOR_Z = 3.0, rv_old ==
+    rv_new for all ten UNIVERSE names (docs/IMMEDIATE_IMPROVEMENT.md #2). AMD is the
+    worked example that actually clips: two earnings-adjacent returns (+8.23%, -8.77%)
+    sat inside AMD's own mean/stdev 3-sigma bound, but land outside the median/MAD band,
+    pulling RV_20 from 61.19% to 58.31% (VRP 0.880 -> 0.924) -- because the median and
+    MAD are each themselves robust to a single outlier, the gap can't widen the band
+    it needs to clear.
+
+    Limitation, stated plainly: this only clips a gap that stands against a quiet
+    baseline. NVDA's 20-day window is uniformly volatile rather than quiet-plus-one-spike,
+    so its MAD-derived scale (3.37%) comes out WIDER than its mean/stdev scale (2.93%),
+    and its own +8.41% return (z=2.51 on the MAD scale) is not clipped by either
+    estimator. That's correct, not a miss -- a name whose whole distribution is wide
+    genuinely has high RV, and there is nothing to winsorise. This function removes an
+    isolated gap against a quiet baseline; it does not generally "remove earnings
+    contamination" from a name whose entire window is volatile.
+
+    On the fixture cross-section the practical effect of this change was not on
+    AMD/NVDA's own regime routing but on the cross-sectional VRP buckets shifting
+    elsewhere: TSLA and QQQ dropped out of their CREDIT/DEBIT buckets, META and GOOGL
+    entered."""
     if len(returns) < 3:
         return list(returns)
-    mu = statistics.mean(returns)
-    sd = statistics.stdev(returns)
+    med = statistics.median(returns)
+    mad = statistics.median([abs(r - med) for r in returns])
+    sd = 1.4826 * mad
     if sd == 0:
-        return list(returns)
-    lo, hi = mu - z * sd, mu + z * sd
+        # MAD collapses to zero whenever a majority of returns are identical (a
+        # halted or thinly-traded name) -- fall back to the sample-stdev band rather
+        # than winsorising with a zero-width band, which would clip every return to
+        # the median.
+        mu = statistics.mean(returns)
+        sd = statistics.stdev(returns)
+        if sd == 0:
+            return list(returns)
+        lo, hi = mu - z * sd, mu + z * sd
+        return [max(lo, min(hi, r)) for r in returns]
+    lo, hi = med - z * sd, med + z * sd
     return [max(lo, min(hi, r)) for r in returns]
+
+
+def winsor_clip_count(returns: list[float], z: float = RV_WINSOR_Z) -> int:
+    """Count of returns _winsorise actually moved -- observability for how much the
+    estimator intervened on a given window (docs/IMMEDIATE_IMPROVEMENT.md #2 follow-up).
+    Pure, reuses _winsorise rather than re-deriving the band."""
+    winsorised = _winsorise(returns, z)
+    return sum(1 for original, capped in zip(returns, winsorised) if original != capped)
+
+
+def _log_returns(window: Sequence[float]) -> list[float]:
+    """R_i = ln(P_i / P_{i-1}) over a closes window. Factored out so callers needing
+    the raw returns (e.g. winsor_clip_count observability) don't re-derive this loop
+    divergently from realised_vol_20's own use of it."""
+    return [math.log(window[i] / window[i - 1]) for i in range(1, len(window))]
 
 
 def realised_vol_20(closes: Sequence[float]) -> float:
@@ -49,7 +99,7 @@ def realised_vol_20(closes: Sequence[float]) -> float:
     if len(closes) < RV_WINDOW + 1:
         raise ValueError(f"need at least {RV_WINDOW + 1} closes, got {len(closes)}")
     window = closes[-(RV_WINDOW + 1):]
-    log_returns = [math.log(window[i] / window[i - 1]) for i in range(1, len(window))]
+    log_returns = _log_returns(window)
     return math.sqrt(ANNUALISATION_DAYS) * statistics.stdev(_winsorise(log_returns))
 
 
@@ -232,6 +282,7 @@ def compute_snapshot(
     rv20 = realised_vol_20(closes)
     if rv20 == 0.0:
         return _dropped(symbol, session_date, "ZERO_RV")
+    rv_clips = winsor_clip_count(_log_returns(closes_21))
 
     if chain is None:
         return _dropped(symbol, session_date, "NO_CHAIN")
@@ -274,6 +325,7 @@ def compute_snapshot(
         dte=dte,
         data_ok=True,
         drop_reason=None,
+        rv_clips=rv_clips,
     )
 
 
