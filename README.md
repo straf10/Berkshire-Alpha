@@ -2,7 +2,7 @@
 
 Our submission for the [Alpaca AI Trading Agents Hackathon](https://lablab.ai/ai-hackathons/alpaca-ai-trading-agents-hackathon) (lablab.ai x Alpaca, 28 Aug – 4 Sep 2026).
 
-See [Hackathon_Info.md](Hackathon_Info.md) for the full rundown of the challenge, rules, timeline, prizes, and judging criteria.
+See [docs/hackathon.md](docs/hackathon.md) for the full rundown of the challenge, rules, timeline, prizes, and judging criteria.
 
 ## What it does
 
@@ -14,14 +14,14 @@ An autonomous options-trading agent that runs against Alpaca's paper trading env
 - **Execution & management** — walks limit orders to fill via the Alpaca CLI, then manages open spreads: profit target, stop loss, time-based (DTE) exit, assignment reconciliation, and an end-of-competition unwind.
 - **FastAPI backend** persists every decision, LLM call, and trade to SQLite and serves state to a Next.js dashboard.
 
-## Project Status
+## Status & Demo
 
 Live and trading — agent, risk gates, LLM pipeline, and dashboard are all running.
 
-## Demo
-
 - **Live dashboard (Vercel):** https://larp-lake.vercel.app
 - **Agent API (Railway):** https://alpaca-trading-agent-production.up.railway.app
+
+Every push to `main` runs tests (pytest, eslint, `next build`) via GitHub Actions, then auto-deploys the agent to Railway and the dashboard to Vercel. See [docs/deployment.md](docs/deployment.md) for details.
 
 ## Judged Account
 
@@ -98,4 +98,4 @@ pytest
 
 ## License
 
-TBD
+[MIT](LICENSE)

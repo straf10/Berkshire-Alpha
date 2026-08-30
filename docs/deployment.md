@@ -24,10 +24,13 @@ Live since Day 2 (Sat 29 Aug), per plan.md's "deploy on Day 2, not Day 6" rule.
 
 ## Redeploying
 
-- **Agent:** push to `main`, or from a local checkout with the Railway CLI linked (`railway link` inside the repo root once, then `railway up --detach`). Restarting/redeploying does not lose the DB — it's on the `/data` volume, not the container filesystem.
-- **Dashboard:** `cd web && vercel --prod` (or push to `main` if/when Vercel's GitHub integration is connected — currently deployed by hand via CLI, not auto-deploy-on-push).
+Push to `main` — GitHub Actions (`.github/workflows/ci-cd.yml`) runs pytest and eslint/`next build`, then deploys both services automatically if tests pass:
+
+- **Agent → Railway**, via `railway up --service alpaca-trading-agent`. Restarting/redeploying does not lose the DB — it's on the `/data` volume, not the container filesystem.
+- **Dashboard → Vercel**, via `vercel build && vercel deploy --prebuilt --prod` for the `larp` project.
+
+To redeploy manually instead: `railway up --detach` from a linked checkout, or `cd web && vercel --prod`.
 
 ## Known gaps
 
-- No CI/auto-deploy wired to GitHub yet for either service — deploys are manual (`railway up`, `vercel --prod`).
 - Railway's CLI `volume add` command panics on this CLI version (5.45.7) — the volume was created through the Railway dashboard instead. If it ever needs recreating, use the dashboard, not the CLI.
