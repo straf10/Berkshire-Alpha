@@ -204,10 +204,10 @@ async def test_dry_run_prints_expected_line(tmp_path, monkeypatch: pytest.Monkey
     from agent.strategy.regime import RegimeDecision
     from agent.strategy.regime import select as real_select
 
-    def forced_select(q, assigned):
+    def forced_select(q, assigned, skew_threshold):
         if q.symbol == "SPY" and q.data_ok:
             return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
-        return real_select(q, assigned)
+        return real_select(q, assigned, skew_threshold)
 
     monkeypatch.setattr(main_module, "select", forced_select)
     monkeypatch.setattr(ticker_screener_module, "select", forced_select)
@@ -257,10 +257,10 @@ async def test_dry_run_prints_llm_line(tmp_path, monkeypatch: pytest.MonkeyPatch
 
     import agent.strategy.ticker_screener as ticker_screener_module
 
-    def forced_select(q, assigned):
+    def forced_select(q, assigned, skew_threshold):
         if q.symbol == "SPY" and q.data_ok:
             return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
-        return real_select(q, assigned)
+        return real_select(q, assigned, skew_threshold)
 
     monkeypatch.setattr(main_module, "select", forced_select)
     monkeypatch.setattr(ticker_screener_module, "select", forced_select)
@@ -343,10 +343,10 @@ async def test_conviction_reaches_gate(tmp_path, monkeypatch: pytest.MonkeyPatch
 
     import agent.strategy.ticker_screener as ticker_screener_module
 
-    def forced_select(q, assigned):
+    def forced_select(q, assigned, skew_threshold):
         if q.symbol == "SPY" and q.data_ok:
             return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
-        return real_select(q, assigned)
+        return real_select(q, assigned, skew_threshold)
 
     monkeypatch.setattr(main_module, "select", forced_select)
     monkeypatch.setattr(ticker_screener_module, "select", forced_select)
@@ -452,10 +452,10 @@ async def test_unanimous_approve_of_oversized_trade_rejected(tmp_path, monkeypat
 
     import agent.strategy.ticker_screener as ticker_screener_module
 
-    def forced_select(q, assigned):
+    def forced_select(q, assigned, skew_threshold):
         if q.symbol == "SPY" and q.data_ok:
             return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
-        return real_select(q, assigned)
+        return real_select(q, assigned, skew_threshold)
 
     monkeypatch.setattr(main_module, "select", forced_select)
     monkeypatch.setattr(ticker_screener_module, "select", forced_select)
@@ -553,10 +553,10 @@ async def _run_llm_scan_with_full_artifacts(tmp_path, monkeypatch: pytest.Monkey
 
     import agent.strategy.ticker_screener as ticker_screener_module
 
-    def forced_select(q, assigned):
+    def forced_select(q, assigned, skew_threshold):
         if q.symbol == "SPY" and q.data_ok:
             return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
-        return real_select(q, assigned)
+        return real_select(q, assigned, skew_threshold)
 
     monkeypatch.setattr(main_module, "select", forced_select)
     monkeypatch.setattr(ticker_screener_module, "select", forced_select)
@@ -860,10 +860,10 @@ async def test_aggregate_risk_accumulates_in_cycle(tmp_path, monkeypatch: pytest
     from agent.schemas.market import ChainSnapshot, OptionQuote
     from datetime import datetime as dt_cls, timezone as tz
 
-    def forced_select(q, assigned):
+    def forced_select(q, assigned, skew_threshold):
         if q.symbol in ("SPY", "NVDA") and q.data_ok:
             return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
-        return real_select(q, assigned)
+        return real_select(q, assigned, skew_threshold)
 
     monkeypatch.setattr(main_module, "select", forced_select)
     monkeypatch.setattr(ticker_screener_module, "select", forced_select)
@@ -950,10 +950,10 @@ async def test_budget_ceiling_blocks_entries_not_management(tmp_path, monkeypatc
     from agent.strategy.regime import select as real_select
     from agent.schemas.execution import Regime, Structure
 
-    def forced_select(q, assigned):
+    def forced_select(q, assigned, skew_threshold):
         if q.symbol == "SPY" and q.data_ok:
             return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
-        return real_select(q, assigned)
+        return real_select(q, assigned, skew_threshold)
 
     monkeypatch.setattr(main_module, "select", forced_select)
     monkeypatch.setattr(ticker_screener_module, "select", forced_select)

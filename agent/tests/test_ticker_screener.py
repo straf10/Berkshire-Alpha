@@ -4,11 +4,13 @@ import random
 from dataclasses import replace
 from datetime import date
 
+import pytest
+
 from agent.config import UNIVERSE
 from agent.schemas.execution import Regime, Structure
 from agent.schemas.market import QuantSnapshot
 from agent.strategy.regime import RegimeDecision
-from agent.strategy.ticker_screener import assign_regimes, composite_score, shortlist
+from agent.strategy.ticker_screener import assign_regimes, composite_score, shortlist, skew_threshold
 
 _BASE = QuantSnapshot(
     symbol="SPY",
@@ -37,7 +39,7 @@ def _snap(symbol: str, **overrides) -> QuantSnapshot:
 def test_shortlist_caps_at_four() -> None:
     snaps = [_snap(sym, skew_abs=6.0 + i) for i, sym in enumerate(UNIVERSE)]
     assigned = {s.symbol: Regime.CREDIT for s in snaps}
-    result = shortlist(snaps, assigned)
+    result = shortlist(snaps, assigned, 0.0)
     assert len(result) == 4
 
 
@@ -49,7 +51,7 @@ def test_shortlist_is_deterministic() -> None:
     for _ in range(100):
         shuffled = snaps[:]
         random.shuffle(shuffled)
-        result = shortlist(shuffled, assigned)
+        result = shortlist(shuffled, assigned, 0.0)
         assert [c.snapshot.symbol for c in result] == expected_order
 
 
@@ -61,7 +63,7 @@ def test_shortlist_excludes_no_trade() -> None:
     unassigned = _snap("SPY")
     tradeable = _snap("QQQ", skew_abs=6.0)
     assigned = {"QQQ": Regime.CREDIT}
-    result = shortlist([unassigned, tradeable], assigned)
+    result = shortlist([unassigned, tradeable], assigned, 0.0)
     symbols = [c.snapshot.symbol for c in result]
     assert "SPY" not in symbols
     assert "QQQ" in symbols
@@ -110,6 +112,38 @@ def test_assign_regimes_shrinks_symmetrically_when_thin() -> None:
     snaps = [_snap(sym, vrp_ratio=1.0 + 0.1 * i) for i, sym in enumerate(UNIVERSE[:4])]
     assigned = assign_regimes(snaps)
     assert len(assigned) == 4  # 2 credit-side + 2 debit-side, no middle excluded
+
+
+def test_skew_threshold_70th_percentile() -> None:
+    # 10 data_ok snapshots, skew_abs = 0..9. Linear-interpolated 70th percentile
+    # over a sorted 0-indexed series of length 10: rank = 0.70 * 9 = 6.3 ->
+    # values[6] + 0.3 * (values[7] - values[6]) = 6.0 + 0.3 * 1.0 = 6.3.
+    snaps = [_snap(sym, skew_abs=float(i)) for i, sym in enumerate(UNIVERSE)]
+    assert skew_threshold(snaps) == pytest.approx(6.3)
+
+
+def test_skew_threshold_floors_at_zero() -> None:
+    # A call-skewed cross-section (all skew_abs negative) would otherwise
+    # produce a negative percentile -- floored at 0.0 so the overlay can never
+    # fire on names with NO put bias.
+    snaps = [_snap(sym, skew_abs=-1.0 - i) for i, sym in enumerate(UNIVERSE)]
+    assert skew_threshold(snaps) == 0.0
+
+
+def test_skew_threshold_excludes_not_ok() -> None:
+    snaps = [_snap(sym, skew_abs=float(i)) for i, sym in enumerate(UNIVERSE)]
+    # Drop the highest skew_abs reading via data_ok=False -- it must not
+    # influence the percentile at all.
+    snaps[-1] = replace(snaps[-1], data_ok=False, drop_reason="NO_CHAIN")
+    dropped_out = skew_threshold(snaps)
+    kept = skew_threshold(snaps[:-1])
+    assert dropped_out == kept
+
+
+def test_skew_threshold_degenerate_inputs() -> None:
+    assert skew_threshold([]) == 0.0
+    assert skew_threshold([_snap("SPY", skew_abs=2.5)]) == 2.5
+    assert skew_threshold([_snap("SPY", skew_abs=-3.0)]) == 0.0
 
 
 def test_composite_score_uses_observed_range() -> None:

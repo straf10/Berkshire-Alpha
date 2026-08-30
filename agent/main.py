@@ -48,7 +48,7 @@ from agent.storage import db as storage_db
 from agent.storage import write as storage_write
 from agent.strategy.regime import select
 from agent.strategy.spread_builder import BuildFailure, build
-from agent.strategy.ticker_screener import assign_regimes, shortlist
+from agent.strategy.ticker_screener import assign_regimes, shortlist, skew_threshold
 from agent.tools.llm import LlmBudget, LlmClient, LlmPort, LlmUnavailable, load_budget
 from agent.tools.market_data import ChainCache, fetch_leg_snapshots, fetch_universe_bars
 from agent.tools.news import Headline, fetch_headlines
@@ -538,7 +538,11 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
         # two independent calls would let the decisions table disagree with
         # what shortlist() actually screened.
         assigned_regimes = assign_regimes(snapshots)
-        candidates = shortlist(snapshots, assigned_regimes)
+        # docs/IMMEDIATE_IMPROVEMENT.md #1: same one-computation-per-cycle rule as
+        # assign_regimes above -- threaded into both shortlist() and this loop's
+        # own select() calls below.
+        skew_thresh = skew_threshold(snapshots)
+        candidates = shortlist(snapshots, assigned_regimes, skew_thresh)
         shortlisted_symbols = {c.snapshot.symbol for c in candidates}
 
         positions = await cli_bridge.list_positions()
@@ -596,7 +600,7 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
                 logger.warning("LLM pipeline degraded to quant-only for this cycle: %s", e)
 
         for q in snapshots:
-            regime_decision = select(q, assigned_regimes.get(q.symbol, Regime.NO_TRADE))
+            regime_decision = select(q, assigned_regimes.get(q.symbol, Regime.NO_TRADE), skew_thresh)
             plan: SpreadPlan | None = None
             gate_decision: GateDecision | None = None
             plan_json: str | None = None

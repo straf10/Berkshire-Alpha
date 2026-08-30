@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
@@ -51,6 +52,36 @@ def assign_regimes(snapshots: Sequence[QuantSnapshot]) -> dict[str, Regime]:
     return assigned
 
 
+def skew_threshold(snapshots: Sequence[QuantSnapshot]) -> float:
+    """Cross-sectional 70th-percentile `skew_abs` over `data_ok` snapshots (same
+    exclusion `assign_regimes` uses), the same treatment as VRP's cross-sectional
+    rank (docs/IMMEDIATE_IMPROVEMENT.md #1). Replaces the fixed
+    SKEW_PUT_BIAS_POINTS=5.0 constant, which no observed skew_abs had ever
+    approached (~1.4 max), making regime.select's skew overlay branch
+    structurally unreachable.
+
+    Floored at 0.0: the percentile can land negative when the cross-section is
+    call-skewed, and a negative threshold would fire the overlay on names with
+    NO put bias -- the inverse of what it's meant to detect. Empty input or a
+    single snapshot is handled without raising. This is the ONE place per scan
+    cycle this threshold may be computed -- callers must thread the resulting
+    value into both `shortlist` and the per-symbol `regime.select` calls, the
+    same convention `assign_regimes` already established (docs/day4_track_ab_plan.md
+    F6)."""
+    values = sorted(q.skew_abs for q in snapshots if q.data_ok)
+    if not values:
+        return 0.0
+    if len(values) == 1:
+        return max(0.0, values[0])
+    rank = 0.70 * (len(values) - 1)
+    lo, hi = math.floor(rank), math.ceil(rank)
+    if lo == hi:
+        pct = values[lo]
+    else:
+        pct = values[lo] + (values[hi] - values[lo]) * (rank - lo)
+    return max(0.0, pct)
+
+
 def composite_score(q: QuantSnapshot, d: RegimeDecision, vrp_lo: float, vrp_hi: float) -> float:
     """Pre-LLM composite rank -- see docs/day2_spine_plan.md Group 4. `vrp_lo`/
     `vrp_hi` are the min/max vrp_ratio over THIS scan's data_ok snapshots
@@ -75,19 +106,24 @@ def composite_score(q: QuantSnapshot, d: RegimeDecision, vrp_lo: float, vrp_hi: 
 
 
 def shortlist(
-    snapshots: Sequence[QuantSnapshot], assigned: Mapping[str, Regime], limit: int = SHORTLIST_MAX
+    snapshots: Sequence[QuantSnapshot],
+    assigned: Mapping[str, Regime],
+    skew_thresh: float,
+    limit: int = SHORTLIST_MAX,
 ) -> list[ScreenedCandidate]:
     """Filters NO_TRADE, sorts by (-score, UNIVERSE index), truncates to `limit`.
     The index tiebreak makes the shortlist reproducible run-to-run. O(n log n).
     `assigned` must be the SAME map the caller passes to every per-symbol
     `select()` call this cycle (docs/day4_track_ab_plan.md §1.3) -- this
-    function does not compute its own regime assignment."""
+    function does not compute its own regime assignment. Likewise `skew_thresh`
+    must be the SAME value from `skew_threshold(snapshots)` the caller threads
+    into its own per-symbol `select()` loop (docs/IMMEDIATE_IMPROVEMENT.md #1)."""
     ok_vrps = [q.vrp_ratio for q in snapshots if q.data_ok]
     vrp_lo, vrp_hi = (min(ok_vrps), max(ok_vrps)) if ok_vrps else (0.0, 0.0)
 
     candidates = []
     for q in snapshots:
-        d = select(q, assigned.get(q.symbol, Regime.NO_TRADE))
+        d = select(q, assigned.get(q.symbol, Regime.NO_TRADE), skew_thresh)
         if d.regime == Regime.NO_TRADE:
             continue
         candidates.append(ScreenedCandidate(snapshot=q, decision=d, score=composite_score(q, d, vrp_lo, vrp_hi)))
