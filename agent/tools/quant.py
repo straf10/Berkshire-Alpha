@@ -37,10 +37,26 @@ def _winsorise(returns: list[float], z: float = RV_WINSOR_Z) -> list[float]:
     mean/stdev is self-masking: the outlier this function exists to catch is itself
     included in the sigma it's tested against, inflating the band around it. Day 4's
     mandatory validation caught this on real data -- at RV_WINSOR_Z = 3.0, rv_old ==
-    rv_new for all ten UNIVERSE names, e.g. NVDA's +8.41% single-day return sat inside
-    its own mean/stdev 3-sigma bound of +/-9.19% (docs/IMMEDIATE_IMPROVEMENT.md #2). The
-    median and MAD (median absolute deviation) are each themselves robust to a single
-    outlier, so the gap can't widen the band it needs to clear."""
+    rv_new for all ten UNIVERSE names (docs/IMMEDIATE_IMPROVEMENT.md #2). AMD is the
+    worked example that actually clips: two earnings-adjacent returns (+8.23%, -8.77%)
+    sat inside AMD's own mean/stdev 3-sigma bound, but land outside the median/MAD band,
+    pulling RV_20 from 61.19% to 58.31% (VRP 0.880 -> 0.924) -- because the median and
+    MAD are each themselves robust to a single outlier, the gap can't widen the band
+    it needs to clear.
+
+    Limitation, stated plainly: this only clips a gap that stands against a quiet
+    baseline. NVDA's 20-day window is uniformly volatile rather than quiet-plus-one-spike,
+    so its MAD-derived scale (3.37%) comes out WIDER than its mean/stdev scale (2.93%),
+    and its own +8.41% return (z=2.51 on the MAD scale) is not clipped by either
+    estimator. That's correct, not a miss -- a name whose whole distribution is wide
+    genuinely has high RV, and there is nothing to winsorise. This function removes an
+    isolated gap against a quiet baseline; it does not generally "remove earnings
+    contamination" from a name whose entire window is volatile.
+
+    On the fixture cross-section the practical effect of this change was not on
+    AMD/NVDA's own regime routing but on the cross-sectional VRP buckets shifting
+    elsewhere: TSLA and QQQ dropped out of their CREDIT/DEBIT buckets, META and GOOGL
+    entered."""
     if len(returns) < 3:
         return list(returns)
     med = statistics.median(returns)
