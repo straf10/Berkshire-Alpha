@@ -28,6 +28,20 @@ import type {
 
 export const dynamic = "force-dynamic";
 
+// Set by next.config.ts's `env` at build time; there's no hand-maintained
+// semver in this repo, and a build stamp that can't drift from what's
+// actually deployed is more useful than one that needs remembering to bump.
+const BUILD_SHA = process.env.BUILD_SHA ?? "unknown";
+
+function Footer() {
+  return (
+    <footer className="mt-8 flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3 text-sm text-muted-foreground">
+      <LiveRefresh />
+      <span>build {BUILD_SHA}</span>
+    </footer>
+  );
+}
+
 export default async function Page() {
   const base = apiBase();
 
@@ -42,8 +56,10 @@ export default async function Page() {
   if (decisionsRes === null || statusRes === null || assignmentsRes === null) {
     return (
       <>
-        <LiveRefresh />
         <ServiceDown />
+        <div className="mx-auto max-w-5xl px-4 sm:px-8">
+          <Footer />
+        </div>
       </>
     );
   }
@@ -69,7 +85,6 @@ export default async function Page() {
 
   return (
     <main className="mx-auto max-w-5xl p-4 font-mono text-base sm:p-8">
-      <LiveRefresh />
       <h1 className="mb-1 text-xl font-semibold sm:text-2xl">Autonomous Debate Trading Agent</h1>
       <StatusBar status={status} />
 
@@ -113,6 +128,8 @@ export default async function Page() {
           <AgentConfigPanel config={config} />
         </TabsContent>
       </Tabs>
+
+      <Footer />
     </main>
   );
 }
