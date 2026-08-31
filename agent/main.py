@@ -376,6 +376,7 @@ async def _persist_pipeline_artifacts(conn: aiosqlite.Connection, decision_id: i
         await storage_write.insert_debate_summary(conn, storage_write.DebateSummaryRow(
             decision_id=decision_id, ts_utc=ts, rounds_run=s.rounds_run,
             consensus_score=s.consensus_score, verdict=s.verdict, terminated_early=s.terminated_early,
+            conviction=s.conviction,
         ))
     if artifacts.proposal_row is not None:
         p = artifacts.proposal_row

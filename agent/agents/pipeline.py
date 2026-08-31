@@ -51,6 +51,7 @@ class DebateSummaryArtifact:
     consensus_score: float
     verdict: str
     terminated_early: bool
+    conviction: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -139,6 +140,7 @@ def _debate_summary_artifact(debate: DebateResult) -> DebateSummaryArtifact:
     return DebateSummaryArtifact(
         rounds_run=debate.rounds_run, consensus_score=debate.consensus_score,
         verdict=debate.verdict.value, terminated_early=debate.terminated_early,
+        conviction=debate.conviction,
     )
 
 

@@ -58,3 +58,12 @@ async def _migrate(conn: aiosqlite.Connection) -> None:
     # mention COUNTS, never the recursive `mention_velocity` column.
     if "mentions" not in await _column_names(conn, "sentiment_snapshots"):
         await conn.execute("ALTER TABLE sentiment_snapshots ADD COLUMN mentions INTEGER NOT NULL DEFAULT 0")
+
+    # docs/day6_ui_plan.md S0.1. `_column_names` on a table that doesn't exist
+    # yet (e.g. a pre-Day-3 DB, or a test DB seeded without debate_summaries)
+    # returns an empty set with no error -- guard on non-empty so we never
+    # ALTER a table that isn't there; schema.sql's CREATE TABLE IF NOT EXISTS
+    # always creates it before _migrate() runs in real deployments.
+    debate_summary_cols = await _column_names(conn, "debate_summaries")
+    if debate_summary_cols and "conviction" not in debate_summary_cols:
+        await conn.execute("ALTER TABLE debate_summaries ADD COLUMN conviction REAL")

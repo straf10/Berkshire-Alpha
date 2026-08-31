@@ -254,6 +254,49 @@ async def test_migration_adds_mentions_column(tmp_path) -> None:
         assert (await cur.fetchone())[0] == 0
 
 
+async def test_migration_adds_conviction_column(tmp_path) -> None:
+    """docs/day6_ui_plan.md S0.1: debate_summaries.conviction is additive and
+    guarded like every other post-launch column -- but unlike trades/
+    sentiment_snapshots, debate_summaries itself doesn't exist on a legacy DB
+    that predates schema.sql's CREATE TABLE, so the guard must tolerate an
+    absent table with no error (see _migrate's non-empty check)."""
+    from agent.storage.db import _migrate
+
+    db_path = str(tmp_path / "legacy.db")
+    await _seed_legacy_db(db_path)  # no debate_summaries table at all
+
+    async with connect(db_path) as conn:
+        await _migrate(conn)  # must not raise on the missing table
+        await conn.commit()
+        await _migrate(conn)  # idempotent
+        await conn.commit()
+
+    # A DB that already has debate_summaries (the real, schema.sql-created
+    # shape) gets the column added exactly once.
+    real_db_path = str(tmp_path / "real.db")
+    await init_db(real_db_path)
+    async with connect(real_db_path) as conn:
+        await _migrate(conn)
+        await conn.commit()
+        cur = await conn.execute("PRAGMA table_info(debate_summaries)")
+        cols = [row[1] for row in await cur.fetchall()]
+        assert cols.count("conviction") == 1
+
+
+async def test_debate_summary_roundtrip_persists_conviction(tmp_path) -> None:
+    db_path = str(tmp_path / "agent.db")
+    await init_db(db_path)
+    async with connect(db_path) as conn:
+        decision_id = await write.insert_decision(conn, _decision_row())
+        await write.insert_debate_summary(conn, write.DebateSummaryRow(
+            decision_id=decision_id, ts_utc="2026-08-31T12:00:00Z", rounds_run=1,
+            consensus_score=0.9, verdict="CONSENSUS_ROUND_1", terminated_early=True,
+            conviction=0.75,
+        ))
+        chain = await read.decision_chain(conn, decision_id)
+    assert chain["debate_summary"]["conviction"] == pytest.approx(0.75)
+
+
 def _assignment_event_row(**overrides) -> write.AssignmentEventRow:
     fields = dict(
         ts_utc="2026-08-31T12:00:00Z", session_date="2026-08-31", symbol="AAPL", trade_id=None,

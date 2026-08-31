@@ -145,7 +145,11 @@ CREATE TABLE IF NOT EXISTS debate_summaries (
   decision_id INTEGER NOT NULL REFERENCES decisions(id),
   ts_utc TEXT NOT NULL, rounds_run INTEGER NOT NULL, consensus_score REAL NOT NULL,
   verdict TEXT NOT NULL,                    -- CONSENSUS_ROUND_1 | CONSENSUS_ROUND_2 | UNRESOLVED
-  terminated_early INTEGER NOT NULL
+  terminated_early INTEGER NOT NULL,
+  -- Day 6 (docs/day6_ui_plan.md S0.1): the size multiplier that actually scaled
+  -- the trade, alongside the verdict/consensus_score kept for logging. NULL on
+  -- rows written before this column existed -- see _migrate().
+  conviction REAL
 );
 CREATE INDEX IF NOT EXISTS ix_debate_summaries_decision ON debate_summaries(decision_id);
 
