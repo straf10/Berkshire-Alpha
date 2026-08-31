@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from contextlib import asynccontextmanager
 from decimal import Decimal
@@ -89,26 +90,37 @@ class PgConnection:
     """Adapts an asyncpg connection to the tiny slice of aiosqlite.Connection's
     API that agent/storage/write.py and read.py use (execute/commit, and the
     cursor's fetchall/fetchone/lastrowid), so those two files run against
-    Postgres completely unmodified."""
+    Postgres completely unmodified.
+
+    A raw asyncpg.Connection cannot run two operations concurrently (it
+    raises InterfaceError: "another operation is in progress") -- unlike
+    aiosqlite, which serialises statements on one connection, the exact
+    guarantee every concurrent asyncio.gather() call site in this codebase
+    (run_analysts' 3-per-candidate gather, in particular) was written
+    against. `_lock` restores that guarantee here instead of auditing every
+    gather() site, so this one scan's shared connection behaves the same
+    under Postgres as it always has under sqlite."""
 
     def __init__(self, raw: asyncpg.Connection):
         self._raw = raw
+        self._lock = asyncio.Lock()
 
     async def execute(self, sql: str, params: Sequence[Any] = ()) -> _PgCursor:
-        pg_sql = _to_pg(sql)
-        m = _INSERT_TABLE_RE.match(sql)
-        if m and m.group(1).lower() in _HAS_ID and "RETURNING" not in sql.upper():
-            pg_sql = pg_sql.rstrip().rstrip(";") + " RETURNING id"
-            row = await self._raw.fetchrow(pg_sql, *params)
-            return _PgCursor(lastrowid=row["id"] if row is not None else None)
+        async with self._lock:
+            pg_sql = _to_pg(sql)
+            m = _INSERT_TABLE_RE.match(sql)
+            if m and m.group(1).lower() in _HAS_ID and "RETURNING" not in sql.upper():
+                pg_sql = pg_sql.rstrip().rstrip(";") + " RETURNING id"
+                row = await self._raw.fetchrow(pg_sql, *params)
+                return _PgCursor(lastrowid=row["id"] if row is not None else None)
 
-        stripped = sql.strip().upper()
-        if stripped.startswith("SELECT") or stripped.startswith("WITH"):
-            records = await self._raw.fetch(pg_sql, *params)
-            return _PgCursor(records=[_Row(r) for r in records])
+            stripped = sql.strip().upper()
+            if stripped.startswith("SELECT") or stripped.startswith("WITH"):
+                records = await self._raw.fetch(pg_sql, *params)
+                return _PgCursor(records=[_Row(r) for r in records])
 
-        await self._raw.execute(pg_sql, *params)
-        return _PgCursor()
+            await self._raw.execute(pg_sql, *params)
+            return _PgCursor()
 
     async def executescript(self, script: str) -> None:
         await self._raw.execute(script)
