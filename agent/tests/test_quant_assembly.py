@@ -118,3 +118,40 @@ def test_expiry_window_weekend_anchor() -> None:
     real_chain = market_data._build_chain_snapshot("SPY", raw)
     assert real_chain is not None
     assert select_target_expiry(real_chain, SESSION_DATE, trading_days) == date(2026, 9, 4)
+
+
+def test_spot_is_the_live_minute_close_not_yesterdays_daily_close() -> None:
+    """Regression, 2026-08-31: spot came from `closes[-1]`, and
+    fetch_universe_bars' daily request ends at session_date, so for the whole
+    of a live session spot was the PREVIOUS session's close. Everything keyed
+    off spot -- the ATM-IV strike, the 25-delta skew quote, the trader's strike
+    table, the chain window -- was anchored a full session behind the tape."""
+    expiry = date(2026, 9, 4)
+
+    def _leg(strike: float, right, iv: float, delta: float) -> OptionQuote:
+        return OptionQuote(
+            occ_symbol=f"XYZ{expiry:%y%m%d}{right}{int(strike * 1000):08d}", underlying="XYZ",
+            expiry=expiry, strike=strike, right=right, bid=1.0, ask=1.1, delta=delta,
+            gamma=0.01, theta=-0.01, vega=0.05, iv=iv,
+        )
+
+    chain = ChainSnapshot(underlying="XYZ", fetched_at=_TS, contracts=(
+        _leg(100.0, "C", iv=0.20, delta=0.60), _leg(100.0, "P", iv=0.20, delta=-0.40),
+        _leg(104.0, "C", iv=0.25, delta=0.45), _leg(104.0, "P", iv=0.25, delta=-0.25),
+        _leg(108.0, "C", iv=0.30, delta=0.30), _leg(108.0, "P", iv=0.30, delta=-0.15),
+    ))
+    daily = _reasonable_daily()
+    minute = (
+        MinuteBar(ts=_TS, high=105.0, low=103.0, close=104.0, volume=500_000.0),
+        MinuteBar(ts=_TS + timedelta(minutes=1), high=108.0, low=106.0, close=107.5, volume=500_000.0),
+    )
+    assert abs(daily[-1].close - 108.0) > abs(daily[-1].close - 100.0)  # yesterday's close anchors to 100
+
+    snap = compute_snapshot(
+        "XYZ", _bars_for("XYZ", daily, minute), chain=chain,
+        session_date=SESSION_DATE, trading_days=frozenset({expiry}),
+    )
+    assert snap.data_ok is True
+    assert snap.spot == 107.5                    # the live minute close, not daily[-1].close
+    assert snap.iv_atm == 0.30                   # ATM resolves to the 108 strike, not the 100 strike
+    assert snap.spot == minute[-1].close         # same price vwap_and_dev() uses as P_current

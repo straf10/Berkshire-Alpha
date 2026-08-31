@@ -271,10 +271,20 @@ def compute_snapshot(
 
     closes = [b.close for b in daily]
     volumes = [b.volume for b in daily]
-    spot = closes[-1]
 
     if not minute or sum(b.volume for b in minute) == 0:
         return _dropped(symbol, session_date, "NO_MINUTE_BARS")
+
+    # Spot is the last price on the MINUTE tape, not the last daily close.
+    # fetch_universe_bars' daily request ends at session_date, so closes[-1]
+    # is the PREVIOUS session's close for the whole of a live session: using
+    # it put every ATM-IV lookup, skew quote, strike table and chain window a
+    # full session behind, and made scan_2 a bit-for-bit replay of scan_1 on
+    # 2026-08-31 (memory.md, Day-1 post-mortem). closes[] still feeds the
+    # daily-timeframe indicators (RV_20, RSI, VWM), which are meant to be
+    # as-of the last close. Same price vwap_and_dev() already uses as
+    # P_current, so spot and VWAP deviation can no longer disagree.
+    spot = minute[-1].close
 
     closes_21 = closes[-(RV_WINDOW + 1):]
     if len(set(closes_21)) == 1:

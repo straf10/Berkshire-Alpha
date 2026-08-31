@@ -80,6 +80,9 @@ export function actionBadgeVariant(action: string): "default" | "destructive" | 
 export function modeLabel(mode: string): string {
   if (mode === "llm") return "LLM";
   if (mode === "llm-degraded") return "LLM (degraded)";
+  // The debate chose the name; spread_builder.build() chose the strikes after
+  // the trader model failed validation twice.
+  if (mode === "llm-fallback") return "LLM + deterministic strikes";
   return "quant-only";
 }
 

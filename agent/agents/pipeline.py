@@ -17,7 +17,7 @@ from typing import Mapping, Sequence
 from agent.agents.analysts import AnalystResult, analyst_score, run_analysts, select_top
 from agent.agents.researchers import DebateResult, is_missing_node, run_debate
 from agent.agents.risk_team import AccountView, PortfolioView, RiskTeamResult, run_risk_team
-from agent.agents.trader import ProposalFailure, propose
+from agent.agents.trader import ProposalFailure, ProposalOutcome, propose
 from agent.schemas.execution import SpreadPlan
 from agent.strategy.ticker_screener import ScreenedCandidate
 from agent.tools.llm import LlmPort
@@ -91,7 +91,7 @@ class PipelineArtifacts:
 class PipelineOutcome:
     symbol: str
     plan: SpreadPlan | None            # None => this candidate is a no-trade
-    mode: str                          # 'llm' | 'llm-degraded'
+    mode: str                          # 'llm' | 'llm-degraded' | 'llm-fallback'
     reason: str                        # RISK_TEAM_VETO | ProposalFailure member | NOT_TOP_DEBATE_CANDIDATE | 'OK'
     artifacts: PipelineArtifacts
     # main.py's DoD print line ('Analysts: ... score N.NN') reads this
@@ -162,6 +162,28 @@ def _mode(r: AnalystResult, debate: DebateResult) -> str:
     return "llm-degraded" if degraded else "llm"
 
 
+def _proposal_json(outcome: ProposalOutcome) -> str:
+    """The model's own proposal when it produced a valid one; otherwise a
+    record of the deterministic pick and the rejection that caused the
+    fallback, so `proposals.proposal_json` is never a fabricated model
+    response."""
+    if outcome.proposal is not None:
+        return outcome.proposal.model_dump_json()
+    plan = outcome.plan
+    return json.dumps({
+        "source": "spread_builder.build",
+        "fallback_from": outcome.fallback_from.value if outcome.fallback_from else None,
+        "underlying": plan.symbol,
+        "strategy_name": plan.structure.value,
+        "expiration_date": plan.expiry.isoformat(),
+        "legs": [
+            {"contract_type": "CALL" if leg.right == "C" else "PUT", "side": leg.side,
+             "strike_price": leg.strike, "ratio_qty": leg.ratio_qty}
+            for leg in plan.legs
+        ],
+    }, separators=(",", ":"))
+
+
 async def run_llm_pipeline(
     llm: LlmPort, candidates: Sequence[ScreenedCandidate], chains: ChainCache,
     news: Mapping[str, tuple[Headline, ...]], mentions: Mapping[str, MentionSignal],
@@ -174,7 +196,9 @@ async def run_llm_pipeline(
             run_debate -> conviction floored, never a veto (agent/config.py
               CONVICTION_UNANIMOUS_DISAGREE_FLOOR); the deterministic gate is
               what turns a too-low conviction into a LOW_CONVICTION reject
-            propose    -> ProposalFailure? stop, no_trade
+            propose    -> ProposalFailure? stop, no_trade; a proposal the
+              LLM could not format falls back to spread_builder.build()
+              and continues as mode='llm-fallback'
             run_risk_team -> vetoed? stop, no_trade
        4. return one PipelineOutcome per SHORTLISTED candidate (not just the
           top 2) so every name still gets a decisions row.
@@ -213,7 +237,13 @@ async def run_llm_pipeline(
                 ),
             )
 
-        proposal, plan = proposal_result
+        plan = proposal_result.plan
+        proposal_json = _proposal_json(proposal_result)
+        if proposal_result.fallback_from is not None:
+            # The debate still chose this name; only the strike-picking fell
+            # back to spread_builder.build(). Recorded as its own mode so the
+            # decision log never presents a deterministic pick as the model's.
+            mode = "llm-fallback"
         risk_result = await run_risk_team(llm, plan, r.bundle, account, portfolio, sem=sem, sink=sink)
 
         if risk_result.vetoed:
@@ -223,7 +253,7 @@ async def run_llm_pipeline(
                 artifacts=PipelineArtifacts(
                     analyst_rows=analyst_artifacts, debate_nodes=_debate_artifacts(debate),
                     debate_summary=_debate_summary_artifact(debate),
-                    proposal_row=ProposalArtifact(proposal_json=proposal.model_dump_json(), accepted=False, reject_reason="RISK_TEAM_VETO"),
+                    proposal_row=ProposalArtifact(proposal_json=proposal_json, accepted=False, reject_reason="RISK_TEAM_VETO"),
                     risk_rows=_risk_vote_artifacts(risk_result), llm_call_ids=tuple(sink),
                 ),
             )
@@ -234,7 +264,7 @@ async def run_llm_pipeline(
             artifacts=PipelineArtifacts(
                 analyst_rows=analyst_artifacts, debate_nodes=_debate_artifacts(debate),
                 debate_summary=_debate_summary_artifact(debate),
-                proposal_row=ProposalArtifact(proposal_json=proposal.model_dump_json(), accepted=True, reject_reason=None),
+                proposal_row=ProposalArtifact(proposal_json=proposal_json, accepted=True, reject_reason=None),
                 risk_rows=_risk_vote_artifacts(risk_result), llm_call_ids=tuple(sink),
             ),
         )

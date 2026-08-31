@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 
-from agent.session import SessionPlan, current_or_next_session, seconds_until_next_boundary
+from agent.session import minute_bar_window, SessionPlan, current_or_next_session, seconds_until_next_boundary
 
 
 @dataclass
@@ -95,8 +95,8 @@ async def test_trading_days_from_calendar() -> None:
     assert date(2026, 9, 2) not in plan.trading_days  # Labor Day, absent from the calendar
 
 
-def test_closed_market_sleeps_bounded() -> None:
-    plan = SessionPlan(
+def _plan(*, is_open: bool) -> SessionPlan:
+    return SessionPlan(
         session_date=date(2026, 8, 31),
         open_utc=datetime(2026, 8, 31, 13, 30, tzinfo=timezone.utc),
         close_utc=datetime(2026, 8, 31, 20, 0, tzinfo=timezone.utc),
@@ -108,7 +108,34 @@ def test_closed_market_sleeps_bounded() -> None:
             datetime(2026, 8, 28, 20, 0, tzinfo=timezone.utc),
         ),
         trading_days=frozenset({date(2026, 8, 31)}),
-        is_open=False,
+        is_open=is_open,
     )
+
+
+def test_closed_market_sleeps_bounded() -> None:
+    plan = _plan(is_open=False)
     now = datetime(2026, 8, 29, 8, 0, tzinfo=timezone.utc)  # ~53.5h before open
     assert seconds_until_next_boundary(plan, now) == 900.0
+
+
+def test_minute_bar_window_is_intraday_while_open() -> None:
+    """Regression, 2026-08-31: both entry scans read minute bars from the
+    previous completed session, so VWAP, VWAP deviation and spot were byte
+    identical at 14:15 and 18:00 UTC and scan_2 replayed scan_1 exactly."""
+    plan = _plan(is_open=True)
+    scan_1 = datetime(2026, 8, 31, 14, 15, tzinfo=timezone.utc)
+    scan_2 = datetime(2026, 8, 31, 18, 0, tzinfo=timezone.utc)
+    assert minute_bar_window(plan, scan_1) == (plan.open_utc, scan_1)
+    assert minute_bar_window(plan, scan_2) == (plan.open_utc, scan_2)
+    assert minute_bar_window(plan, scan_1) != minute_bar_window(plan, scan_2)
+
+
+def test_minute_bar_window_falls_back_outside_the_session() -> None:
+    """Closed, or at/before the open (a pre-market `--once` run): there is no
+    intraday tape yet, so the last completed session stands in rather than an
+    empty window tripping the NO_MINUTE_BARS guard across the universe."""
+    closed = _plan(is_open=False)
+    assert minute_bar_window(closed, datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)) == closed.last_session_utc
+
+    open_plan = _plan(is_open=True)
+    assert minute_bar_window(open_plan, open_plan.open_utc) == open_plan.last_session_utc

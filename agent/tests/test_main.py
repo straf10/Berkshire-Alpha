@@ -1885,6 +1885,18 @@ def test_next_action_before_scan_1() -> None:
     assert at == session.scan_1_utc
 
 
+def test_next_action_still_names_scan_1_while_it_is_running() -> None:
+    """Regression, 2026-08-31: `scan_1_utc` is only re-evaluated once per
+    MANAGEMENT_INTERVAL_S, so the clock routinely passes it with the scan not
+    yet complete. The old boundary form fell straight through to the scan_2
+    branch there, and `/status` advertised "entry scan 2 @ 18:00" while scan_1
+    was in flight."""
+    session = _fixed_session(is_open=True)
+    label, at = main_module._next_action(session, datetime(2026, 8, 31, 14, 17, tzinfo=timezone.utc), 0)
+    assert label == "entry scan 1"
+    assert at == datetime(2026, 8, 31, 14, 17, tzinfo=timezone.utc)
+
+
 def test_next_action_between_scans() -> None:
     session = _fixed_session(is_open=True)
     label, at = main_module._next_action(session, datetime(2026, 8, 31, 15, 0, tzinfo=timezone.utc), 1)

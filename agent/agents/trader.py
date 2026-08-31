@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
 from typing import Literal
@@ -14,7 +15,7 @@ from agent.schemas.execution import SpreadPlan, Structure
 from agent.schemas.llm import SpreadProposal
 from agent.schemas.market import ChainSnapshot, QuantSnapshot
 from agent.strategy.regime import RegimeDecision
-from agent.strategy.spread_builder import BuildFailure, build_from_proposal
+from agent.strategy.spread_builder import BuildFailure, build, build_from_proposal
 from agent.tools.llm import LlmPort
 
 
@@ -33,15 +34,52 @@ class ProposalFailure(StrEnum):
 # convention (Day 2). This is the one place that translates between them.
 _RIGHT: dict[str, Literal["C", "P"]] = {"CALL": "C", "PUT": "P"}
 
-# Maps (right, sell_strike > buy_strike) -> the structure it forms. Mirrors
-# spread_builder.build()'s own strike-ordering logic exactly, so a proposal
-# is only ever accepted if it describes the same vertical the deterministic
-# builder would have (docs/day3_llm_plan.md Group 4).
-_CREDIT_STRUCTURE: dict[Literal["C", "P"], Structure] = {
-    "P": Structure.BULL_PUT_SPREAD, "C": Structure.BEAR_CALL_SPREAD,
+# Maps (right, short_strike is further OTM than long_strike) -> the vertical
+# those two legs actually form. Mirrors spread_builder.build()'s own strike
+# ordering: for a CREDIT spread build() places the long leg FURTHER OTM than
+# the short (`long = short.strike + direction * offset`, direction -1 for puts
+# and +1 for calls), so the credit case is sell-above-buy on puts and
+# sell-BELOW-buy on calls. The call side of this table was inverted before
+# 2026-08-31 (both entries read as if a call credit spread were sold above the
+# long leg), which made every BEAR_CALL_SPREAD proposal fail validation as
+# STRUCTURE_MISMATCH no matter what the LLM proposed -- see memory.md's Day-1
+# post-mortem. Keyed by (right, sell_strike > buy_strike).
+_VERTICAL_BY_ORDERING: dict[tuple[Literal["C", "P"], bool], Structure] = {
+    ("P", True): Structure.BULL_PUT_SPREAD,    # sell the higher put  -> credit
+    ("P", False): Structure.BEAR_PUT_SPREAD,   # sell the lower put   -> debit
+    ("C", False): Structure.BEAR_CALL_SPREAD,  # sell the lower call  -> credit
+    ("C", True): Structure.BULL_CALL_SPREAD,   # sell the higher call -> debit
 }
-_DEBIT_STRUCTURE: dict[Literal["C", "P"], Structure] = {
-    "C": Structure.BULL_CALL_SPREAD, "P": Structure.BEAR_PUT_SPREAD,
+
+
+# The exact leg recipe for each vertical, stated to the trader in words. The
+# structure is decided deterministically by regime.select() before the model
+# is ever called -- its only job is picking two listed strikes -- so leaving
+# the buy/sell ordering implicit was pure downside: on 2026-08-31 every
+# proposal that reached this stage was rejected, and the single retry named
+# only the enum ("STRUCTURE_MISMATCH") without ever saying what shape was
+# wanted (memory.md, Day-1 post-mortem).
+_LEG_RECIPE: dict[Structure, str] = {
+    Structure.BULL_PUT_SPREAD:
+        "SELL the HIGHER-strike put and BUY the LOWER-strike put (net credit).",
+    Structure.BEAR_CALL_SPREAD:
+        "SELL the LOWER-strike call and BUY the HIGHER-strike call (net credit).",
+    Structure.BULL_CALL_SPREAD:
+        "BUY the LOWER-strike call and SELL the HIGHER-strike call (net debit).",
+    Structure.BEAR_PUT_SPREAD:
+        "BUY the HIGHER-strike put and SELL the LOWER-strike put (net debit).",
+}
+
+# What each rejection actually means, so the one retry is told how to fix the
+# proposal rather than only which enum it tripped.
+_FAILURE_HELP: dict[ProposalFailure, str] = {
+    ProposalFailure.WRONG_UNDERLYING: "the underlying must be exactly the symbol named above",
+    ProposalFailure.EXPIRY_NOT_IN_WINDOW: f"expiration_date must be the expiry named above ({DTE_MIN}-{DTE_MAX} DTE)",
+    ProposalFailure.EXPIRY_NOT_TRADING_DAY: "expiration_date must be the exact expiry named above, as YYYY-MM-DD",
+    ProposalFailure.STRIKE_NOT_IN_CHAIN: "every strike_price must be copied verbatim from the strike table above",
+    ProposalFailure.LEG_COUNT: "propose exactly two legs",
+    ProposalFailure.STRUCTURE_MISMATCH: "the two legs did not form the required structure",
+    ProposalFailure.NOT_DEFINED_RISK: "both legs must have ratio_qty 1",
 }
 
 
@@ -82,9 +120,7 @@ def _infer_structure(legs: tuple) -> Structure | None:
     if sell.strike_price == buy.strike_price:
         return None
     chain_right = _RIGHT[right]
-    if sell.strike_price > buy.strike_price:
-        return _CREDIT_STRUCTURE[chain_right]
-    return _DEBIT_STRUCTURE[chain_right]
+    return _VERTICAL_BY_ORDERING[(chain_right, sell.strike_price > buy.strike_price)]
 
 
 def validate_proposal(
@@ -151,20 +187,45 @@ def _trader_prompt(bundle: EvidenceBundle, debate: DebateResult, chain: ChainSna
     return (
         f"Underlying: {q.symbol}  Structure required: {structure.value}  "
         f"Expiry: {q.target_expiry.isoformat()}  Right: {right}  Credit spread: {is_credit}\n"
+        f"Required legs: {_LEG_RECIPE[structure]} Both legs are {'CALL' if right == 'C' else 'PUT'}s, "
+        f"ratio_qty 1, expiring {q.target_expiry.isoformat()}. Spot is {q.spot}.\n"
         f"Evidence: {bundle.to_prompt_json()}\n"
         f"Debate outcome: {json.dumps(debate_summary, separators=(',', ':'))}\n"
         f"Strikes available (strike,bid,ask,delta), choose ONLY from this table:\n{json.dumps(table, separators=(',', ':'))}"
     )
 
 
+@dataclass(frozen=True)
+class ProposalOutcome:
+    """`proposal` is the model's own, or None when the deterministic builder
+    picked the strikes instead -- in which case `fallback_from` is the
+    rejection the model could not correct. Carried through so the decision log
+    records WHICH path chose the contracts rather than presenting a
+    deterministic pick as the model's."""
+    proposal: SpreadProposal | None
+    plan: SpreadPlan
+    fallback_from: ProposalFailure | None = None
+
+
 async def propose(
     llm: LlmPort, bundle: EvidenceBundle, debate: DebateResult, chain: ChainSnapshot,
     trading_days: frozenset[date], *, sink: list[int],
-) -> tuple[SpreadProposal, SpreadPlan] | ProposalFailure:
-    """One call. On a validation failure, ONE retry with the failure named in
-    the prompt (a hallucinated strike is treated exactly like a
-    ValidationError and consumes the single retry), then the candidate is
-    dropped. On success, converts via spread_builder.build_from_proposal()."""
+) -> ProposalOutcome | ProposalFailure:
+    """One call. On a validation failure, ONE retry with the failure explained
+    in the prompt (a hallucinated strike is treated exactly like a
+    ValidationError and consumes the single retry). On success, converts via
+    spread_builder.build_from_proposal().
+
+    If the retry also fails, the candidate is NOT dropped: spread_builder.build()
+    -- the deterministic Day-2 path, delta-band short leg and all -- picks the
+    strikes instead, and the outcome records `fallback_from`. Rationale: by this
+    point the regime selector, the analysts, the debate and the conviction floor
+    have all already decided this name is worth trading; a model that cannot
+    format two strikes is a formatting failure, not a trading signal, and it was
+    the sole reason the agent traded nothing on 2026-08-31. Every downstream
+    control is unchanged -- the risk team still votes and the deterministic gate
+    still sizes and can still reject. If build() also declines, the original
+    ProposalFailure is returned and the candidate really does drop."""
     q, d = bundle.quant, bundle.regime
     base_prompt = _trader_prompt(bundle, debate, chain, q, d)
 
@@ -172,13 +233,31 @@ async def propose(
     failure = validate_proposal(proposal, q, d, chain, trading_days)
 
     if failure is not None:
-        retry_prompt = f"{base_prompt}\n\nYour previous proposal was rejected: {failure.value}. Propose again, correcting this."
+        rejected = json.dumps([leg.model_dump() for leg in proposal.legs], separators=(",", ":"))
+        retry_prompt = (
+            f"{base_prompt}\n\nYour previous proposal {rejected} was rejected "
+            f"({failure.value}): {_FAILURE_HELP[failure]}. "
+            f"Required: {_LEG_RECIPE[d.structure]} Propose again, correcting this."
+        )
         proposal = await llm.complete_json(retry_prompt, SpreadProposal, node="TRADER", system=TRADER_SYSTEM, sink=sink)
         failure = validate_proposal(proposal, q, d, chain, trading_days)
         if failure is not None:
-            return failure
+            return _deterministic_fallback(q, d, chain, failure)
 
     plan = build_from_proposal(q, d, chain, proposal)
     if isinstance(plan, BuildFailure):
-        return ProposalFailure.STRIKE_NOT_IN_CHAIN
-    return proposal, plan
+        return _deterministic_fallback(q, d, chain, ProposalFailure.STRIKE_NOT_IN_CHAIN)
+    return ProposalOutcome(proposal=proposal, plan=plan)
+
+
+def _deterministic_fallback(
+    q: QuantSnapshot, d: RegimeDecision, chain: ChainSnapshot, failure: ProposalFailure,
+) -> ProposalOutcome | ProposalFailure:
+    """spread_builder.build() -- the same delta-band rule the quant-only spine
+    uses -- picks the strikes the model could not. Returns the original failure
+    unchanged if build() also declines, so a genuinely untradeable chain still
+    drops the candidate."""
+    plan = build(q, d, chain)
+    if isinstance(plan, BuildFailure):
+        return failure
+    return ProposalOutcome(proposal=None, plan=plan, fallback_from=failure)
