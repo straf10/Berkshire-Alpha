@@ -171,32 +171,33 @@ def test_strike_table_bounded() -> None:
     assert all(set(r.keys()) == {"strike", "bid", "ask", "delta"} for r in rows)
 
 
-async def test_unresolved_skips_trader_and_risk() -> None:
+async def test_unanimous_disagree_still_reaches_trader() -> None:
     from agent.agents.researchers import run_debate
+    from agent.config import CONVICTION_UNANIMOUS_DISAGREE_FLOOR
 
     class DisagreeLlm(FakeLlm):
         pass
 
     llm = DisagreeLlm()
-    # docs/day4_track_ab_plan.md §2.2: unanimous DISAGREE now terminates at
-    # round 1 (2 calls, not 4) with conviction 0.0 -- the caller (pipeline.py)
-    # gates on conviction == 0.0, not verdict == UNRESOLVED, but the debate's
-    # own verdict label is still UNRESOLVED for this outcome.
+    # 2026-08-31 pre-market unblock: unanimous DISAGREE terminates at round 1
+    # (2 calls, not 4) with conviction floored to
+    # CONVICTION_UNANIMOUS_DISAGREE_FLOOR rather than 0.0 -- it is no longer
+    # an absolute veto, so pipeline.py now always calls propose() regardless
+    # of the debate's own verdict label (still UNRESOLVED here).
     llm.script("DEBATE_BULL", [
         DebateNodeOutput(agent_persona="BULL", doc_action="DISAGREE", evidence_cited=[], volatility_view="v", rebuttal_argument="r"),
     ])
     llm.script("DEBATE_BEAR", [
         DebateNodeOutput(agent_persona="BEAR", doc_action="DISAGREE", evidence_cited=[], volatility_view="v", rebuttal_argument="r"),
     ])
+    llm.script("TRADER", [_bull_put_proposal()])
     q, d = _snapshot(), _decision(Structure.BULL_PUT_SPREAD)
     bundle = _bundle(q, d)
     debate = await run_debate(llm, bundle, sink=[])
     assert debate.verdict == Verdict.UNRESOLVED
-    assert debate.conviction == 0.0
+    assert debate.conviction == pytest.approx(CONVICTION_UNANIMOUS_DISAGREE_FLOOR)
 
-    if debate.conviction == 0.0:
-        pass  # pipeline.py's actual no-trade gate; propose() is never reached
-    else:
-        await propose(llm, bundle, debate, _PUT_CREDIT_CHAIN, TRADING_DAYS, sink=[])
+    result = await propose(llm, bundle, debate, _PUT_CREDIT_CHAIN, TRADING_DAYS, sink=[])
+    assert not isinstance(result, ProposalFailure)
 
-    assert llm.calls == 2
+    assert llm.calls == 3

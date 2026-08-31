@@ -13,7 +13,7 @@ from agent.agents.researchers import (
     run_debate,
     valid_citations,
 )
-from agent.config import CONSENSUS_HIGH_THRESHOLD
+from agent.config import CONSENSUS_HIGH_THRESHOLD, CONVICTION_UNANIMOUS_DISAGREE_FLOOR
 from agent.schemas.execution import Regime, Structure
 from agent.schemas.llm import DebateNodeOutput
 from agent.schemas.market import QuantSnapshot
@@ -129,7 +129,10 @@ async def test_hard_cap_two_rounds() -> None:
     assert result.verdict == Verdict.UNRESOLVED
 
 
-async def test_unanimous_disagree_terminates_round_1_with_zero_conviction() -> None:
+async def test_unanimous_disagree_terminates_round_1_at_floor_conviction() -> None:
+    """2026-08-31 pre-market unblock: unanimous DISAGREE still terminates at
+    round 1, but conviction floors to CONVICTION_UNANIMOUS_DISAGREE_FLOOR
+    instead of 0.0 -- it is a size floor, not an absolute veto."""
     llm = FakeLlm()
     llm.script("DEBATE_BULL", [_node("BULL", "DISAGREE", [])])
     llm.script("DEBATE_BEAR", [_node("BEAR", "DISAGREE", [])])
@@ -137,7 +140,7 @@ async def test_unanimous_disagree_terminates_round_1_with_zero_conviction() -> N
     assert result.rounds_run == 1
     assert result.terminated_early
     assert llm.calls == 2
-    assert result.conviction == 0.0
+    assert result.conviction == pytest.approx(CONVICTION_UNANIMOUS_DISAGREE_FLOOR)
 
 
 async def test_missing_node_counts_as_disagree() -> None:
@@ -197,9 +200,11 @@ def test_conviction_split() -> None:
 
 
 def test_conviction_unanimous_disagree() -> None:
+    """2026-08-31 pre-market unblock: floored, not zeroed -- see
+    test_unanimous_disagree_terminates_round_1_at_floor_conviction."""
     keys = _bundle().keys()
     nodes = (_node("BULL", "DISAGREE", []), _node("BEAR", "DISAGREE", []))
-    assert conviction(nodes, keys) == 0.0
+    assert conviction(nodes, keys) == pytest.approx(CONVICTION_UNANIMOUS_DISAGREE_FLOOR)
 
 
 def test_conviction_ignores_missing_nodes() -> None:

@@ -11,6 +11,7 @@ from agent.config import (
     CONSENSUS_HIGH_THRESHOLD,
     CONVICTION_DEGRADED_FLOOR,
     CONVICTION_GROUNDING_FLOOR,
+    CONVICTION_UNANIMOUS_DISAGREE_FLOOR,
     DEBATE_MAX_ROUNDS,
     EVIDENCE_CITES_EXPECTED,
 )
@@ -105,6 +106,11 @@ def conviction(nodes: Sequence[DebateNodeOutput], keys: frozenset[str]) -> float
     if not real:
         return 1.0                                   # total outage -> defer to the gate
     commit_ratio = sum(n.doc_action == "COMMIT" for n in real) / len(real)
+    if commit_ratio == 0.0:
+        # Unanimous DISAGREE is a size floor, not a veto (2026-08-31
+        # pre-market unblock): the deterministic gate still sizes this down
+        # to a LOW_CONVICTION rejection if the floor can't clear a cap.
+        return CONVICTION_UNANIMOUS_DISAGREE_FLOOR
     grounding = sum(min(valid_citations(n, keys), EVIDENCE_CITES_EXPECTED)
                     for n in real) / (EVIDENCE_CITES_EXPECTED * len(real))
     # Grounding is a haircut, never a veto -- this is what keeps the DoC citation

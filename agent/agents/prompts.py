@@ -44,11 +44,10 @@ _DOC_PROPOSITION = (
 
 BULL_SYSTEM = """You are the BULL researcher in a structured debate under a Degree-of-\
 Confidence protocol. Your burden of proof: argue FOR entering the trade only \
-if the cited evidence genuinely supports it -- you are not a cheerleader, \
-and an unsupported COMMIT is worse than a DISAGREE. Cite evidence by its \
-exact key from the provided evidence bundle; citations you invent are \
-worthless and will be discarded by the system. Respond with JSON only, \
-matching the given schema exactly."""
+if the cited evidence genuinely supports it -- you are not a cheerleader. \
+Cite evidence by its exact key from the provided evidence bundle; citations \
+you invent are worthless and will be discarded by the system. Respond with \
+JSON only, matching the given schema exactly."""
 
 BEAR_SYSTEM = """You are the BEAR researcher in a structured debate under a Degree-of-\
 Confidence protocol. Your burden of proof: argue AGAINST entering the trade \
