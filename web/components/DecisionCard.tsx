@@ -77,7 +77,7 @@ function ExpandedChain({ chain }: { chain: DecisionChain }) {
   const proposal = chain.proposal ? safeJsonParse<SpreadProposalShape>(chain.proposal.proposal_json) : null;
 
   return (
-    <div className="space-y-3 pt-2 text-base">
+    <div className="min-w-0 space-y-3 pt-2 text-base">
       {quant && (
         <Section title="Quant evidence" icon={Calculator}>
           <QuantGrid q={quant} />
@@ -86,19 +86,19 @@ function ExpandedChain({ chain }: { chain: DecisionChain }) {
 
       {chain.analyst_outputs.length > 0 && (
         <Section title="Analyst outputs" icon={Users}>
-          <div className="grid gap-2 sm:grid-cols-3">
+          <div className="grid min-w-0 gap-2 sm:grid-cols-3">
             {chain.analyst_outputs.map((a) => {
               const out = a.output_json ? safeJsonParse<AnalystOutputShape>(a.output_json) : null;
               return (
                 <div
                   key={a.id}
-                  className={`rounded-md border p-2 text-sm ${a.ok ? "border-border/60" : "border-destructive/40 opacity-60"}`}
+                  className={`min-w-0 rounded-md border p-2 text-sm ${a.ok ? "border-border/60" : "border-destructive/40 opacity-60"}`}
                 >
                   <p className="mb-1 font-semibold">{a.analyst}</p>
                   {a.ok ? (
-                    <p className="text-foreground/70">{out?.analyst_summary ?? "—"}</p>
+                    <p className="break-words text-foreground/70">{out?.analyst_summary ?? "—"}</p>
                   ) : (
-                    <p className="text-destructive">{a.error ?? "failed"}</p>
+                    <p className="break-words text-destructive">{a.error ?? "failed"}</p>
                   )}
                 </div>
               );
@@ -130,14 +130,14 @@ function ExpandedChain({ chain }: { chain: DecisionChain }) {
 
       {chain.risk_votes.length > 0 && (
         <Section title="Risk votes" icon={ShieldCheck}>
-          <div className="grid gap-2 sm:grid-cols-3">
+          <div className="grid min-w-0 gap-2 sm:grid-cols-3">
             {chain.risk_votes.map((v) => (
-              <div key={v.id} className="rounded-md border border-border/60 p-2 text-sm">
+              <div key={v.id} className="min-w-0 rounded-md border border-border/60 p-2 text-sm">
                 <div className="mb-1 flex items-center gap-2">
                   <span className="font-semibold">{v.persona}</span>
                   <Badge variant={riskDecisionVariant(v.decision)}>{v.decision}</Badge>
                 </div>
-                <p className="text-foreground/70">{v.manager_notes}</p>
+                <p className="break-words text-foreground/70">{v.manager_notes}</p>
               </div>
             ))}
           </div>
@@ -224,7 +224,7 @@ export function DecisionCard({ decision }: { decision: Decision }) {
       </TableRow>
       {open && (
         <TableRow>
-          <TableCell colSpan={7} className="bg-muted/20 p-3">
+          <TableCell colSpan={7} className="min-w-0 max-w-0 bg-muted/20 p-3">
             {loading ? (
               <div className="space-y-2">
                 <Skeleton className="h-4 w-full" />

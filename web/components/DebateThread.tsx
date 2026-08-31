@@ -7,7 +7,7 @@ function Turn({ turn }: { turn: DebateTurn }) {
   const evidence = safeJsonParse<string[]>(turn.evidence_cited_json) ?? [];
   const isBull = turn.persona === "BULL";
   return (
-    <div className="rounded-md border border-border/60 p-2">
+    <div className="min-w-0 rounded-md border border-border/60 p-2">
       <div className="mb-1 flex items-center gap-2">
         <Badge variant={isBull ? "default" : "secondary"} className="gap-1">
           {isBull ? <TrendingUp className="size-3" /> : <TrendingDown className="size-3" />}
@@ -16,8 +16,8 @@ function Turn({ turn }: { turn: DebateTurn }) {
         <Badge variant={docActionVariant(turn.doc_action)}>{turn.doc_action}</Badge>
         <span className="text-[11px] text-muted-foreground">round {turn.round}</span>
       </div>
-      <p className="text-foreground/80">{turn.volatility_view}</p>
-      <p className="mt-1 text-foreground/70">{turn.rebuttal_argument}</p>
+      <p className="break-words text-foreground/80">{turn.volatility_view}</p>
+      <p className="mt-1 break-words text-foreground/70">{turn.rebuttal_argument}</p>
       {evidence.length > 0 && (
         <ul className="mt-1 list-inside list-disc text-[11px] text-muted-foreground">
           {evidence.map((e, i) => (
@@ -64,7 +64,7 @@ export function DebateThread({
       {header}
       <div className="space-y-2">
         {rounds.map((r) => (
-          <div key={r} className="grid gap-2 sm:grid-cols-2">
+          <div key={r} className="grid min-w-0 gap-2 sm:grid-cols-2">
             {byRound.get(r)!.map((t) => (
               <Turn key={t.id} turn={t} />
             ))}
