@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import aiosqlite
@@ -256,17 +257,49 @@ async def tool_usage(conn: aiosqlite.Connection, session_date: str | None = None
     return {"session_date": session_date, "totals": totals, "by_tool_endpoint": by_tool_endpoint}
 
 
-async def health_history(conn: aiosqlite.Connection, limit: int = 288) -> list[dict[str, Any]]:
-    """Most recent `limit` health_samples, oldest first -- the uptime strip's
-    data source. Default 288 matches one full trading day of 5-minute
-    management_tick samples (MANAGEMENT_INTERVAL_S), same bound-then-reverse
-    pattern as equity_history so cost doesn't grow with total history."""
+async def health_history(conn: aiosqlite.Connection, hours: int = 90) -> list[dict[str, Any]]:
+    """Buckets health_samples into 1-hour windows over the last `hours` hours,
+    oldest first -- the uptime strip's data source (status-page style: one
+    bar per bucket, not one per raw sample). A bucket is 'down' if ANY
+    sample inside it failed (a single bad management_tick is a real
+    incident, not noise to average away into a percentage) and 'no_data' if
+    the bucket has zero samples -- expected for market-closed hours, since
+    management_tick (agent/main.py) only runs while the market's open;
+    rendering that as 'down' would make the strip mostly red and meaningless.
+
+    Buckets in Python rather than SQL to stay backend-agnostic -- SQLite's
+    strftime and Postgres's date_trunc aren't the same dialect, and at most
+    a few thousand rows for a 90-hour window is cheap to bucket in memory."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
     cur = await conn.execute(
-        "SELECT ts_utc, ok FROM health_samples ORDER BY ts_utc DESC LIMIT ?", (limit,)
+        "SELECT ts_utc, ok FROM health_samples WHERE ts_utc >= ? ORDER BY ts_utc ASC", (cutoff,)
     )
-    rows = [dict(row) for row in await cur.fetchall()]
-    rows.reverse()
-    return rows
+    rows = await cur.fetchall()
+
+    now_hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    buckets: dict[datetime, list[int]] = {now_hour - timedelta(hours=i): [] for i in range(hours)}
+
+    for row in rows:
+        ts = datetime.fromisoformat(row["ts_utc"]).astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        if ts in buckets:
+            buckets[ts].append(row["ok"])
+
+    result = []
+    for bucket_start in sorted(buckets):
+        samples = buckets[bucket_start]
+        if not samples:
+            status = "no_data"
+        elif all(s == 1 for s in samples):
+            status = "up"
+        else:
+            status = "down"
+        result.append({
+            "bucket_start_utc": bucket_start.isoformat(),
+            "status": status,
+            "ok_count": sum(samples),
+            "total_count": len(samples),
+        })
+    return result
 
 
 async def decision_chain(conn: aiosqlite.Connection, decision_id: int) -> dict[str, Any]:

@@ -1,17 +1,9 @@
 import { Coins } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { StatTile } from "@/components/StatTile";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatCost } from "@/lib/format";
 import type { LlmUsageResponse } from "@/lib/types";
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <p className="text-xs uppercase tracking-wide text-muted-foreground">{label}</p>
-      <p className="text-lg font-semibold">{value}</p>
-    </div>
-  );
-}
 
 // One row per (node, model) pair -- node is the agent role (analyst/debate
 // persona/trader/risk-manager) that made the call, so this is "which tool
@@ -33,10 +25,10 @@ export function LlmUsage({ usage }: { usage: LlmUsageResponse | null }) {
       </CardHeader>
       <CardContent>
         <div className="mb-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
-          <Stat label="Total cost" value={formatCost(totals.cost_usd)} />
-          <Stat label="API calls" value={totals.calls.toLocaleString()} />
-          <Stat label="Prompt tokens" value={totals.prompt_tokens.toLocaleString()} />
-          <Stat label="Completion tokens" value={totals.completion_tokens.toLocaleString()} />
+          <StatTile label="Total cost" value={formatCost(totals.cost_usd)} />
+          <StatTile label="API calls" value={totals.calls.toLocaleString()} />
+          <StatTile label="Prompt tokens" value={totals.prompt_tokens.toLocaleString()} />
+          <StatTile label="Completion tokens" value={totals.completion_tokens.toLocaleString()} />
         </div>
         <div className="overflow-x-auto rounded-md border border-border">
           <Table>

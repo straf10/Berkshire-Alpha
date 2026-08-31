@@ -123,9 +123,9 @@ async def tools_usage(session_date: str | None = None, conn: aiosqlite.Connectio
 
 
 @app.get("/health/history")
-async def health_history(limit: int = 288, conn: aiosqlite.Connection = Depends(get_conn)) -> list[dict[str, Any]]:
-    """Uptime strip data: recent health_samples, oldest first."""
-    return await read.health_history(conn, limit)
+async def health_history(hours: int = 90, conn: aiosqlite.Connection = Depends(get_conn)) -> list[dict[str, Any]]:
+    """Uptime strip data: one bucket per hour over the last `hours` hours."""
+    return await read.health_history(conn, hours)
 
 
 def _jsonable(value: Any) -> Any:

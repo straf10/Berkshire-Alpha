@@ -362,7 +362,9 @@ export interface ToolUsageResponse {
   by_tool_endpoint: ToolUsageRow[];
 }
 
-export interface HealthSample {
-  ts_utc: string;
-  ok: number;
+export interface HealthBucket {
+  bucket_start_utc: string;
+  status: "up" | "down" | "no_data";
+  ok_count: number;
+  total_count: number;
 }

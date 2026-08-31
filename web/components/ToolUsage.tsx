@@ -1,6 +1,7 @@
 import { Wrench } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { StatTile } from "@/components/StatTile";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { ToolUsageResponse } from "@/lib/types";
 
@@ -22,6 +23,10 @@ export function ToolUsage({ usage }: { usage: ToolUsageResponse | null }) {
         </CardTitle>
       </CardHeader>
       <CardContent>
+        <div className="mb-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <StatTile label="Total calls" value={totals.calls.toLocaleString()} />
+          <StatTile label="Failures" value={totals.failures.toLocaleString()} />
+        </div>
         <div className="overflow-x-auto rounded-md border border-border">
           <Table>
             <TableHeader>

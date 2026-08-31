@@ -1,4 +1,4 @@
-import { Activity, ArrowLeftRight, LayoutDashboard, ScrollText } from "lucide-react";
+import { ArrowLeftRight, Coins, LayoutDashboard, MessagesSquare, Settings } from "lucide-react";
 import { AccountVitals } from "@/components/AccountVitals";
 import { AgentConfigPanel } from "@/components/AgentConfigPanel";
 import { AssignmentPanel } from "@/components/AssignmentPanel";
@@ -24,7 +24,7 @@ import type {
   EquityPoint,
   FunnelResponse,
   GreeksSnapshot,
-  HealthSample,
+  HealthBucket,
   LlmUsageResponse,
   OpenPosition,
   Status,
@@ -95,7 +95,7 @@ export default async function Page() {
       fetchJson<Trade[]>(`${base}/trades?limit=100`),
       fetchJson<LlmUsageResponse>(`${base}/llm/usage`),
       fetchJson<ToolUsageResponse>(`${base}/tools/usage`),
-      fetchJson<HealthSample[]>(`${base}/health/history`),
+      fetchJson<HealthBucket[]>(`${base}/health/history`),
     ]);
 
   const decisions = decisionsRes;
@@ -117,24 +117,40 @@ export default async function Page() {
             <LayoutDashboard className="size-3.5" />
             Overview
           </TabsTrigger>
+          <TabsTrigger value="decisions" className="gap-1.5">
+            <MessagesSquare className="size-3.5" />
+            Decisions
+          </TabsTrigger>
           <TabsTrigger value="trades" className="gap-1.5">
             <ArrowLeftRight className="size-3.5" />
             Trades
           </TabsTrigger>
-          <TabsTrigger value="logs" className="gap-1.5">
-            <ScrollText className="size-3.5" />
-            Logs
-          </TabsTrigger>
           <TabsTrigger value="usage" className="gap-1.5">
-            <Activity className="size-3.5" />
+            <Coins className="size-3.5" />
             Usage
+          </TabsTrigger>
+          <TabsTrigger value="config" className="gap-1.5">
+            <Settings className="size-3.5" />
+            Config
           </TabsTrigger>
         </TabsList>
 
+        {/* Overview: glanceable totals only -- account state, risk gauges,
+            system health, and the entry-screening funnel. No raw rows here;
+            drill-down content (decisions, trades) lives in its own tab. */}
         <TabsContent value="overview">
           <AccountVitals account={account} history={equityHistory} sessionDate={status.session_date} />
           <GreeksGauges snapshot={greeksLatest} />
+          <HealthStrip buckets={healthHistory} />
           <Funnel funnel={funnel} />
+        </TabsContent>
+
+        {/* Decisions: intentionally both a compact skim table AND the full
+            expandable reasoning feed for the SAME underlying decisions array --
+            scan the log, then expand the matching card for the full debate/
+            risk-vote chain, without hunting across tabs for one subject. */}
+        <TabsContent value="decisions">
+          <DecisionsLog decisions={decisions} />
           <ReasoningFeed decisions={decisions} />
         </TabsContent>
 
@@ -146,18 +162,18 @@ export default async function Page() {
           )}
         </TabsContent>
 
-        <TabsContent value="logs">
-          <DecisionsLog decisions={decisions} />
-          <AgentConfigPanel config={config} />
-        </TabsContent>
-
+        {/* Usage: cost and reliability only -- "is the agent healthy" lives in
+            Overview's HealthStrip, not here. */}
         <TabsContent value="usage">
-          <HealthStrip samples={healthHistory} />
           <LlmUsage usage={llmUsage} />
           <ToolUsage usage={toolUsage} />
-          {!healthHistory?.length && !llmUsage?.totals.calls && !toolUsage?.totals.calls && (
+          {!llmUsage?.totals.calls && !toolUsage?.totals.calls && (
             <p className="text-muted-foreground">No usage data recorded yet this deploy.</p>
           )}
+        </TabsContent>
+
+        <TabsContent value="config">
+          <AgentConfigPanel config={config} />
         </TabsContent>
       </Tabs>
 
