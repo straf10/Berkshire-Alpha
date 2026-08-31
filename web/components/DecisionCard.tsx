@@ -224,7 +224,7 @@ export function DecisionCard({ decision }: { decision: Decision }) {
       </TableRow>
       {open && (
         <TableRow>
-          <TableCell colSpan={7} className="min-w-0 max-w-0 bg-muted/20 p-3">
+          <TableCell colSpan={7} className="min-w-0 max-w-0 whitespace-normal bg-muted/20 p-3">
             {loading ? (
               <div className="space-y-2">
                 <Skeleton className="h-4 w-full" />
