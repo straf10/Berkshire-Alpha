@@ -17,7 +17,7 @@ to `main` as a real deploy, not a checkpoint.
   branch instead of landing each on `main` separately.
 - Path scoping: `agent/**`, `requirements.txt`, `Dockerfile`, `pytest.ini`
   count as backend; `web/**` counts as frontend. A change to neither (docs,
-  `AGENTS.md`, the workflow file itself, etc.) runs nothing at all.
+  this workflow file itself, etc.) runs nothing at all.
 - To force-skip deploy even when backend/frontend files changed — e.g. a WIP
   merge you don't want live yet — include `[skip deploy]` anywhere in the
   commit message. Tests still run either way; only the deploy jobs check for it.
