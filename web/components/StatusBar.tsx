@@ -40,16 +40,16 @@ export function StatusBar({ status }: { status: Status }) {
         {live ? "LIVE" : "DRY-RUN"}
       </Badge>
       {status.llm_enabled !== undefined && (
-        <span className="flex items-center gap-1 text-muted-foreground">
-          <BrainCircuit className="size-3.5" />
+        <span className="text-muted-foreground">
+          <BrainCircuit className="mr-1 inline size-3.5 align-[-2px]" />
           LLM {status.llm_enabled ? "on" : "off"}
         </span>
       )}
       {known ? (
-        <span className="flex items-center gap-1 text-foreground/80">
-          <Clock className="size-3.5" />
+        <span className="text-foreground/80">
+          <Clock className="mr-1 inline size-3.5 align-[-2px]" />
           {status.is_open ? "market open" : "market closed"} — next: {status.next_action} in{" "}
-          <span className="font-semibold text-primary" suppressHydrationWarning>
+          <span className="font-semibold text-primary whitespace-nowrap" suppressHydrationWarning>
             {formatCountdown(status.next_action_utc!, now)}
           </span>
         </span>

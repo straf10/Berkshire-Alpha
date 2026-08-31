@@ -62,8 +62,8 @@ export default async function Page() {
   const assignments = assignmentsRes;
 
   return (
-    <main className="mx-auto max-w-5xl p-8 font-mono text-base">
-      <h1 className="mb-1 text-2xl font-semibold">Autonomous Debate Trading Agent</h1>
+    <main className="mx-auto max-w-5xl p-4 font-mono text-base sm:p-8">
+      <h1 className="mb-1 text-xl font-semibold sm:text-2xl">Autonomous Debate Trading Agent</h1>
       <StatusBar status={status} />
 
       {/* Alert-like and reference material stay outside the tabs -- an

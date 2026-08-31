@@ -38,7 +38,7 @@ function QuantGrid({ q }: { q: QuantSnapshot }) {
     ["DTE", String(q.dte)],
   ];
   return (
-    <div className="grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-3">
+    <div className="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-3">
       {rows.map(([label, value]) => (
         <div key={label} className="flex justify-between gap-2 text-sm">
           <span className="text-muted-foreground">{label}</span>
