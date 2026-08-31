@@ -6,14 +6,29 @@ from typing import AsyncIterator
 
 import aiosqlite
 
+from agent.storage import db_pg
+
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+
+
+def _is_postgres(db_path: str) -> bool:
+    return db_path.startswith("postgres://") or db_path.startswith("postgresql://")
 
 
 @asynccontextmanager
 async def connect(db_path: str) -> AsyncIterator[aiosqlite.Connection]:
     """Applies PRAGMA busy_timeout=5000 and PRAGMA foreign_keys=ON on EVERY connection
     (both are connection-scoped). journal_mode=WAL is database-scoped and set once,
-    by init_db's schema.sql."""
+    by init_db's schema.sql.
+
+    Dispatches to db_pg when AGENT_DB_PATH is a postgres:// / postgresql:// DSN
+    (docs/postgres_migration.md) -- every caller uses storage_db.connect(settings.db_path)
+    so this one branch is the entire backend switch."""
+    if _is_postgres(db_path):
+        async with db_pg.connect(db_path) as pg_conn:
+            yield pg_conn  # type: ignore[misc]
+        return
+
     conn = await aiosqlite.connect(db_path)
     conn.row_factory = aiosqlite.Row
     try:
@@ -26,6 +41,10 @@ async def connect(db_path: str) -> AsyncIterator[aiosqlite.Connection]:
 
 async def init_db(db_path: str) -> None:
     """Executes schema.sql, then _migrate(). Idempotent -- safe on every restart."""
+    if _is_postgres(db_path):
+        await db_pg.init_db(db_path)
+        return
+
     schema = _SCHEMA_PATH.read_text(encoding="utf-8")
     async with connect(db_path) as conn:
         await conn.executescript(schema)

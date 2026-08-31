@@ -1084,6 +1084,32 @@ async def serve_api(settings: Settings) -> None:
     await uvicorn.Server(config).serve()
 
 
+async def _maybe_migrate_sqlite_to_postgres(settings: Settings) -> None:
+    """One-time Postgres cutover step (docs/postgres_migration.md): if AGENT_DB_PATH
+    now points at Postgres but the old SQLite file is still sitting on the
+    Railway volume, copy every row across before serving anything. Idempotent
+    by construction -- a Postgres `decisions` table with any row already in it
+    means a prior boot already did this, so every later boot is a no-op and
+    the AGENT_LEGACY_SQLITE_PATH file can be left in place indefinitely."""
+    if not settings.db_path.startswith(("postgres://", "postgresql://")):
+        return
+    legacy_path = os.environ.get("AGENT_LEGACY_SQLITE_PATH", "/data/agent.db")
+    if not os.path.exists(legacy_path):
+        return
+
+    async with storage_db.connect(settings.db_path) as conn:
+        cur = await conn.execute("SELECT 1 FROM decisions LIMIT 1")
+        already_migrated = (await cur.fetchone()) is not None
+    if already_migrated:
+        return
+
+    logger.info("postgres cutover: migrating %s -> %s", legacy_path, settings.db_path)
+    from agent.storage.migrate_to_postgres import migrate
+
+    counts = await migrate(legacy_path, settings.db_path)
+    logger.info("postgres cutover: migration complete: %s", counts)
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(prog="agent.main")
     parser.add_argument("--dry-run", action="store_true", help="never place orders")
@@ -1111,6 +1137,7 @@ async def main() -> None:
         logger.warning("EARNINGS GATE UNARMED -- EARNINGS_VERIFIED_ON is None; continuing in dry-run")
 
     await storage_db.init_db(settings.db_path)
+    await _maybe_migrate_sqlite_to_postgres(settings)
     deps = await build_deps(settings)
     if args.llm is not None:
         deps.llm_enabled = args.llm
