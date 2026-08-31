@@ -1,6 +1,8 @@
 "use client";
 
+import { Bot, Calculator, FileSignature, Gavel, Repeat, ShieldCheck, Users } from "lucide-react";
 import { useState } from "react";
+import type { ComponentType } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { DebateThread } from "@/components/DebateThread";
@@ -49,10 +51,21 @@ function QuantGrid({ q }: { q: QuantSnapshot }) {
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({
+  title,
+  icon: Icon,
+  children,
+}: {
+  title: string;
+  icon: ComponentType<{ className?: string }>;
+  children: React.ReactNode;
+}) {
   return (
     <div className="border-t border-border/60 pt-2">
-      <p className="mb-1 text-sm font-semibold uppercase tracking-wide text-muted-foreground">{title}</p>
+      <p className="mb-1 flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+        <Icon className="size-3.5" />
+        {title}
+      </p>
       {children}
     </div>
   );
@@ -65,13 +78,13 @@ function ExpandedChain({ chain }: { chain: DecisionChain }) {
   return (
     <div className="space-y-3 pt-2 text-base">
       {quant && (
-        <Section title="Quant evidence">
+        <Section title="Quant evidence" icon={Calculator}>
           <QuantGrid q={quant} />
         </Section>
       )}
 
       {chain.analyst_outputs.length > 0 && (
-        <Section title="Analyst outputs">
+        <Section title="Analyst outputs" icon={Users}>
           <div className="grid gap-2 sm:grid-cols-3">
             {chain.analyst_outputs.map((a) => {
               const out = a.output_json ? safeJsonParse<AnalystOutputShape>(a.output_json) : null;
@@ -93,15 +106,12 @@ function ExpandedChain({ chain }: { chain: DecisionChain }) {
         </Section>
       )}
 
-      <Section title="Debate">
+      <div className="border-t border-border/60 pt-2">
         <DebateThread turns={chain.debates} summary={chain.debate_summary} />
-        {chain.debates.length === 0 && chain.debate_summary === null && (
-          <p className="text-sm text-muted-foreground">No debate — quant-only decision.</p>
-        )}
-      </Section>
+      </div>
 
       {proposal && (
-        <Section title="Trader proposal">
+        <Section title="Trader proposal" icon={FileSignature}>
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <span className="font-semibold">{proposal.strategy_name}</span>
             <span>{proposal.underlying}</span>
@@ -118,7 +128,7 @@ function ExpandedChain({ chain }: { chain: DecisionChain }) {
       )}
 
       {chain.risk_votes.length > 0 && (
-        <Section title="Risk votes">
+        <Section title="Risk votes" icon={ShieldCheck}>
           <div className="grid gap-2 sm:grid-cols-3">
             {chain.risk_votes.map((v) => (
               <div key={v.id} className="rounded-md border border-border/60 p-2 text-sm">
@@ -134,7 +144,7 @@ function ExpandedChain({ chain }: { chain: DecisionChain }) {
       )}
 
       {chain.decision && (
-        <Section title="Gate decision">
+        <Section title="Gate decision" icon={Gavel}>
           <p className="text-sm">
             <span className="font-semibold">{chain.decision.gate_reason}</span> — {chain.decision.gate_detail}
           </p>
@@ -147,7 +157,7 @@ function ExpandedChain({ chain }: { chain: DecisionChain }) {
       )}
 
       {chain.trades.length > 0 && (
-        <Section title="Order lifecycle">
+        <Section title="Order lifecycle" icon={Repeat}>
           {chain.trades.map((t) => (
             <div key={t.id} className="text-sm">
               <p>
@@ -162,7 +172,7 @@ function ExpandedChain({ chain }: { chain: DecisionChain }) {
       )}
 
       {chain.llm_calls.length > 0 && (
-        <Section title="LLM calls">
+        <Section title="LLM calls" icon={Bot}>
           <div className="space-y-0.5 text-[11px] text-muted-foreground">
             {chain.llm_calls.map((c) => (
               <div key={c.id}>
