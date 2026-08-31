@@ -96,6 +96,11 @@ pytest
 - [Alpaca CLI](https://docs.alpaca.markets/us/docs/alpacas-cli)
 - [Alpaca Python SDK](https://github.com/alpacahq/alpaca-py)
 
+## Founders
+
+- [@straf10](https://github.com/straf10)
+- [@stanimeros](https://github.com/stanimeros)
+
 ## License
 
 [MIT](LICENSE)

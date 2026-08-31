@@ -37,7 +37,16 @@ function Footer() {
   return (
     <footer className="mt-8 flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3 text-sm text-muted-foreground">
       <LiveRefresh />
-      <span>build {BUILD_SHA}</span>
+      <span>
+        build {BUILD_SHA} ·{" "}
+        <a href="https://github.com/straf10" target="_blank" rel="noreferrer" className="hover:text-foreground">
+          @straf10
+        </a>{" "}
+        &amp;{" "}
+        <a href="https://github.com/stanimeros" target="_blank" rel="noreferrer" className="hover:text-foreground">
+          @stanimeros
+        </a>
+      </span>
     </footer>
   );
 }
