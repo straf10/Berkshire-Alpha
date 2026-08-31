@@ -43,14 +43,34 @@ def _to_pg(sql: str) -> str:
     return re.sub(r"\?", repl, sql)
 
 
-def _normalize(record: asyncpg.Record) -> dict[str, Any]:
-    """asyncpg maps Postgres NUMERIC (e.g. AVG() over an integer column) to
-    Decimal, where SQLite's equivalent query returns a plain float -- read.py
-    is written backend-agnostic and never expects a Decimal from a query
-    that isn't touching a money column stored as REAL, so this normalizes
-    at the adapter boundary rather than pushing a float() cast into read.py
-    (which test_money_boundary_is_explicit reserves for write.py alone)."""
-    return {k: (float(v) if isinstance(v, Decimal) else v) for k, v in record.items()}
+class _Row:
+    """Wraps one asyncpg.Record, converting Decimal -> float on read (Postgres
+    NUMERIC, e.g. AVG() over an integer column, where SQLite's equivalent
+    query returns a plain float -- read.py is backend-agnostic and never
+    expects a Decimal outside write.py's money boundary). Delegates
+    everything else to the Record, which -- unlike a plain dict -- already
+    supports both row[0] (main.py's positional fetchone() reads) and
+    row["col"] (read.py's dict(row) conversions everywhere else); flattening
+    to a dict here, as an earlier version of this function did, silently
+    broke every row[0] call site."""
+
+    __slots__ = ("_record",)
+
+    def __init__(self, record: asyncpg.Record):
+        self._record = record
+
+    def __getitem__(self, key: int | str) -> Any:
+        value = self._record[key]
+        return float(value) if isinstance(value, Decimal) else value
+
+    def keys(self) -> Any:
+        return self._record.keys()
+
+    def __iter__(self) -> Any:
+        return iter(self._record)
+
+    def __len__(self) -> int:
+        return len(self._record)
 
 
 class _PgCursor:
@@ -85,7 +105,7 @@ class PgConnection:
         stripped = sql.strip().upper()
         if stripped.startswith("SELECT") or stripped.startswith("WITH"):
             records = await self._raw.fetch(pg_sql, *params)
-            return _PgCursor(records=[_normalize(r) for r in records])
+            return _PgCursor(records=[_Row(r) for r in records])
 
         await self._raw.execute(pg_sql, *params)
         return _PgCursor()
