@@ -82,9 +82,12 @@ def _infer_structure(legs: tuple) -> Structure | None:
     if sell.strike_price == buy.strike_price:
         return None
     chain_right = _RIGHT[right]
-    if sell.strike_price > buy.strike_price:
-        return _CREDIT_STRUCTURE[chain_right]
-    return _DEBIT_STRUCTURE[chain_right]
+    # Puts: the higher strike is worth more, so selling it is the credit side
+    # (sell > buy). Calls: the LOWER strike is worth more, so selling it is
+    # the credit side (sell < buy) -- mirrors spread_builder.build()'s
+    # direction=+1 long-leg placement for calls (short.strike < long.strike).
+    is_credit = sell.strike_price > buy.strike_price if chain_right == "P" else sell.strike_price < buy.strike_price
+    return _CREDIT_STRUCTURE[chain_right] if is_credit else _DEBIT_STRUCTURE[chain_right]
 
 
 def validate_proposal(

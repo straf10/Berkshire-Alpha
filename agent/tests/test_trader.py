@@ -143,6 +143,27 @@ def test_proposal_structure_mismatch() -> None:
     assert validate_proposal(p, q, d, chain, TRADING_DAYS) == ProposalFailure.STRUCTURE_MISMATCH
 
 
+def test_proposal_bear_call_spread_accepted() -> None:
+    # Real bear call credit spread: sell the LOWER strike call, buy the
+    # HIGHER strike call (sell.strike < buy.strike) -- matches
+    # spread_builder.build()'s direction=+1 placement for calls. Regression
+    # for the inverted sell/buy check in _infer_structure.
+    q, d = _snapshot(), _decision(Structure.BEAR_CALL_SPREAD)
+    p = SpreadProposal(
+        underlying="TST", strategy_name="bear call spread", expiration_date="2026-09-04",
+        legs=[
+            OptionLegProposal(contract_type="CALL", side="SELL", strike_price=95.0, ratio_qty=1),
+            OptionLegProposal(contract_type="CALL", side="BUY", strike_price=100.0, ratio_qty=1),
+        ],
+        confidence_score=0.8, reasoning="correct side",
+    )
+    chain = _chain([
+        _quote(95.0, "C", delta=0.45, bid=6.00, ask=6.20),
+        _quote(100.0, "C", delta=0.275, bid=2.50, ask=2.60),
+    ])
+    assert validate_proposal(p, q, d, chain, TRADING_DAYS) is None
+
+
 def test_plan_prices_ignore_llm() -> None:
     q, d = _snapshot(), _decision(Structure.BULL_PUT_SPREAD)
     proposal = _bull_put_proposal()
