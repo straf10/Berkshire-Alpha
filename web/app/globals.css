@@ -135,5 +135,10 @@
   html {
     @apply bg-background font-sans;
     min-height: 100dvh;
+    /* Tabs vary a lot in content height (e.g. Config vs Trades) -- without
+       this, the vertical scrollbar toggling on/off as you switch tabs
+       changes the available width and shifts the centered content
+       horizontally. Reserving the gutter always keeps it stable. */
+    scrollbar-gutter: stable;
   }
 }

@@ -1,7 +1,7 @@
 import { ScrollText } from "lucide-react";
 import { DataTableSection } from "@/components/DataTableSection";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { actionColor, modeLabel } from "@/lib/format";
+import { actionColor, formatDateTime, modeLabel } from "@/lib/format";
 import type { Decision } from "@/lib/types";
 
 // The compact log kept above the reasoning feed (docs/day6_ui_plan.md S1.6) --
@@ -25,7 +25,7 @@ export function DecisionsLog({ decisions }: { decisions: Decision[] }) {
         <TableBody>
           {decisions.map((d) => (
             <TableRow key={d.id}>
-              <TableCell className="whitespace-nowrap text-foreground/70">{d.ts_utc}</TableCell>
+              <TableCell className="whitespace-nowrap text-foreground/70">{formatDateTime(d.ts_utc)}</TableCell>
               <TableCell className="font-semibold">{d.symbol}</TableCell>
               <TableCell>{modeLabel(d.mode)}</TableCell>
               <TableCell>{d.regime}</TableCell>

@@ -1,4 +1,4 @@
-import { ArrowLeftRight, Coins, LayoutDashboard, MessagesSquare, Settings } from "lucide-react";
+import { ArrowLeftRight, Coins, Database, Globe, LayoutDashboard, MessagesSquare, Server, Settings } from "lucide-react";
 import { AccountVitals } from "@/components/AccountVitals";
 import { AgentConfigPanel } from "@/components/AgentConfigPanel";
 import { AssignmentPanel } from "@/components/AssignmentPanel";
@@ -16,6 +16,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToolUsage } from "@/components/ToolUsage";
 import { TradeHistoryTable } from "@/components/TradeHistoryTable";
 import { apiBase, fetchJson } from "@/lib/api";
+import { formatDateTime } from "@/lib/format";
 import type {
   AccountState,
   AgentConfig,
@@ -25,6 +26,7 @@ import type {
   FunnelResponse,
   GreeksSnapshot,
   HealthBucket,
+  HealthResponse,
   LlmUsageResponse,
   OpenPosition,
   Status,
@@ -34,17 +36,23 @@ import type {
 
 export const dynamic = "force-dynamic";
 
-// Set by next.config.ts's `env` at build time; there's no hand-maintained
-// semver in this repo, and a build stamp that can't drift from what's
-// actually deployed is more useful than one that needs remembering to bump.
-const BUILD_SHA = process.env.BUILD_SHA ?? "unknown";
+function Footer({
+  backendLastUpdated,
+  dbLastUpdated,
+}: {
+  backendLastUpdated: string | null;
+  dbLastUpdated: string | null;
+}) {
+  // "Frontend" is this render's own timestamp -- refreshes every time
+  // LiveRefresh's poll triggers router.refresh() and re-runs this server
+  // component, no separate client clock needed for this slot (that one
+  // lives at the top of the page instead).
+  const frontendLastUpdated = new Date().toISOString();
 
-function Footer() {
   return (
-    <footer className="mt-8 flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3 text-sm text-muted-foreground">
-      <LiveRefresh />
+    <footer className="mt-8 flex flex-col items-center gap-3 border-t border-border/60 pt-3 text-center text-sm text-muted-foreground">
       <span>
-        build {BUILD_SHA} ·{" "}
+        Founders{" "}
         <a href="https://github.com/straf10" target="_blank" rel="noreferrer" className="hover:text-foreground">
           @straf10
         </a>{" "}
@@ -53,6 +61,23 @@ function Footer() {
           @stanimeros
         </a>
       </span>
+      <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-1 border-t border-border/40 pt-3 text-xs">
+        <span className="flex items-center gap-1.5" title="Last time this page fetched fresh data from the API">
+          <Globe className="size-3.5" />
+          <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70">UI</span>
+          {formatDateTime(frontendLastUpdated)}
+        </span>
+        <span className="flex items-center gap-1.5" title="Last completed backend trading-loop cycle">
+          <Server className="size-3.5" />
+          <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70">Agent</span>
+          {backendLastUpdated ? formatDateTime(backendLastUpdated) : "—"}
+        </span>
+        <span className="flex items-center gap-1.5" title="Timestamp of the most recent decision written to the database">
+          <Database className="size-3.5" />
+          <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70">Data</span>
+          {dbLastUpdated ? formatDateTime(dbLastUpdated) : "—"}
+        </span>
+      </div>
     </footer>
   );
 }
@@ -73,7 +98,7 @@ export default async function Page() {
       <>
         <ServiceDown />
         <div className="mx-auto max-w-5xl px-4 sm:px-8">
-          <Footer />
+          <Footer backendLastUpdated={null} dbLastUpdated={null} />
         </div>
       </>
     );
@@ -84,35 +109,58 @@ export default async function Page() {
   // the whole page. New endpoints (equity/history, greeks/*, positions/open,
   // funnel) may not exist yet on every deploy of the API; fetchJson already
   // resolves to null rather than throwing on a 404/network error.
-  const [config, account, equityHistory, greeksLatest, openPositions, funnel, trades, llmUsage, toolUsage, healthHistory] =
-    await Promise.all([
-      fetchJson<AgentConfig>(`${base}/config`),
-      fetchJson<AccountState>(`${base}/state/account`),
-      fetchJson<EquityPoint[]>(`${base}/equity/history?limit=500`),
-      fetchJson<GreeksSnapshot>(`${base}/greeks/latest`),
-      fetchJson<OpenPosition[]>(`${base}/positions/open`),
-      fetchJson<FunnelResponse>(`${base}/funnel`),
-      fetchJson<Trade[]>(`${base}/trades?limit=100`),
-      fetchJson<LlmUsageResponse>(`${base}/llm/usage`),
-      fetchJson<ToolUsageResponse>(`${base}/tools/usage`),
-      fetchJson<HealthBucket[]>(`${base}/health/history`),
-    ]);
+  const [
+    config,
+    account,
+    equityHistory,
+    greeksLatest,
+    openPositions,
+    funnel,
+    trades,
+    llmUsage,
+    toolUsage,
+    healthHistory,
+    health,
+  ] = await Promise.all([
+    fetchJson<AgentConfig>(`${base}/config`),
+    fetchJson<AccountState>(`${base}/state/account`),
+    fetchJson<EquityPoint[]>(`${base}/equity/history?limit=500`),
+    fetchJson<GreeksSnapshot>(`${base}/greeks/latest`),
+    fetchJson<OpenPosition[]>(`${base}/positions/open`),
+    fetchJson<FunnelResponse>(`${base}/funnel`),
+    fetchJson<Trade[]>(`${base}/trades?limit=100`),
+    fetchJson<LlmUsageResponse>(`${base}/llm/usage`),
+    fetchJson<ToolUsageResponse>(`${base}/tools/usage`),
+    fetchJson<HealthBucket[]>(`${base}/health/history`),
+    fetchJson<HealthResponse>(`${base}/health`),
+  ]);
 
   const decisions = decisionsRes;
   const status = statusRes;
   const assignments = assignmentsRes;
 
   return (
-    <main className="mx-auto max-w-5xl p-4 font-mono text-base sm:p-8">
-      <h1 className="mb-1 text-xl font-semibold sm:text-2xl">Autonomous Debate Trading Agent</h1>
-      <StatusBar status={status} />
+    <main className="mx-auto w-full max-w-7xl p-4 font-mono text-base sm:p-8">
+      {/* Header locked to the same max-w-5xl as the footer -- only the tabs/
+          content region below is allowed to use the wider max-w-7xl `main`
+          gives it, so a wide table can breathe without the header/footer
+          stretching to match. */}
+      <div className="mx-auto w-full max-w-5xl">
+        <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
+          <h1 className="text-xl font-semibold sm:text-2xl">Autonomous Debate Trading Agent</h1>
+          <span className="text-sm text-muted-foreground">
+            <LiveRefresh />
+          </span>
+        </div>
+        <StatusBar status={status} />
 
-      {/* Alert-like and reference material stay outside the tabs -- an
-          assignment event matters regardless of which tab a judge is on. */}
-      <AssignmentPanel events={assignments} />
+        {/* Alert-like and reference material stay outside the tabs -- an
+            assignment event matters regardless of which tab a judge is on. */}
+        <AssignmentPanel events={assignments} />
+      </div>
 
       <Tabs defaultValue="overview">
-        <TabsList variant="line" className="mb-6">
+        <TabsList variant="line" className="mb-6 w-full">
           <TabsTrigger value="overview" className="gap-1.5">
             <LayoutDashboard className="size-3.5" />
             Overview
@@ -141,8 +189,8 @@ export default async function Page() {
         <TabsContent value="overview">
           <AccountVitals account={account} history={equityHistory} sessionDate={status.session_date} />
           <GreeksGauges snapshot={greeksLatest} />
-          <HealthStrip buckets={healthHistory} />
           <Funnel funnel={funnel} />
+          <HealthStrip buckets={healthHistory} />
         </TabsContent>
 
         {/* Decisions: intentionally both a compact skim table AND the full
@@ -177,7 +225,9 @@ export default async function Page() {
         </TabsContent>
       </Tabs>
 
-      <Footer />
+      <div className="mx-auto w-full max-w-5xl">
+        <Footer backendLastUpdated={health?.last_cycle_utc ?? null} dbLastUpdated={decisions[0]?.ts_utc ?? null} />
+      </div>
     </main>
   );
 }

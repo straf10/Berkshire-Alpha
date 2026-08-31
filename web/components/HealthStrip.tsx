@@ -1,4 +1,5 @@
 import { Activity } from "lucide-react";
+import { formatDateTime } from "@/lib/format";
 import type { HealthBucket } from "@/lib/types";
 
 const STATUS_CLASS: Record<HealthBucket["status"], string> = {
@@ -42,7 +43,7 @@ export function HealthStrip({ buckets }: { buckets: HealthBucket[] | null }) {
         {buckets.map((b) => (
           <div
             key={b.bucket_start_utc}
-            title={`${b.bucket_start_utc} — ${STATUS_LABEL[b.status]}${
+            title={`${formatDateTime(b.bucket_start_utc)} — ${STATUS_LABEL[b.status]}${
               b.total_count > 0 ? ` (${b.ok_count}/${b.total_count} checks)` : ""
             }`}
             className={`h-full flex-1 rounded-sm ${STATUS_CLASS[b.status]}`}

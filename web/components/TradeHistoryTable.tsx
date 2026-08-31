@@ -2,7 +2,7 @@ import { History } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { DataTableSection } from "@/components/DataTableSection";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { compactLegs, formatSignedMoney } from "@/lib/format";
+import { compactLegs, formatDateTime, formatSignedMoney } from "@/lib/format";
 import type { Trade } from "@/lib/types";
 
 function statusVariant(t: Trade): "default" | "destructive" | "secondary" {
@@ -33,7 +33,7 @@ export function TradeHistoryTable({ trades }: { trades: Trade[] | null }) {
         <TableBody>
           {trades.map((t) => (
             <TableRow key={t.id}>
-              <TableCell className="whitespace-nowrap text-foreground/70">{t.ts_utc}</TableCell>
+              <TableCell className="whitespace-nowrap text-foreground/70">{formatDateTime(t.ts_utc)}</TableCell>
               <TableCell className="font-semibold">{t.symbol}</TableCell>
               <TableCell>{t.structure}</TableCell>
               <TableCell>{compactLegs(t.legs_json)}</TableCell>

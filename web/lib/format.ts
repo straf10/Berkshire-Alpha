@@ -1,3 +1,18 @@
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// Every timestamp from the API is a UTC ISO string (agent/storage's ts_utc
+// columns) -- formats manually in UTC rather than toLocaleString() so
+// output is identical whether this runs on the server (Page's Footer) or
+// the client (DecisionCard etc.), instead of drifting with server locale/TZ.
+export function formatDateTime(iso: string, opts: { seconds?: boolean } = {}): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  const time = opts.seconds ? `${hh}:${mm}:${String(d.getUTCSeconds()).padStart(2, "0")}` : `${hh}:${mm}`;
+  return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}, ${time} UTC`;
+}
+
 export function formatMoney(value: number | string): string {
   const n = typeof value === "string" ? Number(value) : value;
   if (!Number.isFinite(n)) return "—";

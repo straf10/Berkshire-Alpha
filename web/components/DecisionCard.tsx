@@ -5,9 +5,10 @@ import { useState } from "react";
 import type { ComponentType } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { TableCell, TableRow } from "@/components/ui/table";
 import { DebateThread } from "@/components/DebateThread";
 import { apiBase, fetchJson } from "@/lib/api";
-import { actionBadgeVariant, riskDecisionVariant, safeJsonParse } from "@/lib/format";
+import { actionColor, formatDateTime, modeLabel, riskDecisionVariant, safeJsonParse } from "@/lib/format";
 import type { Decision, DecisionChain, QuantSnapshot } from "@/lib/types";
 
 interface AnalystOutputShape {
@@ -189,15 +190,20 @@ function ExpandedChain({ chain }: { chain: DecisionChain }) {
   );
 }
 
+// Table row pair (summary + conditional detail row) rather than the
+// DecisionsLog table's plain rows -- clicking a row lazy-fetches and expands
+// its full reasoning chain below it, so this looks like the same table
+// (docs: "Decisions log and Reasoning feed to be table like the decision
+// log") while still being the expandable centerpiece PLAN.md calls out.
 export function DecisionCard({ decision }: { decision: Decision }) {
   const [open, setOpen] = useState(false);
   const [chain, setChain] = useState<DecisionChain | null>(null);
   const [loading, setLoading] = useState(false);
 
-  async function handleToggle(e: React.SyntheticEvent<HTMLDetailsElement>) {
-    const isOpen = e.currentTarget.open;
-    setOpen(isOpen);
-    if (isOpen && chain === null && !loading) {
+  async function handleClick() {
+    const next = !open;
+    setOpen(next);
+    if (next && chain === null && !loading) {
       setLoading(true);
       const data = await fetchJson<DecisionChain>(`${apiBase()}/decisions/${decision.id}`);
       setChain(data);
@@ -206,28 +212,33 @@ export function DecisionCard({ decision }: { decision: Decision }) {
   }
 
   return (
-    <details className="rounded-md border border-border" onToggle={handleToggle}>
-      <summary className="flex cursor-pointer flex-wrap items-center gap-2 p-3 text-base select-none">
-        <span className="text-foreground/60">{decision.ts_utc}</span>
-        <span className="font-semibold">{decision.symbol}</span>
-        <Badge variant="secondary">{decision.regime}</Badge>
-        <Badge variant={actionBadgeVariant(decision.action)}>{decision.action}</Badge>
-        <span className="text-foreground/70">{decision.gate_reason}</span>
-        {decision.qty !== null && <span className="ml-auto text-foreground/70">qty {decision.qty}</span>}
-      </summary>
-      <div className="border-t border-border/60 p-3">
-        {!open ? null : loading ? (
-          <div className="space-y-2">
-            <Skeleton className="h-4 w-full" />
-            <Skeleton className="h-4 w-3/4" />
-            <Skeleton className="h-4 w-1/2" />
-          </div>
-        ) : chain ? (
-          <ExpandedChain chain={chain} />
-        ) : (
-          <p className="text-sm text-destructive">Could not load decision detail.</p>
-        )}
-      </div>
-    </details>
+    <>
+      <TableRow className="cursor-pointer select-none" onClick={handleClick} aria-expanded={open}>
+        <TableCell className="whitespace-nowrap text-foreground/70">{formatDateTime(decision.ts_utc)}</TableCell>
+        <TableCell className="font-semibold">{decision.symbol}</TableCell>
+        <TableCell>{modeLabel(decision.mode)}</TableCell>
+        <TableCell>{decision.regime}</TableCell>
+        <TableCell className={`font-semibold ${actionColor(decision.action)}`}>{decision.action}</TableCell>
+        <TableCell className="text-foreground/70">{decision.gate_reason}</TableCell>
+        <TableCell>{decision.qty ?? "—"}</TableCell>
+      </TableRow>
+      {open && (
+        <TableRow>
+          <TableCell colSpan={7} className="bg-muted/20 p-3">
+            {loading ? (
+              <div className="space-y-2">
+                <Skeleton className="h-4 w-full" />
+                <Skeleton className="h-4 w-3/4" />
+                <Skeleton className="h-4 w-1/2" />
+              </div>
+            ) : chain ? (
+              <ExpandedChain chain={chain} />
+            ) : (
+              <p className="text-sm text-destructive">Could not load decision detail.</p>
+            )}
+          </TableCell>
+        </TableRow>
+      )}
+    </>
   );
 }

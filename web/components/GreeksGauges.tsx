@@ -2,7 +2,7 @@ import { Activity } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { GreeksBarChart } from "@/components/charts/GreeksBarChart";
-import { formatMoney } from "@/lib/format";
+import { formatDateTime, formatMoney } from "@/lib/format";
 import type { GreeksSnapshot } from "@/lib/types";
 
 export function GreeksGauges({ snapshot }: { snapshot: GreeksSnapshot | null }) {
@@ -36,7 +36,7 @@ export function GreeksGauges({ snapshot }: { snapshot: GreeksSnapshot | null }) 
       <CardContent>
         <GreeksBarChart data={data} />
         <p className="mt-1 text-[11px] text-muted-foreground">
-          As of {snapshot.ts_utc} — bars show % of the portfolio delta/vega limit consumed.
+          As of {formatDateTime(snapshot.ts_utc, { seconds: true })} — bars show % of the portfolio delta/vega limit consumed.
         </p>
       </CardContent>
     </Card>

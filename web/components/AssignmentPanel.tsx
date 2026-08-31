@@ -1,4 +1,5 @@
 import { TriangleAlert } from "lucide-react";
+import { formatDateTime } from "@/lib/format";
 import type { AssignmentEvent } from "@/lib/types";
 
 export function AssignmentPanel({ events }: { events: AssignmentEvent[] }) {
@@ -12,7 +13,7 @@ export function AssignmentPanel({ events }: { events: AssignmentEvent[] }) {
       <ul className="space-y-1">
         {events.map((e) => (
           <li key={e.id} className="text-foreground/70">
-            {e.ts_utc} — {e.symbol} {e.reason} equity {e.equity_qty > 0 ? "+" : ""}
+            {formatDateTime(e.ts_utc)} — {e.symbol} {e.reason} equity {e.equity_qty > 0 ? "+" : ""}
             {e.equity_qty} sh ({e.contracts} contract{e.contracts === 1 ? "" : "s"}) — equity{" "}
             {e.equity_status}, orphan {e.orphan_status}
           </li>

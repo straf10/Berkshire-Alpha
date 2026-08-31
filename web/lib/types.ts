@@ -147,6 +147,12 @@ export interface DecisionChain {
   llm_calls: LlmCall[];
 }
 
+export interface HealthResponse {
+  ok: boolean;
+  db: boolean;
+  last_cycle_utc: string | null;
+}
+
 export interface Status {
   live?: boolean;
   llm_enabled?: boolean;
