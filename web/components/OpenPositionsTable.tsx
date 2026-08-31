@@ -1,21 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { daysToExpiry, safeJsonParse } from "@/lib/format";
+import { compactLegs, daysToExpiry } from "@/lib/format";
 import type { AssignmentEvent, OpenPosition } from "@/lib/types";
-
-interface LegShape {
-  strike: number;
-  right: "C" | "P";
-  side: "BUY" | "SELL";
-}
-
-function compactLegs(legsJson: string): string {
-  const legs = safeJsonParse<LegShape[]>(legsJson) ?? [];
-  if (legs.length === 0) return "—";
-  const strikes = legs.map((l) => l.strike).join("/");
-  const right = legs[0]?.right ?? "";
-  return `${strikes} ${right}`;
-}
 
 function netGreeks(liveLegs: { qty: number; delta: number; vega: number }[]): { delta: number; vega: number } | null {
   if (liveLegs.length === 0) return null;

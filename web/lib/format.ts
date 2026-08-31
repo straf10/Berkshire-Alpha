@@ -71,3 +71,17 @@ export function safeJsonParse<T>(raw: string | null | undefined): T | null {
     return null;
   }
 }
+
+interface LegShape {
+  strike: number;
+  right: "C" | "P";
+  side: "BUY" | "SELL";
+}
+
+export function compactLegs(legsJson: string): string {
+  const legs = safeJsonParse<LegShape[]>(legsJson) ?? [];
+  if (legs.length === 0) return "—";
+  const strikes = legs.map((l) => l.strike).join("/");
+  const right = legs[0]?.right ?? "";
+  return `${strikes} ${right}`;
+}
