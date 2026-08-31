@@ -85,6 +85,41 @@ not yet reached as of this pass) one-pager draft, neither of which is a code tas
   assuming a fixed edge") is a stronger, more credible quant sentence than overclaiming edge
   or silently under-trading.
 
+### 4. Macro overlay: gold / oil / BTC as a regime prior
+
+Considered 31 Aug alongside three other agent-capability ideas (Reddit-scrape sentiment,
+satellite/geospatial data, a formal multi-agent reviewer role); this is the only one of the
+four that clears the bar for the hackathon window itself, and it's a strong post-hackathon
+item regardless.
+
+**Why it's cheap:** zero new providers or credentials. GLD/USO/BTCUSD all serve from the
+same Alpaca account and the same `tools/market_data.py` call path already in use — no new
+failure mode, no new API key to babysit mid-session.
+
+**Why it's not noise:** `regime.py`'s VRP/skew classification is entirely equity-vol-local;
+it has no view on whether risk assets broadly are risk-on or risk-off. A deterministic
+macro overlay (computed, not LLM opinion — consistent with how `regime.py` already works)
+gives the bull/bear debate a genuinely new, uncorrelated citable key instead of two analysts
+re-citing the same quant snapshot. That's a real answer to the grounding weakness the
+2026-08-31 pre-market debate diagnosis surfaced.
+
+**Fix:** a small `strategy/macro.py` — daily-bar returns on GLD/USO/BTCUSD, classified into
+a coarse risk-on/risk-off/neutral read, exposed as one more evidence-bundle key
+(`macro.regime`). No schema migration, no new Pydantic model beyond one field.
+
+**Sequencing:** after item 2 (MCP) — that item is named directly in the scoring rubric and
+this one isn't. ~2-3 h once started.
+
+### 5. Considered and cut: satellite / geospatial data
+
+Real alpha exists here for commodities, agriculture, and shipping — not for this universe.
+`SPY, QQQ, AAPL, MSFT, NVDA, AMD, TSLA, META, AMZN, GOOGL` are mega-cap tech and index names;
+there is no plausible transmission channel from satellite imagery to a 3-7 DTE options
+signal on any of them. Free-tier revisit latency (days) is also the wrong order of magnitude
+against the horizon. Alpaca News API — already integrated — is strictly faster for the kind
+of catastrophe/macro-shock catalyst this would try to catch. Not pursued; recorded here so
+it isn't re-proposed without re-litigating this.
+
 ---
 
 ## Awareness / monitoring — not scheduled work
@@ -110,4 +145,27 @@ These are standing facts to hold in mind, not defects with a fix:
 | 1 | IEX feed caveat / entitlement check | investigate, then document |
 | 2 | MCP server exposing the agent | 3 h |
 | 3 | One-pager framing (strategic + VRP-compression honesty) | 1 h writing |
-| | **Total** | **~4 h + investigation** |
+| 4 | Macro overlay (gold/oil/BTC regime prior) | 2-3 h |
+| | **Total** | **~6-7 h + investigation** |
+
+---
+
+## Post-hackathon roadmap (product-only — do not pull into the hackathon window)
+
+Both items below need conditions the 4-day judging window can't supply: the reviewer needs
+closed trades to review (currently zero), and the sentiment cron needs several days to warm
+a mention-velocity baseline (`REDDIT_MENTION_BASELINE_N = 6` scans). Neither belongs in the
+Phase 1/2/3 hackathon plan; both are strong v2 candidates for the standalone repo.
+
+- **Post-trade reviewer agent.** A fifth pipeline role reading closed `trades` rows and
+  writing a retrospective against the debate that opened them — "conviction was 0.8, it hit
+  stop, here's what the debate didn't weigh." This is the concrete fix for the standing
+  finding above ("fewer trades, not better trades") once there's a trade history to grade.
+  Reuses the existing analyst/debate schema-enforcement pattern; no new orchestration
+  primitive needed — `agents/pipeline.py` already knows how to run a role against
+  `storage/read.py` output.
+- **Correctly-scoped sentiment scrape.** The 2026-08-31 finding that Reddit's free API closed
+  and Arctic Shift's archive runs 7.5-11h stale killed *intraday* sentiment, not sentiment
+  outright. A separate, independently-scheduled cron (own table, own baseline, never inline
+  in `scan_cycle`) consuming overnight/pre-market chatter as a slow-moving prior is a
+  legitimate v2 addition — it was only the "read live archive mid-scan" framing that failed.
