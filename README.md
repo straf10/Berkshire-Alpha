@@ -18,8 +18,8 @@ An autonomous options-trading agent that runs against Alpaca's paper trading env
 
 Live and trading — agent, risk gates, LLM pipeline, and dashboard are all running.
 
-- **Live dashboard (Vercel):** https://larp-lake.vercel.app
-- **Agent API (Railway):** https://alpaca-trading-agent-production.up.railway.app
+- **Live dashboard (Vercel):** https://autonomous-debate-trading-agent.vercel.app
+- **Agent API (Railway):** https://autonomous-debate-trading-agent-production.up.railway.app
 
 Every push to `main` runs tests (pytest, eslint, `next build`) via GitHub Actions, then auto-deploys the agent to Railway and the dashboard to Vercel. See [docs/deployment.md](docs/deployment.md) for details.
 
