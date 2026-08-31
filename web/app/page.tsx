@@ -6,6 +6,7 @@ import { DecisionsLog } from "@/components/DecisionsLog";
 import { Funnel } from "@/components/Funnel";
 import { GreeksGauges } from "@/components/GreeksGauges";
 import { LiveRefresh } from "@/components/LiveRefresh";
+import { LlmUsage } from "@/components/LlmUsage";
 import { OpenPositionsTable } from "@/components/OpenPositionsTable";
 import { ReasoningFeed } from "@/components/ReasoningFeed";
 import { ServiceDown } from "@/components/ServiceDown";
@@ -21,6 +22,7 @@ import type {
   EquityPoint,
   FunnelResponse,
   GreeksSnapshot,
+  LlmUsageResponse,
   OpenPosition,
   Status,
   Trade,
@@ -78,7 +80,7 @@ export default async function Page() {
   // the whole page. New endpoints (equity/history, greeks/*, positions/open,
   // funnel) may not exist yet on every deploy of the API; fetchJson already
   // resolves to null rather than throwing on a 404/network error.
-  const [config, account, equityHistory, greeksLatest, openPositions, funnel, trades] = await Promise.all([
+  const [config, account, equityHistory, greeksLatest, openPositions, funnel, trades, llmUsage] = await Promise.all([
     fetchJson<AgentConfig>(`${base}/config`),
     fetchJson<AccountState>(`${base}/state/account`),
     fetchJson<EquityPoint[]>(`${base}/equity/history?limit=500`),
@@ -86,6 +88,7 @@ export default async function Page() {
     fetchJson<OpenPosition[]>(`${base}/positions/open`),
     fetchJson<FunnelResponse>(`${base}/funnel`),
     fetchJson<Trade[]>(`${base}/trades?limit=100`),
+    fetchJson<LlmUsageResponse>(`${base}/llm/usage`),
   ]);
 
   const decisions = decisionsRes;
@@ -133,6 +136,7 @@ export default async function Page() {
         </TabsContent>
 
         <TabsContent value="logs">
+          <LlmUsage usage={llmUsage} />
           <DecisionsLog decisions={decisions} />
           <AgentConfigPanel config={config} />
         </TabsContent>

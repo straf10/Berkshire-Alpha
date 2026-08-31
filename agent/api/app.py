@@ -107,6 +107,13 @@ async def funnel(session_date: str | None = None, conn: aiosqlite.Connection = D
     return await read.funnel(conn, session_date)
 
 
+@app.get("/llm/usage")
+async def llm_usage(session_date: str | None = None, conn: aiosqlite.Connection = Depends(get_conn)) -> dict[str, Any]:
+    """Tokens/cost/call-count per LLM node and model -- omit session_date for
+    all-time totals, or pass one to scope to a single trading session."""
+    return await read.llm_usage(conn, session_date)
+
+
 def _jsonable(value: Any) -> Any:
     if isinstance(value, (Decimal, date)):
         return str(value)

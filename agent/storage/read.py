@@ -169,6 +169,52 @@ async def funnel(conn: aiosqlite.Connection, session_date: str | None = None) ->
     }
 
 
+async def llm_usage(conn: aiosqlite.Connection, session_date: str | None = None) -> dict[str, Any]:
+    """Tokens/cost/call-count per node (analyst/debate/trader/risk persona)
+    and per model, from llm_calls -- every row already carries prompt_tokens,
+    completion_tokens and est_cost_usd (agent/tools/llm.py), so this is a
+    pure aggregation, no new instrumentation. session_date filters via
+    decisions.session_date (llm_calls has no session_date of its own -- see
+    write.py's comment on decision_id often being NULL at call time); a NULL
+    decision_id row is excluded by the session filter, which only matters
+    when session_date is passed."""
+    where = ""
+    params: tuple[Any, ...] = ()
+    if session_date is not None:
+        where = "WHERE decision_id IN (SELECT id FROM decisions WHERE session_date = ?)"
+        params = (session_date,)
+
+    cur = await conn.execute(
+        f"""SELECT node, model,
+               COUNT(*) AS calls,
+               SUM(prompt_tokens) AS prompt_tokens,
+               SUM(completion_tokens) AS completion_tokens,
+               SUM(est_cost_usd) AS cost_usd
+           FROM llm_calls {where}
+           GROUP BY node, model
+           ORDER BY cost_usd DESC""",
+        params,
+    )
+    by_node_model = [dict(row) for row in await cur.fetchall()]
+
+    cur = await conn.execute(
+        f"""SELECT COUNT(*) AS calls,
+               SUM(prompt_tokens) AS prompt_tokens,
+               SUM(completion_tokens) AS completion_tokens,
+               SUM(est_cost_usd) AS cost_usd
+           FROM llm_calls {where}""",
+        params,
+    )
+    totals = dict(await cur.fetchone())
+
+    for row in [*by_node_model, totals]:
+        row["prompt_tokens"] = row["prompt_tokens"] or 0
+        row["completion_tokens"] = row["completion_tokens"] or 0
+        row["cost_usd"] = row["cost_usd"] or 0.0
+
+    return {"session_date": session_date, "totals": totals, "by_node_model": by_node_model}
+
+
 async def decision_chain(conn: aiosqlite.Connection, decision_id: int) -> dict[str, Any]:
     """decision + analyst_outputs + debates + debate_summary + proposal +
     risk_votes + trade + llm_calls -- the full reasoning chain in one request

@@ -320,3 +320,25 @@ export interface FunnelResponse {
   session_date: string;
   stages: FunnelStage[];
 }
+
+export interface LlmUsageRow {
+  node: string;
+  model: string;
+  calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost_usd: number;
+}
+
+export interface LlmUsageTotals {
+  calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost_usd: number;
+}
+
+export interface LlmUsageResponse {
+  session_date: string | null;
+  totals: LlmUsageTotals;
+  by_node_model: LlmUsageRow[];
+}

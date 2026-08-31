@@ -8,6 +8,21 @@ export function formatMoney(value: number | string): string {
   });
 }
 
+// formatMoney rounds to whole dollars, which flattens LLM per-call/per-node
+// costs (fractions of a cent to a few dollars) to $0. This keeps 2-4
+// significant decimal digits instead, scaling precision down as the amount
+// grows so a $1234.56 total doesn't print four decimal places.
+export function formatCost(value: number): string {
+  if (!Number.isFinite(value)) return "—";
+  const digits = value >= 1 ? 2 : value >= 0.01 ? 3 : 4;
+  return value.toLocaleString(undefined, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+}
+
 export function formatSignedMoney(value: number): string {
   if (!Number.isFinite(value)) return "—";
   const sign = value > 0 ? "+" : "";
