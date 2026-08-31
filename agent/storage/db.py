@@ -22,8 +22,9 @@ async def connect(db_path: str) -> AsyncIterator[aiosqlite.Connection]:
     by init_db's schema.sql.
 
     Dispatches to db_pg when AGENT_DB_PATH is a postgres:// / postgresql:// DSN
-    (docs/postgres_migration.md) -- every caller uses storage_db.connect(settings.db_path)
-    so this one branch is the entire backend switch."""
+    -- every caller uses storage_db.connect(settings.db_path) so this one
+    branch is the entire backend switch. Production runs Postgres; SQLite
+    remains the lightweight backend for local dev and tests."""
     if _is_postgres(db_path):
         async with db_pg.connect(db_path) as pg_conn:
             yield pg_conn  # type: ignore[misc]

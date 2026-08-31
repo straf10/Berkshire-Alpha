@@ -24,7 +24,7 @@ downtime.
 
 | Piece | Platform | Project | Notes |
 |---|---|---|---|
-| `agent/` (loop + FastAPI + SQLite) | Railway | `autonomous-debate-trading-agent` | Built from the root `Dockerfile`. Persistent volume `autonomous-debate-trading-agent-volume` mounted at `/data` (`AGENT_DB_PATH=/data/agent.db`). Recreated 31 Aug — this is a fresh volume, the pre-31-Aug decision/trade history from the old `alpaca-trading-agent` project's volume was not migrated. |
+| `agent/` (loop + FastAPI + Postgres) | Railway | `autonomous-debate-trading-agent` | Built from the root `Dockerfile`. Storage is a Railway Postgres addon (`AGENT_DB_PATH` set to its `postgresql://` DSN) — moved off the old SQLite-on-volume setup to remove the volume-locked, single-instance blocker on zero-downtime deploys. The old `autonomous-debate-trading-agent-volume` (SQLite) is now detached and unused; SQLite (`aiosqlite`) remains only as the lightweight backend for local dev and tests (`agent/storage/db.py`). |
 | `web/` (Next.js dashboard) | Vercel | `autonomous-debate-trading-agent` (renamed from `larp`, same project ID `prj_KoHSpZe7II75LbNMFqKTEQhbXxXe`) | `NEXT_PUBLIC_API_BASE` set to the Railway URL above, for both Production and Preview environments. |
 
 ## Railway env vars set

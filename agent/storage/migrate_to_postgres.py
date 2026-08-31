@@ -7,8 +7,9 @@ Usage:
     python -m agent.storage.migrate_to_postgres <sqlite_path> <postgres_dsn>
 
 Run against a COPY of agent.db, never the live file, while the agent is
-still writing to it (docs/postgres_migration.md) -- this script only reads
-from sqlite and only writes to postgres.
+still writing to it -- this script only reads from sqlite and only writes
+to postgres. Kept around for one-off ops use; production has already been
+cut over to Postgres.
 """
 from __future__ import annotations
 
