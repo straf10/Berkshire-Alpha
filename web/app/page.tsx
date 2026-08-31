@@ -58,7 +58,7 @@ export default async function Page() {
 
   return (
     <main className="mx-auto max-w-5xl p-8 font-mono text-sm">
-      <h1 className="mb-1 text-lg font-semibold">Options Alpha Agent</h1>
+      <h1 className="mb-1 text-lg font-semibold">Autonomous Debate Trading Agent</h1>
       <StatusBar status={status} />
 
       <AccountVitals account={account} history={equityHistory} sessionDate={status.session_date} />

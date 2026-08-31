@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Options Alpha Agent",
+  title: "Autonomous Debate Trading Agent",
   description:
     "Autonomous multi-agent options trading on Alpaca — live paper account, full reasoning feed.",
 };
