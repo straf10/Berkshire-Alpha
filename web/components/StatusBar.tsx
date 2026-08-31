@@ -27,7 +27,14 @@ export function StatusBar({ status }: { status: Status }) {
 
   return (
     <div className="mb-6 flex flex-wrap items-center gap-3 text-sm">
-      <Badge variant={live ? "default" : "secondary"} className="gap-1.5">
+      <Badge
+        variant="outline"
+        className={`gap-1.5 ${
+          live
+            ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
+            : "border-amber-500/30 bg-amber-500/10 text-amber-400"
+        }`}
+      >
         <span className={`h-1.5 w-1.5 rounded-full ${live ? "bg-emerald-400" : "bg-amber-400"}`} />
         {live ? "LIVE" : "DRY-RUN"}
       </Badge>

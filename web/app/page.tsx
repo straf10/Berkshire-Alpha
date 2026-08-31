@@ -92,6 +92,9 @@ export default async function Page() {
         <TabsContent value="trades">
           <OpenPositionsTable positions={openPositions} assignments={assignments} />
           <TradeHistoryTable trades={trades} />
+          {!openPositions?.length && !trades?.length && (
+            <p className="text-muted-foreground">No open positions or trade history yet.</p>
+          )}
         </TabsContent>
 
         <TabsContent value="logs">
