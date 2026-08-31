@@ -16,7 +16,7 @@ class _FakeNewsClients:
         self._raises = raises
         self.calls: list[tuple[list[str], datetime]] = []
 
-    async def get_news(self, symbols: list[str], since: datetime):
+    async def get_news(self, symbols: list[str], since: datetime, until: datetime | None = None):
         self.calls.append((symbols, since))
         if self._raises:
             raise RuntimeError("news api down")

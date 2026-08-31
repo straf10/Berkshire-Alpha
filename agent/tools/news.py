@@ -33,7 +33,8 @@ class Headline:
 
 
 async def fetch_headlines(
-    clients: AlpacaClients, symbols: Sequence[str], since: datetime, limit: int = NEWS_MAX_HEADLINES
+    clients: AlpacaClients, symbols: Sequence[str], since: datetime, limit: int = NEWS_MAX_HEADLINES,
+    *, until: datetime | None = None,
 ) -> dict[str, tuple[Headline, ...]]:
     """ONE batched request for all symbols (the API takes a symbol list),
     newest first, sliced to `limit` per symbol. `since` is derived from
@@ -50,7 +51,7 @@ async def fetch_headlines(
     if not symbols:
         return {}
     try:
-        news_set = await clients.get_news(list(symbols), since)
+        news_set = await clients.get_news(list(symbols), since, until)
     except (pydantic.ValidationError, TypeError):
         raise
     except Exception:

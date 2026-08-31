@@ -74,14 +74,20 @@ class AlpacaClients:
     async def cancel_order(self, order_id: str) -> None:
         await asyncio.to_thread(self.trading.cancel_order_by_id, order_id)
 
-    async def get_news(self, symbols: list[str], since: datetime) -> NewsSet:
+    async def get_news(self, symbols: list[str], since: datetime, until: datetime | None = None) -> NewsSet:
         """Day 3 (docs/day3_llm_plan.md S0.2) -- builds the NewsRequest itself so
         tools/news.py never imports alpaca.* directly, keeping
-        test_no_blocking_sdk.ALLOWED unchanged."""
+        test_no_blocking_sdk.ALLOWED unchanged. `until` is optional and only
+        used by the historical LLM backtest (agent/backtest/llm_replay.py) to
+        bound a past session's news window; the live path never passes it, so
+        `start..now` behaviour is unchanged."""
         # NewsRequest.symbols is Optional[str] -- a comma-separated list, not
         # a Python list -- despite every other batched request in this class
         # taking a list of symbols directly.
-        req = NewsRequest(symbols=",".join(symbols), start=since, include_content=False, exclude_contentless=True)
+        req = NewsRequest(
+            symbols=",".join(symbols), start=since, end=until,
+            include_content=False, exclude_contentless=True,
+        )
         return await asyncio.to_thread(self.news.get_news, req)
 
 
