@@ -191,3 +191,153 @@ async def test_status_endpoint_empty_before_first_publish(tmp_path) -> None:
     async with storage_db.connect(db_path) as conn:
         status = await api_app.status(conn=conn)
     assert status == {}
+
+
+async def _insert_greeks(conn, ts_utc: str, equity: float) -> None:
+    await storage_write.insert_greeks_snapshot(conn, storage_write.GreeksRow(
+        ts_utc=ts_utc, equity=equity, delta_dollars=1000.0, vega_dollars=200.0,
+        delta_limit=15000.0, vega_limit=2000.0, breached=False, per_position_json="[]",
+    ))
+
+
+async def test_equity_history_endpoint_returns_ordered_series(tmp_path) -> None:
+    db_path = str(tmp_path / "test_agent.db")
+    await storage_db.init_db(db_path)
+
+    async with storage_db.connect(db_path) as conn:
+        await _insert_greeks(conn, "2026-08-31T14:00:00Z", 100500.0)
+        await _insert_greeks(conn, "2026-08-31T13:00:00Z", 100000.0)
+
+    from agent.api import app as api_app
+
+    async with storage_db.connect(db_path) as conn:
+        rows = await api_app.equity_history(limit=500, conn=conn)
+    assert len(rows) == 2
+    assert rows[0]["ts_utc"] == "2026-08-31T13:00:00Z"  # oldest first
+    assert rows[0]["equity"] == pytest.approx(100000.0)
+    assert rows[1]["equity"] == pytest.approx(100500.0)
+
+
+async def test_greeks_history_endpoint_returns_full_rows_ordered(tmp_path) -> None:
+    db_path = str(tmp_path / "test_agent.db")
+    await storage_db.init_db(db_path)
+
+    async with storage_db.connect(db_path) as conn:
+        await _insert_greeks(conn, "2026-08-31T14:00:00Z", 100500.0)
+        await _insert_greeks(conn, "2026-08-31T13:00:00Z", 100000.0)
+
+    from agent.api import app as api_app
+
+    async with storage_db.connect(db_path) as conn:
+        rows = await api_app.greeks_history(limit=500, conn=conn)
+    assert len(rows) == 2
+    assert rows[0]["ts_utc"] == "2026-08-31T13:00:00Z"
+    assert rows[1]["delta_dollars"] == pytest.approx(1000.0)
+
+
+async def test_positions_open_endpoint_excludes_closed_and_joins_live_legs(tmp_path) -> None:
+    db_path = str(tmp_path / "test_agent.db")
+    await storage_db.init_db(db_path)
+
+    async with storage_db.connect(db_path) as conn:
+        decision_id = await storage_write.insert_decision(conn, storage_write.DecisionRow(
+            ts_utc=datetime.now(timezone.utc).isoformat(), cycle_id="cyc-3",
+            session_date=date(2026, 8, 31).isoformat(), symbol="SPY", mode="quant-only",
+            regime="CREDIT", structure="BULL_PUT_SPREAD", action="ENTER", gate_reason="APPROVED",
+            gate_detail="APPROVED", observed_value=None, threshold_value=None, qty=6,
+            equity_feed="iex", earnings_armed=False, quant_json="{}", plan_json=None,
+        ))
+        open_trade_id = await storage_write.insert_trade(conn, storage_write.TradeRow(
+            decision_id=decision_id, ts_utc=datetime.now(timezone.utc).isoformat(), symbol="SPY",
+            structure="BULL_PUT_SPREAD", expiry="2026-09-04", legs_json="[]", qty=6,
+            submitted_limit=Decimal("-0.9"),
+        ))
+        await storage_write.insert_trade(conn, storage_write.TradeRow(
+            decision_id=decision_id, ts_utc=datetime.now(timezone.utc).isoformat(), symbol="SPY",
+            structure="BULL_PUT_SPREAD", expiry="2026-09-04", legs_json="[]", qty=6,
+            submitted_limit=Decimal("-0.9"), closed_at=datetime.now(timezone.utc).isoformat(),
+        ))
+        await storage_write.insert_greeks_snapshot(conn, storage_write.GreeksRow(
+            ts_utc=datetime.now(timezone.utc).isoformat(), equity=100000.0, delta_dollars=1000.0,
+            vega_dollars=200.0, delta_limit=15000.0, vega_limit=2000.0, breached=False,
+            per_position_json='[{"occ_symbol": "SPY260904P00615000", "underlying": "SPY", '
+                               '"expiry": "2026-09-04", "qty": -6, "delta": -0.27, "vega": 8.1, "spot": 640.0}]',
+        ))
+
+    from agent.api import app as api_app
+
+    async with storage_db.connect(db_path) as conn:
+        rows = await api_app.positions_open(conn=conn)
+    assert len(rows) == 1
+    assert rows[0]["id"] == open_trade_id
+    assert rows[0]["live_legs"][0]["underlying"] == "SPY"
+    assert rows[0]["live_legs"][0]["delta"] == pytest.approx(-0.27)
+
+
+async def test_funnel_endpoint_buckets_by_stage(tmp_path) -> None:
+    db_path = str(tmp_path / "test_agent.db")
+    await storage_db.init_db(db_path)
+    session_date = date(2026, 8, 31).isoformat()
+
+    async def _row(symbol: str, mode: str, gate_reason: str, action: str) -> storage_write.DecisionRow:
+        return storage_write.DecisionRow(
+            ts_utc=datetime.now(timezone.utc).isoformat(), cycle_id="cyc-4",
+            session_date=session_date, symbol=symbol, mode=mode, regime="CREDIT",
+            structure=None, action=action, gate_reason=gate_reason, gate_detail=gate_reason,
+            observed_value=None, threshold_value=None, qty=None, equity_feed="iex",
+            earnings_armed=False, quant_json="{}", plan_json=None,
+        )
+
+    async with storage_db.connect(db_path) as conn:
+        await storage_write.insert_decision(conn, await _row("QQQ", "quant-only", "NO_REGIME", "NO_TRADE"))
+        debated_id = await storage_write.insert_decision(conn, await _row("AAPL", "llm", "MAX_RISK_PER_TRADE", "NO_TRADE"))
+        entered_id = await storage_write.insert_decision(conn, await _row("SPY", "llm", "APPROVED", "ENTER"))
+        ts = datetime.now(timezone.utc).isoformat()
+        for did in (debated_id, entered_id):
+            await storage_write.insert_debate_summary(conn, storage_write.DebateSummaryRow(
+                decision_id=did, ts_utc=ts, rounds_run=1, consensus_score=0.9,
+                verdict="CONSENSUS_ROUND_1", terminated_early=True, conviction=1.0,
+            ))
+
+    from agent.api import app as api_app
+
+    async with storage_db.connect(db_path) as conn:
+        result = await api_app.funnel(session_date=session_date, conn=conn)
+
+    by_name = {s["name"]: s for s in result["stages"]}
+    assert by_name["screened"]["count"] == 3
+    assert by_name["shortlisted"]["count"] == 2
+    assert by_name["debated"]["count"] == 2
+    assert by_name["entered"]["count"] == 1
+
+
+async def test_funnel_endpoint_defaults_to_latest_session(tmp_path) -> None:
+    db_path = str(tmp_path / "test_agent.db")
+    await storage_db.init_db(db_path)
+
+    async with storage_db.connect(db_path) as conn:
+        await storage_write.insert_decision(conn, storage_write.DecisionRow(
+            ts_utc="2026-08-31T14:00:00Z", cycle_id="cyc-5", session_date="2026-08-31",
+            symbol="SPY", mode="quant-only", regime="NO_TRADE", structure=None, action="NO_TRADE",
+            gate_reason="NO_REGIME", gate_detail="NO_REGIME", observed_value=None,
+            threshold_value=None, qty=None, equity_feed="iex", earnings_armed=False,
+            quant_json="{}", plan_json=None,
+        ))
+
+    from agent.api import app as api_app
+
+    async with storage_db.connect(db_path) as conn:
+        result = await api_app.funnel(session_date=None, conn=conn)
+    assert result["session_date"] == "2026-08-31"
+
+
+async def test_funnel_endpoint_empty_db(tmp_path) -> None:
+    db_path = str(tmp_path / "test_agent.db")
+    await storage_db.init_db(db_path)
+
+    from agent.api import app as api_app
+
+    async with storage_db.connect(db_path) as conn:
+        result = await api_app.funnel(session_date=None, conn=conn)
+    assert result["session_date"] is None
+    assert all(s["count"] == 0 for s in result["stages"])

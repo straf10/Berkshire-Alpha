@@ -116,6 +116,7 @@ class DebateSummaryRow:
     consensus_score: float
     verdict: str
     terminated_early: bool
+    conviction: float | None = None
 
 
 @dataclass(frozen=True)
@@ -361,9 +362,9 @@ async def insert_analyst_output(conn: aiosqlite.Connection, a: AnalystOutputRow)
 async def insert_debate_summary(conn: aiosqlite.Connection, s: DebateSummaryRow) -> int:
     cur = await conn.execute(
         """INSERT INTO debate_summaries
-           (decision_id, ts_utc, rounds_run, consensus_score, verdict, terminated_early)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (s.decision_id, s.ts_utc, s.rounds_run, s.consensus_score, s.verdict, int(s.terminated_early)),
+           (decision_id, ts_utc, rounds_run, consensus_score, verdict, terminated_early, conviction)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (s.decision_id, s.ts_utc, s.rounds_run, s.consensus_score, s.verdict, int(s.terminated_early), s.conviction),
     )
     await conn.commit()
     assert cur.lastrowid is not None

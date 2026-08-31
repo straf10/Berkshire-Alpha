@@ -39,6 +39,136 @@ async def get_state(conn: aiosqlite.Connection, key: str) -> dict[str, Any] | No
     return result
 
 
+async def equity_history(conn: aiosqlite.Connection, limit: int = 500) -> list[dict[str, Any]]:
+    """ts_utc/equity pairs, oldest first, from the greeks_snapshots time series
+    written every 5-minute management tick plus at every scan (docs/day6_ui_plan.md
+    S0.2) -- the dashboard's equity curve. Takes the most recent `limit` rows then
+    reverses, rather than an unbounded ASC scan, so a long-running deployment can't
+    make this query cost grow with total history."""
+    cur = await conn.execute(
+        "SELECT ts_utc, equity FROM greeks_snapshots ORDER BY ts_utc DESC LIMIT ?", (limit,)
+    )
+    rows = [dict(row) for row in await cur.fetchall()]
+    rows.reverse()
+    return rows
+
+
+async def greeks_history(conn: aiosqlite.Connection, limit: int = 500) -> list[dict[str, Any]]:
+    """Full greeks_snapshots rows, oldest first -- delta/vega trend, not just the
+    single latest row `latest_greeks` returns (docs/day6_ui_plan.md S0.2)."""
+    cur = await conn.execute(
+        "SELECT * FROM greeks_snapshots ORDER BY ts_utc DESC LIMIT ?", (limit,)
+    )
+    rows = [dict(row) for row in await cur.fetchall()]
+    rows.reverse()
+    return rows
+
+
+async def open_positions(conn: aiosqlite.Connection) -> list[dict[str, Any]]:
+    """Open trades (closed_at IS NULL) with live per-leg greeks attached where
+    available, joined in Python against the latest greeks_snapshots row's
+    per_position_json (keyed on LegExposure.underlying == trades.symbol) rather
+    than in SQL -- greeks_snapshots carries no trade_id, only the underlying
+    symbol, and that symbol is not unique across concurrent positions in
+    different underlyings, so a plain per-symbol match is exactly as precise
+    as the two tables allow (docs/day6_ui_plan.md S0.2)."""
+    cur = await conn.execute("SELECT * FROM trades WHERE closed_at IS NULL ORDER BY ts_utc DESC")
+    trades = [dict(row) for row in await cur.fetchall()]
+
+    legs_by_symbol: dict[str, list[dict[str, Any]]] = {}
+    cur = await conn.execute("SELECT per_position_json FROM greeks_snapshots ORDER BY ts_utc DESC LIMIT 1")
+    latest = await cur.fetchone()
+    if latest is not None and latest["per_position_json"]:
+        for leg in json.loads(latest["per_position_json"]):
+            legs_by_symbol.setdefault(leg["underlying"], []).append(leg)
+
+    for t in trades:
+        t["live_legs"] = legs_by_symbol.get(t["symbol"], [])
+    return trades
+
+
+async def funnel(conn: aiosqlite.Connection, session_date: str | None = None) -> dict[str, Any]:
+    """Screen -> shortlist -> debate -> gate breadth for one session, derived
+    from `decisions` + `debate_summaries` (docs/day6_ui_plan.md S0.2 / S4). No new
+    table: every stage is a count over rows already written by scan_cycle.
+
+    Screened   = every decisions row this session (one per universe symbol that
+                 got a row at all, including NO_TRADE ones excluded at the quant
+                 screen).
+    Shortlisted = rows whose regime.select() outcome was CREDIT or DEBIT AND made
+                 the SHORTLIST_MAX cut (i.e. gate_reason is not one of
+                 `regime.select`'s own NO_TRADE reasons -- NO_REGIME / DATA_NOT_OK
+                 / DEBIT_NO_MOMENTUM_CONFIRMATION, see agent/strategy/regime.py --
+                 and not NOT_SHORTLISTED, main.py's own truncation reason for a
+                 regime-positive symbol that didn't make the top
+                 SHORTLIST_MAX). Every other gate_reason (including
+                 EARNINGS_BLACKOUT, a fund-manager gate rejection that implies
+                 the symbol cleared the screen) means the symbol proceeded past
+                 the deterministic screen.
+    Debated    = rows with a debate_summaries entry.
+    Entered    = action == 'ENTER'.
+    """
+    if session_date is None:
+        cur = await conn.execute("SELECT session_date FROM decisions ORDER BY ts_utc DESC LIMIT 1")
+        row = await cur.fetchone()
+        session_date = row["session_date"] if row is not None else None
+
+    if session_date is None:
+        return {
+            "session_date": None,
+            "stages": [
+                {"name": "screened", "count": 0, "top_reject_reason": None},
+                {"name": "shortlisted", "count": 0, "top_reject_reason": None},
+                {"name": "debated", "count": 0, "top_reject_reason": None},
+                {"name": "entered", "count": 0, "top_reject_reason": None},
+            ],
+        }
+
+    cur = await conn.execute(
+        "SELECT id, mode, gate_reason, action FROM decisions WHERE session_date = ?", (session_date,)
+    )
+    rows = [dict(row) for row in await cur.fetchall()]
+
+    cur = await conn.execute(
+        "SELECT DISTINCT decision_id FROM debate_summaries WHERE decision_id IN "
+        "(SELECT id FROM decisions WHERE session_date = ?)", (session_date,)
+    )
+    debated_ids = {r["decision_id"] for r in await cur.fetchall()}
+
+    _SCREEN_STAGE_REJECTS = {
+        "NO_REGIME", "DATA_NOT_OK", "DEBIT_NO_MOMENTUM_CONFIRMATION", "NOT_SHORTLISTED",
+    }
+
+    def _top_reason(candidates: list[dict[str, Any]]) -> str | None:
+        if not candidates:
+            return None
+        counts: dict[str, int] = {}
+        for r in candidates:
+            counts[r["gate_reason"]] = counts.get(r["gate_reason"], 0) + 1
+        return max(counts, key=lambda k: counts[k])
+
+    screened = rows
+    excluded_at_screen = [r for r in rows if r["gate_reason"] in _SCREEN_STAGE_REJECTS]
+    shortlisted = [r for r in rows if r not in excluded_at_screen]
+    debated = [r for r in shortlisted if r["id"] in debated_ids]
+    not_debated = [r for r in shortlisted if r["id"] not in debated_ids]
+    entered = [r for r in rows if r["action"] == "ENTER"]
+    # Gate-stage reject reason, over every shortlisted row that didn't enter --
+    # covers both debated candidates the gate rejected and quant-only candidates
+    # that skipped debate entirely.
+    not_entered = [r for r in shortlisted if r["action"] != "ENTER"]
+
+    return {
+        "session_date": session_date,
+        "stages": [
+            {"name": "screened", "count": len(screened), "top_reject_reason": _top_reason(excluded_at_screen)},
+            {"name": "shortlisted", "count": len(shortlisted), "top_reject_reason": _top_reason(not_debated)},
+            {"name": "debated", "count": len(debated), "top_reject_reason": _top_reason(not_entered)},
+            {"name": "entered", "count": len(entered), "top_reject_reason": None},
+        ],
+    }
+
+
 async def decision_chain(conn: aiosqlite.Connection, decision_id: int) -> dict[str, Any]:
     """decision + analyst_outputs + debates + debate_summary + proposal +
     risk_votes + trade + llm_calls -- the full reasoning chain in one request

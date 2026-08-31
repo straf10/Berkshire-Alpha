@@ -87,6 +87,26 @@ async def greeks_latest(conn: aiosqlite.Connection = Depends(get_conn)) -> dict[
     return await read.latest_greeks(conn) or {}
 
 
+@app.get("/equity/history")
+async def equity_history(limit: int = 500, conn: aiosqlite.Connection = Depends(get_conn)) -> list[dict[str, Any]]:
+    return await read.equity_history(conn, min(limit, 2000))
+
+
+@app.get("/greeks/history")
+async def greeks_history(limit: int = 500, conn: aiosqlite.Connection = Depends(get_conn)) -> list[dict[str, Any]]:
+    return await read.greeks_history(conn, min(limit, 2000))
+
+
+@app.get("/positions/open")
+async def positions_open(conn: aiosqlite.Connection = Depends(get_conn)) -> list[dict[str, Any]]:
+    return await read.open_positions(conn)
+
+
+@app.get("/funnel")
+async def funnel(session_date: str | None = None, conn: aiosqlite.Connection = Depends(get_conn)) -> dict[str, Any]:
+    return await read.funnel(conn, session_date)
+
+
 def _jsonable(value: Any) -> Any:
     if isinstance(value, (Decimal, date)):
         return str(value)
