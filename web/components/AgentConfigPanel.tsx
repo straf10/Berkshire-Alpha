@@ -14,7 +14,7 @@ function ConfigRow({ label, value }: { label: string; value: string | number }) 
 function ConfigGroup({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="rounded-md border border-border p-3">
-      <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+      <p className="mb-1 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
         {title}
       </p>
       <div className="divide-y divide-border/50">{children}</div>
@@ -30,7 +30,7 @@ export function AgentConfigPanel({ config }: { config: AgentConfig | null }) {
         Agent configuration (hardcoded)
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <div className="grid grid-cols-1 gap-3 p-3 pt-0 text-sm md:grid-cols-2 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 p-3 pt-0 text-base md:grid-cols-2 lg:grid-cols-3">
           <ConfigGroup title="Universe">
             <ConfigRow label="Tickers" value={config.universe.tickers.join(", ")} />
             <ConfigRow label="Earnings verified on" value={config.universe.earnings_verified_on} />

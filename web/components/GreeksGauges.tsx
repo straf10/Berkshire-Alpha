@@ -26,7 +26,7 @@ export function GreeksGauges({ snapshot }: { snapshot: GreeksSnapshot | null }) 
   return (
     <Card className="mb-6">
       <CardHeader className="flex-row items-center justify-between pb-2">
-        <CardTitle className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        <CardTitle className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           Portfolio greeks
         </CardTitle>
         {snapshot.breached === 1 && <Badge variant="destructive">REDUCE-ONLY</Badge>}

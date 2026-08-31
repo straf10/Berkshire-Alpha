@@ -61,8 +61,8 @@ export default async function Page() {
   const assignments = assignmentsRes;
 
   return (
-    <main className="mx-auto max-w-5xl p-8 font-mono text-sm">
-      <h1 className="mb-1 text-lg font-semibold">Autonomous Debate Trading Agent</h1>
+    <main className="mx-auto max-w-5xl p-8 font-mono text-base">
+      <h1 className="mb-1 text-2xl font-semibold">Autonomous Debate Trading Agent</h1>
       <StatusBar status={status} />
 
       {/* Alert-like and reference material stay outside the tabs -- an
@@ -82,7 +82,7 @@ export default async function Page() {
           <Funnel funnel={funnel} />
 
           <div className="mb-6">
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            <p className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
               Reasoning feed
             </p>
             <ReasoningFeed decisions={decisions} />
@@ -99,7 +99,7 @@ export default async function Page() {
 
         <TabsContent value="logs">
           <div className="mb-6">
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            <p className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
               Decisions log
             </p>
             <DecisionsLog decisions={decisions} />

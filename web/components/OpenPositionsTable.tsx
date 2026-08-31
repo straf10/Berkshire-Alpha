@@ -24,7 +24,7 @@ export function OpenPositionsTable({
 
   return (
     <div className="mb-6">
-      <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+      <p className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
         Open positions
       </p>
       <div className="overflow-x-auto rounded-md border border-border">

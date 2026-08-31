@@ -40,7 +40,7 @@ function QuantGrid({ q }: { q: QuantSnapshot }) {
   return (
     <div className="grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-3">
       {rows.map(([label, value]) => (
-        <div key={label} className="flex justify-between gap-2 text-xs">
+        <div key={label} className="flex justify-between gap-2 text-sm">
           <span className="text-muted-foreground">{label}</span>
           <span className="font-semibold tabular-nums">{value}</span>
         </div>
@@ -52,7 +52,7 @@ function QuantGrid({ q }: { q: QuantSnapshot }) {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="border-t border-border/60 pt-2">
-      <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</p>
+      <p className="mb-1 text-sm font-semibold uppercase tracking-wide text-muted-foreground">{title}</p>
       {children}
     </div>
   );
@@ -63,7 +63,7 @@ function ExpandedChain({ chain }: { chain: DecisionChain }) {
   const proposal = chain.proposal ? safeJsonParse<SpreadProposalShape>(chain.proposal.proposal_json) : null;
 
   return (
-    <div className="space-y-3 pt-2 text-sm">
+    <div className="space-y-3 pt-2 text-base">
       {quant && (
         <Section title="Quant evidence">
           <QuantGrid q={quant} />
@@ -78,7 +78,7 @@ function ExpandedChain({ chain }: { chain: DecisionChain }) {
               return (
                 <div
                   key={a.id}
-                  className={`rounded-md border p-2 text-xs ${a.ok ? "border-border/60" : "border-destructive/40 opacity-60"}`}
+                  className={`rounded-md border p-2 text-sm ${a.ok ? "border-border/60" : "border-destructive/40 opacity-60"}`}
                 >
                   <p className="mb-1 font-semibold">{a.analyst}</p>
                   {a.ok ? (
@@ -96,13 +96,13 @@ function ExpandedChain({ chain }: { chain: DecisionChain }) {
       <Section title="Debate">
         <DebateThread turns={chain.debates} summary={chain.debate_summary} />
         {chain.debates.length === 0 && chain.debate_summary === null && (
-          <p className="text-xs text-muted-foreground">No debate — quant-only decision.</p>
+          <p className="text-sm text-muted-foreground">No debate — quant-only decision.</p>
         )}
       </Section>
 
       {proposal && (
         <Section title="Trader proposal">
-          <div className="flex flex-wrap items-center gap-2 text-xs">
+          <div className="flex flex-wrap items-center gap-2 text-sm">
             <span className="font-semibold">{proposal.strategy_name}</span>
             <span>{proposal.underlying}</span>
             <span>exp {proposal.expiration_date}</span>
@@ -113,7 +113,7 @@ function ExpandedChain({ chain }: { chain: DecisionChain }) {
               </Badge>
             )}
           </div>
-          <p className="mt-1 text-xs text-foreground/70">{proposal.reasoning}</p>
+          <p className="mt-1 text-sm text-foreground/70">{proposal.reasoning}</p>
         </Section>
       )}
 
@@ -121,7 +121,7 @@ function ExpandedChain({ chain }: { chain: DecisionChain }) {
         <Section title="Risk votes">
           <div className="grid gap-2 sm:grid-cols-3">
             {chain.risk_votes.map((v) => (
-              <div key={v.id} className="rounded-md border border-border/60 p-2 text-xs">
+              <div key={v.id} className="rounded-md border border-border/60 p-2 text-sm">
                 <div className="mb-1 flex items-center gap-2">
                   <span className="font-semibold">{v.persona}</span>
                   <Badge variant={riskDecisionVariant(v.decision)}>{v.decision}</Badge>
@@ -135,11 +135,11 @@ function ExpandedChain({ chain }: { chain: DecisionChain }) {
 
       {chain.decision && (
         <Section title="Gate decision">
-          <p className="text-xs">
+          <p className="text-sm">
             <span className="font-semibold">{chain.decision.gate_reason}</span> — {chain.decision.gate_detail}
           </p>
           {chain.decision.observed_value !== null && chain.decision.threshold_value !== null && (
-            <p className="text-xs text-muted-foreground">
+            <p className="text-sm text-muted-foreground">
               {chain.decision.observed_value.toFixed(3)} vs {chain.decision.threshold_value.toFixed(3)} threshold
             </p>
           )}
@@ -149,7 +149,7 @@ function ExpandedChain({ chain }: { chain: DecisionChain }) {
       {chain.trades.length > 0 && (
         <Section title="Order lifecycle">
           {chain.trades.map((t) => (
-            <div key={t.id} className="text-xs">
+            <div key={t.id} className="text-sm">
               <p>
                 submitted {t.submitted_limit.toFixed(2)} → final {t.final_limit?.toFixed(2) ?? "—"} — {t.walk_steps}{" "}
                 walk step{t.walk_steps === 1 ? "" : "s"} — <span className="font-semibold">{t.status}</span>
@@ -197,7 +197,7 @@ export function DecisionCard({ decision }: { decision: Decision }) {
 
   return (
     <details className="rounded-md border border-border" onToggle={handleToggle}>
-      <summary className="flex cursor-pointer flex-wrap items-center gap-2 p-3 text-sm select-none">
+      <summary className="flex cursor-pointer flex-wrap items-center gap-2 p-3 text-base select-none">
         <span className="text-foreground/60">{decision.ts_utc}</span>
         <span className="font-semibold">{decision.symbol}</span>
         <Badge variant="secondary">{decision.regime}</Badge>
@@ -215,7 +215,7 @@ export function DecisionCard({ decision }: { decision: Decision }) {
         ) : chain ? (
           <ExpandedChain chain={chain} />
         ) : (
-          <p className="text-xs text-destructive">Could not load decision detail.</p>
+          <p className="text-sm text-destructive">Could not load decision detail.</p>
         )}
       </div>
     </details>

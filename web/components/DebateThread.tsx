@@ -42,7 +42,7 @@ export function DebateThread({
 
   return (
     <div>
-      <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+      <p className="mb-1 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
         Bull / Bear debate
       </p>
       <div className="space-y-2">
@@ -55,7 +55,7 @@ export function DebateThread({
         ))}
       </div>
       {summary && (
-        <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
+        <div className="mt-2 flex flex-wrap items-center gap-3 text-sm">
           <span>
             verdict <span className="font-semibold">{summary.verdict}</span>
           </span>

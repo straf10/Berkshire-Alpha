@@ -27,7 +27,7 @@ export function AccountVitals({
   return (
     <Card className="mb-6">
       <CardHeader className="pb-2">
-        <CardTitle className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        <CardTitle className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           Account
         </CardTitle>
       </CardHeader>
@@ -37,10 +37,10 @@ export function AccountVitals({
             <div className="text-2xl font-semibold tabular-nums">
               {equity !== null ? formatMoney(equity) : "—"}
             </div>
-            <div className={`text-sm tabular-nums ${pnl === null ? "text-muted-foreground" : pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+            <div className={`text-base tabular-nums ${pnl === null ? "text-muted-foreground" : pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
               {pnl === null ? "day P&L —" : `${formatSignedMoney(pnl)} today`}
             </div>
-            <div className="mt-2 flex gap-4 text-xs text-muted-foreground">
+            <div className="mt-2 flex gap-4 text-sm text-muted-foreground">
               <span>Buying power {account.buying_power ? formatMoney(account.buying_power) : "—"}</span>
               <span>Cash {account.cash ? formatMoney(account.cash) : "—"}</span>
             </div>
@@ -49,7 +49,7 @@ export function AccountVitals({
             {history && history.length > 0 ? (
               <EquitySparkline points={history} />
             ) : (
-              <div className="flex h-16 items-center text-xs text-muted-foreground">No equity history yet.</div>
+              <div className="flex h-16 items-center text-sm text-muted-foreground">No equity history yet.</div>
             )}
           </div>
         </div>

@@ -23,7 +23,7 @@ export function Funnel({ funnel }: { funnel: FunnelResponse | null }) {
   return (
     <Card className="mb-6">
       <CardHeader className="pb-2">
-        <CardTitle className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        <CardTitle className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           Screen → shortlist → debate → gate ({funnel.session_date})
         </CardTitle>
       </CardHeader>

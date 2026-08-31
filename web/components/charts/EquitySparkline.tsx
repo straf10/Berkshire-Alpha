@@ -10,7 +10,7 @@ const chartConfig = {
 
 export function EquitySparkline({ points }: { points: EquityPoint[] }) {
   if (points.length < 2) {
-    return <div className="flex h-16 items-center text-xs text-muted-foreground">Not enough history yet.</div>;
+    return <div className="flex h-16 items-center text-sm text-muted-foreground">Not enough history yet.</div>;
   }
 
   return (

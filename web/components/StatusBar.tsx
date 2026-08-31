@@ -26,7 +26,7 @@ export function StatusBar({ status }: { status: Status }) {
   const live = status.live === true;
 
   return (
-    <div className="mb-6 flex flex-wrap items-center gap-3 text-sm">
+    <div className="mb-6 flex flex-wrap items-center gap-3 text-base">
       <Badge
         variant="outline"
         className={`gap-1.5 ${
