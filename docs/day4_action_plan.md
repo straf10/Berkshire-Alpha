@@ -25,23 +25,64 @@ sized against:
 ## Ordering contract
 
 ```
-Step 1  ── operational only, no code                    ┐
+Step 1  ── go live + delete the dead sentiment analyst  ┐
 Step 2  ── two constants + one assertion                │  above the line:
 Step 3  ── agent/strategy/macro.py (new, isolated)      │  each ships alone,
 ─────────────────────────────────────────────────────── ┘  in any prefix
 Step 4  ── REQUIRES Step 3 (consumes MacroTuning)
 Step 5  ── independent of 3/4 (reads decisions only)
 Step 6  ── REQUIRES Step 2 (sweeps the new bar)
+Step 7  ── REQUIRES Step 2 (widen universe, 4 scans)
+Step 8  ── REQUIRES Step 7 (analyst_score needs SHORTLIST_MAX > DEBATE_CANDIDATES)
+Step 9  ── independent (skew noise floor + delta band)
 ```
 
 Steps 1–3 are the irreducible core. Step 4 without Step 3 is meaningless and must not be attempted
 out of order. Step 5 is the most self-contained and is the one to drop if the day runs short.
 
+**Step 7 is the highest-value addition after the core**, but not in the form first drafted. Widening
+the universe 10 → 50 costs **zero tokens** (the shortlist truncates before any LLM call) and turns
+the cross-sectional rank from a top-40% screen into a top-12% one (`CROSS_SECTION_N = 6` of 50). Scanning more often costs tokens to
+re-read signals that are frozen intraday by construction. Spend on breadth, not frequency — §7.1–7.5.
+Its blocker is manual: `EARNINGS_DATES` needs one human-verified key per name (§7.7).
+
+
+## Work groups — what to batch into one sitting
+
+The numbered steps are ordered by dependency. **These groups are ordered by what shares files**, so
+each is one coherent sitting with one test run and one commit. Within a group nothing conflicts;
+between groups nothing does either, so they can be reordered or dropped whole.
+
+| Group | Steps | Time | Files touched | Ships alone? |
+| --- | --- | --- | --- | --- |
+| **A — Unblock & broaden** | 1, 2, 7 | 2.5 h | `config.py`, `session.py`, `main.py`, `analysts.py`, `pipeline.py`, `ticker_screener.py`, tests | **Yes** — the irreducible core |
+| **B — Signal honesty** | 8, 9 | 2 h | `quant.py`, `regime.py`, `ticker_screener.py`, `analysts.py`, `pipeline.py`, tests | Yes |
+| **C — Macro axis** | 3, 4 | 3 h | `macro.py` (new), `config.py`, `main.py`, `regime.py`, `evidence.py`, `prompts.py`, tests | Yes |
+| **D — Reflector** | 5 | 1.5 h | `reflector.py` (new), `schema.sql`, `read.py`, `write.py`, `app.py`, `web/`, tests | Yes |
+| **E — Evidence** | 6 | 1 h | `replay.py`, `docs/one_pager.md` | Yes |
+
+**Why these boundaries.** A and B both touch `ticker_screener.py` and `analysts.py`, so doing them
+in one sitting risks conflicting edits to the same functions with two different rationales; splitting
+them keeps each commit explainable. C is isolated behind a new module and two threaded parameters. D
+touches only storage/API/UI and no signal code at all. E touches an offline harness nobody else reads.
+
+**Hard prerequisite for Group A:** the `EARNINGS_DATES` verification pass for the widened universe
+(§7.7). It is manual, takes ~45 minutes, and blocks nothing else — do it first or in parallel.
+
+**Recommended order:** A → B → C → E → D. A unblocks trading and broadens the cross-section; B stops
+two known-noisy quantities from driving decisions, and is worth more than C because it fixes
+something measurably broken rather than adding something new; C is the originality story; E is an
+hour and buys quant credibility; D is the best demo material but the most droppable.
+
+**If only one group ships: A.** If two: A + B.
+
 ---
 
-# Step 1 — Go live and restore sentiment (30 min)
+# Step 1 — Go live, and retire the dead sentiment analyst (45 min)
 
-**Code changes: none.** This step is operational.
+**Revised 2026-08-31 after live probes.** The original Step 1 assumed Reddit credentials would
+restore the `SENTIMENT` analyst. **They will not — the Reddit API is closed to us.** This step is
+re-scoped to going live and removing the dead analyst honestly rather than faking a replacement.
 
 ## 1.1 Why `SENTIMENT` has never produced a row
 
@@ -52,96 +93,148 @@ if not deps.settings.reddit_client_id:
     return {}
 ```
 
-An empty mapping means `analysts.run_analysts` calls `sentiment_analyst(llm, symbol, mentions.get(symbol), ...)`
-with `signal=None`; `agent/agents/analysts.py:57` then returns `None` **without raising and without
-calling the LLM**. `pipeline._analyst_artifacts` records that as `ok=False, error=None` — which is
-exactly the `13 rows / ok=0 / error NULL` signature in Q7. It is not a bug in the analyst; it is a
-missing credential presenting as a silent skip.
+An empty mapping means `analysts.run_analysts` calls
+`sentiment_analyst(llm, symbol, mentions.get(symbol), ...)` with `signal=None`; `analysts.py:57`
+then returns `None` **without raising and without calling the LLM**. `pipeline._analyst_artifacts`
+records that as `ok=False, error=None` — exactly the `13 rows / ok=0 / error NULL` signature in Q7.
 
 Consequence: `pipeline._mode()` has stamped `llm-degraded` on every LLM row ever written, and
-`analysts.analyst_score` has been substituting the neutral `sentiment_component = 0.5` on every
-candidate (`analysts.py:181-184`).
+`analysts.analyst_score` substitutes the neutral `sentiment_component = 0.5` on every candidate
+(`analysts.py:181-184`) — so the 0.20 sentiment weight has been a **constant**, contributing nothing
+to the ranking while diluting the two signals that do work.
 
-## 1.2 Operational procedure
+## 1.2 Free social-sentiment sources: probed, all dead
 
-1. Add to `.env` (currently holds only `APCA_API_KEY_ID`, `APCA_API_SECRET_KEY`,
-   `APCA_API_BASE_URL`, `FEATHERLESS_API_KEY`):
+Probed live on 2026-08-31 from this machine. Measured, not assumed:
 
-   ```
-   REDDIT_CLIENT_ID=<script-app client id>
-   REDDIT_CLIENT_SECRET=<script-app secret>
-   REDDIT_USER_AGENT=options-alpha-agent/0.1 by /u/<account>
-   ```
+| Source | Endpoint | Result |
+| --- | --- | --- |
+| Reddit public JSON | `reddit.com/r/wallstreetbets/new.json` | **HTTP 403** — Cloudflare interstitial |
+| Reddit OAuth | `oauth.reddit.com` | No credentials obtainable; API closed to us |
+| StockTwits | `api.stocktwits.com/api/2/streams/symbol/AAPL.json` | **HTTP 403** — Cloudflare "Just a moment…" |
+| X / Twitter | search / recent | Not on free tier; $200/mo Basic (Day-4 tech review) |
 
-   `config.load_settings` already reads all three (`agent/config.py`, `Settings.reddit_*`). No code
-   change. Credentials must be for a Reddit **script** app; `PrawReddit.__init__` passes
-   `check_for_updates=False` and does not perform an OAuth redirect.
+Alpaca News, by contrast, returns **HTTP 200** with our existing keys and is already integrated.
 
-2. **Pre-flight — resolve the account-number discrepancy before anything else.**
-   `config.JUDGED_ACCOUNT_NUMBER` is `PA3UM9X4MN5X`; the Day-1 entry in `memory.md` records the
-   judged account as `PA3319FCQCPN`. `cli_bridge.health()` refuses to report healthy against any
-   other account, and `scan_cycle` HALTs on `CliUnavailable` before the bar fetch. Confirm which is
-   current via `alpaca account get` and correct the constant if stale. Do not skip this: a stale
-   constant and an unarmed earnings gate produce visually identical startup failures.
+## 1.3 Decision: remove the analyst, do not fake it
 
-3. Confirm the earnings gate is armed. `EARNINGS_VERIFIED_ON = date(2026, 8, 29)` is set, so
-   `main.py:1185` (`raise SystemExit("EARNINGS GATE UNARMED and --live requested")`) should pass.
+Three options considered:
 
-4. Run one attended cycle:
+1. **Repoint `SENTIMENT` at Alpaca News.** Rejected. The `NEWS` analyst already reads those exact
+   headlines. A second analyst re-citing the same source is not an independent axis — it
+   manufactures the appearance of three-source corroboration out of two sources, which is worse
+   than having two. This is precisely the grounding weakness the debate diagnosis surfaced.
+2. **Scrape Reddit/StockTwits through a proxy.** Rejected. Both actively block; a scraper built
+   under time pressure against a hostile Cloudflare edge is a mid-session outage waiting to happen,
+   and a `_fetch_reddit` failure aborts the entire scan cycle (§1.8).
+3. **Remove the analyst; replace the slot with an independent deterministic axis.** **Chosen.** The
+   macro layer (Steps 3–4) *is* the replacement, and it is strictly better evidence than mention
+   velocity: computed, auditable, reproducible, and uncorrelated with both the quant snapshot and
+   the news flow.
 
-   ```
-   python -m agent.main --live --once --llm
-   ```
+Framing for the one-pager and the video: *Reddit closed its API. Rather than fake a social signal or
+double-count our news feed, we replaced the slot with a deterministic cross-asset macro regime the
+debate can cite.*
 
-## 1.3 Expected output
+## 1.4 Code changes — small and subtractive
 
-`_format_analysts_line` (`main.py:692`) omits any analyst whose `output_json` is absent, so today the
-`sentiment=` fragment is **missing entirely** from every printed line — that absence is the visual
-tell. After the credentials land it must appear. Exact expected shape, per the real format helpers at
-`main.py:670-771`:
+`SentimentAnalystOutput`, the `sentiment_snapshots` table and `agent/tools/reddit.py` are **left in
+place**. Deleting them is churn with no benefit: the table is referenced by the dashboard, and
+`reddit.py` is cleanly isolated behind `RedditPort` if the API ever reopens.
+
+| File | Change |
+| --- | --- |
+| `agent/agents/analysts.py` | In `run_analysts`, stop appending the `sentiment_analyst(...)` task and its `("SENTIMENT")` `meta` entry. `sentiment_analyst()` itself stays — unused, still tested. |
+| `agent/agents/analysts.py` | `analyst_score`: re-normalise `0.50 quant + 0.30 news + 0.20 sentiment` to **`0.625 quant + 0.375 news`** (the original 50:30 ratio, renormalised to 1.0). Delete the `sentiment_component` branch. |
+| `agent/agents/pipeline.py` | Remove `("SENTIMENT", "sentiment_analyst")` from `_ANALYST_FIELDS`, so no permanent `ok=False` artifact row is written each cycle. |
+| `agent/agents/evidence.py` | **Untouched.** `sentiment_analyst: SentimentAnalystOutput | None` and its `keys()` branch are already conditional and now simply never fire. Zero risk. |
+| `agent/main.py` | **Untouched.** `_fetch_reddit` already returns `{}` with no credentials; its `tool_calls` row records `REDDIT ok=1` with an empty result, which is accurate. |
+
+**Net effect:** LLM calls drop from ~9.3 to ~6.2 per candidate; `mode` becomes `llm` instead of
+`llm-degraded`; and `analyst_score` starts discriminating instead of carrying a constant 0.5 term at
+20% weight.
+
+### Why 0.625 / 0.375 specifically — it is forced, not chosen
+
+Three independent checks, all confirming the same split:
+
+1. **It preserves the quant:news ratio.** 0.50 : 0.30 = 5 : 3, and 0.625 : 0.375 = 5 : 3. Renormalising
+   by 1/0.8 changes the scale, never the relative weighting — so no judgment call about the two
+   surviving analysts' relative importance is being smuggled in.
+2. **It is required by two existing tests.** `test_analyst_score_missing_is_neutral`
+   (`test_analysts.py:255`) asserts `analyst_score(...) == pytest.approx(0.5)` when every analyst is
+   missing; renormalised that is `0.625·0.5 + 0.375·0.5 = 0.5` ✔, while simply deleting the term gives
+   `0.50·0.5 + 0.30·0.5 = 0.40` ✘. `test_analyst_score_direction_agreement` asserts `> 0.9` on full
+   agreement; renormalised gives 1.0 ✔, deletion gives 0.80 ✘.
+3. **It preserves the module's documented invariant.** The docstring's rule — *"a missing analyst
+   scores 0.5 (neutral) and its weight is NOT redistributed, so a candidate is never advantaged by
+   having fewer opinions"* — exists to prevent **asymmetry between candidates**. Removing sentiment
+   uniformly for every candidate creates no such asymmetry, so redistributing is safe here; a
+   *transient* analyst failure must still not redistribute. Update the docstring to state 0.625/0.375
+   and keep the non-redistribution rule for the remaining two.
+
+**Ranking impact: none.** `0.625q + 0.375n` is exactly `1.25 × (0.50q + 0.30n)` — a positive scalar
+multiple, hence order-preserving. `analyst_score` is used only as a sort key in `select_top`
+(`analysts.py:195`) and is never compared to an absolute threshold anywhere in the tree. So the
+renormalisation is behaviourally neutral and matters only for the displayed `score N.NN`, the two
+tests above, and the [0,1] range invariant. **It is the right call, and it is also the low-risk one.**
+
+**Related finding — `analyst_score` currently does nothing at all.** `SHORTLIST_MAX = 4` and
+`DEBATE_CANDIDATES = 4` are equal, so `select_top(results, candidates, n=4)` selects 4 from at most 4.
+The ranking is computed, printed, stored on `PipelineOutcome`, and discarded. It only begins to bind
+once `SHORTLIST_MAX > DEBATE_CANDIDATES` — see §7.5/§7.6, which raise it to 8.
+
+## 1.5 Going live — operational procedure
+
+1. **Pre-flight — resolve the account-number discrepancy first.** `config.JUDGED_ACCOUNT_NUMBER` is
+   `PA3UM9X4MN5X`; the Day-1 entry in `memory.md` records the judged account as `PA3319FCQCPN`.
+   `cli_bridge.health()` refuses to report healthy against any other account, and `scan_cycle` HALTs
+   on `CliUnavailable` before the bar fetch. Confirm via `alpaca account get` and correct the
+   constant if stale. Do not skip: a stale constant and an unarmed earnings gate produce visually
+   identical startup failures.
+2. Confirm the earnings gate is armed. `EARNINGS_VERIFIED_ON = date(2026, 8, 29)` is set, so
+   `main.py:1185` should pass.
+3. Run one attended cycle: `python -m agent.main --live --once --llm`
+
+## 1.6 Expected output
+
+Exact shape per the real format helpers at `main.py:670-771`. The `sentiment=` fragment is now
+**intentionally absent** and `mode=llm`:
 
 ```
 [AAPL] VRP 1.19  RV20 0.104  IV_ATM 0.124  Skew 1.2  Dev +0.41%  RSI5 71.3  VWMz +0.3
        Regime: CREDIT | Action: SELL BULL PUT SPREAD 2026-09-04  220P/215P
-       Analysts: quant=RICH/WEAK_DOWN  news=NEUTRAL  sentiment=+0.31(0.7)  score 0.62
+       Analysts: quant=RICH/WEAK_DOWN  news=NEUTRAL  score 0.62
        Debate:   BULL COMMIT (3 cites) | BEAR DISAGREE (2 cites) -> consensus 0.65 < 0.85, UNRESOLVED, conviction 0.50
        Trader:   SELL BULL PUT SPREAD 2026-09-04  220P/215P  conf 0.68
        Risk:     AGGRESSIVE APPROVE | NEUTRAL APPROVE | CONSERVATIVE REJECT
        Gate: APPROVED (qty=3)  mode=llm  spend $0.021/$4.00
 ```
 
-Two fields to check specifically: `sentiment=+x.xx(c)` present at all, and `mode=llm` rather than
-`mode=llm-degraded`.
-
-The authoritative check is the database, not the console:
-
 ```sql
 SELECT analyst, COUNT(*) n, SUM(ok) ok FROM analyst_outputs
-WHERE ts_utc > '2026-08-31T19:00:00' GROUP BY analyst;
--- expect SENTIMENT ok > 0
-SELECT COUNT(*) FROM sentiment_snapshots;   -- expect > 0, currently 0
-SELECT COUNT(*) FROM trades;                -- expect > 0, currently 0
-SELECT mode, COUNT(*) FROM decisions WHERE ts_utc > '2026-08-31T19:00:00' GROUP BY mode;
--- expect 'llm' rather than 'llm-degraded' on candidates whose analysts all returned
+WHERE ts_utc > '2026-09-01' GROUP BY analyst;   -- QUANT + NEWS only, no SENTIMENT rows
+SELECT mode, COUNT(*) FROM decisions WHERE ts_utc > '2026-09-01' GROUP BY mode;
+                                                 -- 'llm', not 'llm-degraded'
+SELECT COUNT(*) FROM trades;                     -- > 0, currently 0
 ```
 
-## 1.4 Acceptance criteria
+## 1.7 Acceptance criteria
 
 - `trades` has ≥1 row with a non-null `order_id`.
-- `analyst_outputs` shows `SENTIMENT ok=1` for at least one candidate.
-- `sentiment_snapshots` is non-empty.
+- No new `analyst_outputs` rows with `analyst='SENTIMENT'`.
+- `decisions.mode = 'llm'` on candidates whose two analysts both returned.
 - No `HALT` row in `decisions` for the cycle.
+- `pytest -m "not live"` green after the re-weighting (update `test_analysts.py`'s score assertions
+  to the 0.625/0.375 split).
 
-## 1.5 Risk
+## 1.8 Risk
 
-Reddit is Tier-2 cuttable by design. If the credentials are wrong, `_fetch_reddit` raises inside the
-`asyncio.gather` at `main.py:869` and `scan_cycle` re-raises as
-`RuntimeError(f"_fetch_reddit failed: ...")` — which aborts the **whole cycle**, including entries.
-That is a real regression risk introduced by enabling the feature. If the first `--live --once` run
-fails on Reddit, revert by removing `REDDIT_CLIENT_ID` from `.env` (restoring the `return {}`
-short-circuit) and re-run; do not debug Reddit with the market open.
-
----
+The `analyst_score` re-weighting changes `select_top`'s ordering, which changes which candidates
+reach the debate. That is a real behavioural change, not a no-op — but it is a change from "20% of
+the score is a constant" to "the score is entirely signal", which is strictly better. Pin it with
+`test_analyst_score_ignores_sentiment`, asserting the score is unaffected by the (now always `None`)
+sentiment field.
 
 # Step 2 — Unblock the funnel with two constants (20 min)
 
@@ -1062,6 +1155,582 @@ distributional argument, not a fitted one.
 
 ---
 
+# Step 7 — Breadth over frequency: widen the universe, scan 4× (2.5 h)
+
+**Revised 2026-08-31.** The first draft of this step proposed continuous 5-minute scanning. **That
+draft was wrong**, and the objection that killed it was correct on the substance and understated on
+the mechanism. Superseded plan and evidence below.
+
+**Depends on Step 2.** Independent of Steps 3–6.
+
+## 7.1 The objection, and why the code proves it stronger than stated
+
+> *A 3-DTE vertical is driven by overnight theta and multi-day trend. The signal does not change fast
+> enough to justify a 5-minute cadence. If a setup isn't there at 10:15 it won't appear at 10:20.*
+
+Correct — and it is not merely "unlikely to change." For four of the seven signals it is
+**arithmetically impossible**. `quant.compute_snapshot` derives them from `closes`, which comes from
+`bars.daily`, and `fetch_universe_bars` issues its daily request with `end=session_date`. The
+existing comment at `quant.py:279-288` states the consequence outright:
+
+> *"`closes[-1]` is the PREVIOUS session's close for the whole of a live session … `closes[]` feeds
+> the daily-timeframe indicators (RV_20, RSI, VWM), which are meant to be as-of the last close."*
+
+So `rsi(closes)`, `vwm(closes, volumes)`, `vwm_zscore(closes, volumes)` and `realised_vol_20(closes)`
+are **constants for the entire session, by construction.**
+
+Measured across all nine cycles in `agent.db` (`decisions.quant_json`, all 10 symbols):
+
+| Signal | Source | Frozen within a session? |
+| --- | --- | --- |
+| `rsi` | daily closes | **10/10 symbols — bit-identical** |
+| `vwm` | daily closes+volumes | **10/10 symbols — bit-identical** |
+| `vwm_z` | daily closes+volumes | **10/10 symbols — bit-identical** |
+| `rv_20` | daily closes | 4/10 (only shifts across sessions) |
+| `iv_atm` | live chain | 0/10 — varies |
+| `vrp_ratio` | `iv_atm / rv_20` | 0/10 — varies (via IV only) |
+| `skew_abs` | live chain | 0/10 — varies |
+| `spot`, `vwap_dev_pct` | minute tape | 0/10 — varies |
+
+NVDA's `vwm_z` is `0.5383877245387668` at 11:18, 12:40 **and** 18:49 — identical to the last bit.
+
+**Consequence: the entire DEBIT gate (`abs(q.vwm_z) >= vwm_bar`) cannot change intraday.** Re-scanning
+for a debit setup that was absent at 10:15 is not low-yield; it is provably zero-yield until the next
+session's daily bar prints.
+
+## 7.2 What a rescan *can* legitimately change
+
+Three things vary, all through the chain or the minute tape:
+
+1. **`vrp_ratio` via `iv_atm`** — moves the cross-sectional CREDIT/DEBIT rank. AAPL's ranged
+   1.258 → 1.540 → 1.326 across cycles. Real, and it can promote or demote a name.
+2. **`vwap_dev_pct`** — drives the `VWAP_RSI` branch's structure choice. Evolves over hours.
+3. **`spot`** — moves strike selection and the chain window.
+
+These evolve on an **hours** timescale, not minutes. That sets the honest cadence at **3–4 scans per
+session**, not 2 and not 57.
+
+**A caution on `skew_abs`.** It varies, but it is the noisiest thing in the snapshot: AMZN read
+−0.725 → −0.860 → −3.250 → −3.025 → −4.800 → +0.290; AAPL flipped +1.44 → −0.54 → −1.925 → +0.13.
+It **changes sign between cycles**, and `regime.select`'s `SKEW_SIDED_NO_DIRECTION` branch picks
+`BULL_PUT_SPREAD if q.skew_abs >= 0 else BEAR_CALL_SPREAD` — so the structure side is being decided
+by a sign-flipping quantity. Most of those readings are pre-market on `feed=indicative`, where the
+derived quotes are least reliable. **Scanning more often samples more of this noise.** Either
+restrict scans to RTH (already implied by the cutoff window) or require `|skew_abs|` to exceed a
+minimum before the skew branch may pick a side. Logged here; not fixed in this step.
+
+## 7.3 Exits are *already* continuous — only entries are 2×
+
+Worth stating plainly because it reframes the question. `trading_loop`'s `else` branch runs
+`management_tick` every `MANAGEMENT_INTERVAL_S = 300` — profit targets, stops, the 2-DTE time stop,
+greeks breaches and the reduce-only fail-safe are **already evaluated every 5 minutes**. Nothing about
+risk management is on a two-scan schedule. The only thing sampled twice per session is *entry
+screening*, and §7.1 shows most of that screen is frozen anyway.
+
+## 7.4 The real trade-off: breadth is nearly free, frequency is not
+
+The cost model, validated against the measured `18:49Z` cycle (28 calls for 3 candidates):
+
+```
+calls  =  2·S  +  7.3·D          S = shortlisted, D = debated
+          │       └─ debate 3.3 + trader 1 + risk 3, per debated candidate
+          └─ quant + news analyst, per shortlisted candidate
+check: 2·3 + 7.3·3 = 27.9  vs  28 measured
+```
+
+**`N` — the universe size — does not appear.** `ticker_screener.shortlist` truncates to
+`SHORTLIST_MAX` before any LLM call, so widening the universe costs **zero tokens**. It costs only
+Alpaca chain requests, which are cheap (measured below).
+
+LLM cost per session (cost/call = $0.000206, measured):
+
+| Scans/session | S=4, D=4 | S=8, D=4 | S=12, D=5 |
+| --- | --- | --- | --- |
+| 2 (today) | $0.015 | $0.019 | $0.025 |
+| **4 (recommended)** | $0.031 | **$0.037** | $0.050 |
+| 6 | $0.046 | $0.056 | $0.075 |
+| 12 | $0.092 | $0.112 | $0.150 |
+| 57 (the rejected draft) | $0.438 | $0.532 | $0.712 |
+
+Alpaca cost of breadth — measured live at `SEMAPHORE_LIMIT = 4`, and the response header reports
+`x-ratelimit-limit: 200` per minute:
+
+| Universe N | Requests/cycle | Chain wall-clock | % of the 200/min budget |
+| --- | --- | --- | --- |
+| 10 (today) | 12 | 0.6 s | 6% |
+| 30 | 32 | 1.6 s | 16% |
+| **50 (recommended)** | 52 | **2.8 s** | **26%** |
+| 100 | 102 | 5.5 s | 51% |
+| 150 | 152 | 8.2 s | 76% |
+| 200 | 202 | 11.0 s | **101% — exceeds the limit in a single cycle** |
+
+All 30 large caps probed returned 64–100 contracts in the 3–7 DTE window, so weekly expiries are
+not a constraint at this cap tier.
+
+**Golden ratio: spend on breadth, not frequency.** Going 10 → 50 names costs 2.2 s of wall-clock and
+zero tokens. Going 2 → 57 scans costs 28× the tokens to re-read signals that cannot move.
+
+## 7.5 Why breadth also makes the *statistics* work
+
+`assign_regimes` takes `ranked[:n]` and `ranked[-n:]` — a **percentile** screen. Its selectivity is
+`n / N`:
+
+| Universe | `CROSS_SECTION_N` | CREDIT slice is the top… | Partition ceiling (`2n ≤ N`) |
+| --- | --- | --- | --- |
+| 10 (today) | 4 | **40%** — barely a screen | n ≤ 4, binding |
+| 50 | 4 | **8%** — a real screen | n ≤ 25, no longer binds |
+| 50 | 6 | 12% | — |
+
+At N=10 the "cross-sectional rank" selects the top four of ten, which is closer to a coin-flip than a
+screen — and the `2n ≤ N` ceiling from Step 2 binds hard. At N=50 it becomes a genuine percentile,
+`skew_threshold`'s 70th-percentile estimate stops being computed from 10 points, and Step 2's
+constraint stops mattering.
+
+**This also fixes a dead parameter.** `SHORTLIST_MAX = 4` and `DEBATE_CANDIDATES = 4` are equal, so
+`select_top(results, candidates, n=4)` picks 4 from at most 4 — **`analyst_score` currently has no
+effect on anything.** It is computed, printed as `score N.NN`, stored on `PipelineOutcome`, and
+discarded. Setting `SHORTLIST_MAX = 8` with `DEBATE_CANDIDATES = 4` makes the analyst layer actually
+select for the first time.
+
+## 7.6 Recommended configuration
+
+| Constant | Now | Proposed | Rationale |
+| --- | --- | --- | --- |
+| `UNIVERSE` | 10 | **50** (§7.12) | §7.4/§7.5 — zero token cost, real percentile screen |
+| Scans/session | 2 | **4** | IV/VWAP evolve on hours; daily signals are frozen (§7.1) |
+| `SHORTLIST_MAX` | 4 | **8** | Makes `analyst_score` bind (§7.5) |
+| `DEBATE_CANDIDATES` | 4 | 4 | Unchanged |
+| `CROSS_SECTION_N` | 4 | **6** | 12% of 50; `2n ≤ N` no longer binds |
+| `LLM_MAX_CALLS_PER_SESSION` | 80 | **400** | 4 × 45 calls = 181; 400 is a runaway guard, not a budget |
+| `LLM_DAILY_SPEND_CEILING_USD` | 4.00 | 4.00 | $0.037 used — 100× headroom |
+| `MANAGEMENT_INTERVAL_S` | 300 | 300 | Exits already continuous (§7.3) |
+
+**Total: $0.037/session, $0.11 over three sessions — 0.45% of the $25 balance.**
+
+Scan times: `open+45` (10:15 ET), then **11:45, 13:15, 14:45 ET** — evenly spaced across the entry
+window, last one 15 minutes before the `cutoff = close − 60` at 15:00.
+
+## 7.7 The universe-expansion blocker: earnings
+
+**`EARNINGS_DATES` must carry one key per `UNIVERSE` symbol** —
+`test_config_universe_earnings_keys` asserts `set(EARNINGS_DATES) == set(UNIVERSE)` — and
+`EARNINGS_VERIFIED_ON` must be set by a human, with `main.py:1185` refusing `--live` while it is
+`None`. Alpaca provides no earnings calendar. **This is the only real cost of widening the universe,
+and it is manual.**
+
+Mitigating fact: the expiry window is 3–7 DTE from sessions ending 3 Sep, so the latest reachable
+expiry is ~11 Sep. **Early September is the quietest earnings period of the year** — between Q2
+(Jul–Aug) and Q3 (late Oct). For large caps with weekly options the expected number reporting before
+15 Sep is near zero. So this is one batch verification pass, not 50 individual lookups.
+
+**Procedure:** pick the ~50 names from S&P 100 constituents with liquid weeklies (the 30 probed in
+§7.4 all qualify), verify in one pass that none reports before 15 Sep, set every value to `None`,
+and re-stamp `EARNINGS_VERIFIED_ON`. Budget 45 minutes. **Do not automate this** — the human-verified
+gate is a deliberate safety property, and an options agent holding a short strike through an
+unexpected earnings print is the single worst outcome available to it.
+
+**Do not scan "the whole American exchange."** ~6,000 listed names is infeasible and undesirable:
+6,000 requests/cycle against a 200/min limit is 30 minutes per cycle; most names have no weekly
+expiries, so `select_target_expiry` returns `None` and they drop as `NO_EXPIRY_IN_WINDOW`; and
+sub-mega-cap options have spreads wide enough that `walk_to_fill` cannot fill inside
+`WALK_CAP_FRACTION`. **The honest ceiling is names with liquid weekly options — roughly 150–200
+tickers**, and 50 captures most of the cross-sectional benefit at a third of the verification cost.
+
+## 7.8 Code changes
+
+Substantially smaller than the superseded continuous-scanning draft. **`SCAN_2_OFFSET_MIN` is
+retained**; the two-slot schedule generalises to N slots rather than being replaced.
+
+### `agent/config.py`
+
+```python
+UNIVERSE: Final[tuple[str, ...]] = (...)          # ~50 names, S&P 100 w/ weeklies
+EARNINGS_DATES: Final[dict[str, date | None]] = {...}   # one key per name, batch-verified
+EARNINGS_VERIFIED_ON: Final[date | None] = date(2026, 9, 1)
+
+# Day 4 Step 7. Evenly spaced across the entry window (open+45 -> cutoff).
+# Minutes from session open. Replaces SCAN_1_OFFSET_MIN / SCAN_2_OFFSET_MIN.
+SCAN_OFFSETS_MIN: Final[tuple[int, ...]] = (45, 135, 225, 315)
+assert len(SCAN_OFFSETS_MIN) * 2 <= 20, "scan slots feed _completed_scan_count's guard"
+
+SHORTLIST_MAX: Final[int] = 8        # > DEBATE_CANDIDATES so analyst_score binds
+CROSS_SECTION_N: Final[int] = 6      # 12% of a 50-name universe
+LLM_MAX_CALLS_PER_SESSION: Final[int] = 400
+```
+
+### `agent/session.py`
+
+`SessionPlan.scan_1_utc` / `scan_2_utc` become
+`scan_utcs: tuple[datetime, ...]` = `tuple(open_utc + timedelta(minutes=m) for m in SCAN_OFFSETS_MIN)`.
+Grep for `scan_1_utc` / `scan_2_utc` before removing — `_next_action` and `_publish_status` both read
+them for the dashboard's "next action" line.
+
+### `agent/main.py` — `trading_loop`
+
+The `completed < N` counter generalises without changing its restart-safety property:
+
+```python
+        # Day 4 Step 7: N evenly-spaced slots, was a hardcoded two-branch
+        # if/elif. `completed` is still COUNT(DISTINCT cycle_id) for the
+        # session, so a mid-session restart still resumes at the right slot.
+        due = sum(1 for t in session.scan_utcs if now >= t)
+        if due > completed and now < session.cutoff_utc:
+            await scan_cycle(deps, session, dry_run=deps.settings.dry_run)
+        else:
+            await management_tick(deps, session)
+```
+
+### `agent/strategy/ticker_screener.py`
+
+`UNIVERSE.index(...)` is used as a sort tiebreak in both `shortlist` and `select_top` — an O(N) scan
+inside an O(N log N) sort. At N=50 that is ~15k operations per cycle, negligible, **but replace it
+with a precomputed `dict[str, int]` anyway**: it is a two-line change and the quadratic term is the
+kind of thing that stops being negligible if the universe is widened again.
+
+## 7.9 Tests
+
+| Test | Criterion |
+| --- | --- |
+| `test_universe_earnings_keys_match` | Existing test — must still pass at N=50 |
+| `test_cross_section_n_cannot_partition_universe` | Step 2's test — `6*2 < 50` |
+| `test_shortlist_max_exceeds_debate_candidates` | New: `SHORTLIST_MAX > DEBATE_CANDIDATES`, so `analyst_score` binds |
+| `test_scan_offsets_inside_entry_window` | Every offset lands in `[open+45, cutoff)` |
+| `test_scan_slots_fire_once_each` | 4 slots → exactly 4 `scan_cycle` calls per session |
+| `test_scan_slots_restart_safe` | Restart after slot 2 → resumes at slot 3, does not replay |
+| `test_no_scan_after_cutoff` | `now >= cutoff_utc` → `management_tick`, never `scan_cycle` |
+| `test_universe_index_lookup_is_constant_time` | Tiebreak uses a dict, not `list.index` |
+
+## 7.10 Definition of done
+
+- Full suite green at N=50; `EARNINGS_VERIFIED_ON` re-stamped after a human pass.
+- One simulated session fires exactly 4 scans, all inside the entry window.
+- `SELECT COUNT(*) FROM llm_calls WHERE ts_utc > <session start>` ≤ 220.
+- Chain fetch wall-clock < 5 s per cycle (measured 2.8 s at N=50).
+
+## 7.11 Superseded: the continuous-scanning draft
+
+For the record, since the first draft of this plan recommended it:
+
+| First draft | Superseded by | Reason |
+| --- | --- | --- |
+| 5-min cadence, 57 scans/session | 4 scans/session | 4 of 7 signals are frozen intraday (§7.1); the debit gate provably cannot change |
+| Two-tier screen + LLM-escalation logic | Nothing — dropped | Solved a cost problem ($0.44/session) that was never real at 4 scans ($0.037) |
+| `SCREEN_INTERVAL_S`, delete `SCAN_2_OFFSET_MIN`, retire the `completed` counter, Tier-1 row-suppression | `SCAN_OFFSETS_MIN` tuple + a 3-line loop change | ~5× less code, keeps the restart-safety property already tested |
+| `LLM_MAX_CALLS_PER_SESSION` → 2500 | → 400 | Sized to the actual plan, still a runaway guard |
+| Universe unchanged at 10 | → ~50 | The draft optimised the axis that was nearly free to leave alone and ignored the one with real returns |
+
+The draft's cost arithmetic was right and its conclusion was wrong: it asked *"can we afford to scan
+more often?"* (yes) instead of *"does scanning more often change any input?"* (mostly no).
+
+## 7.12 The 50 names — selected on measured liquidity, not intuition
+
+60 large-cap candidates were probed live against
+`/v1beta1/options/snapshots/{sym}?feed=indicative` over the 3–7 DTE window. Pass bar: **≥20 contracts
+with a usable quote** (`bid > 0 and ask > 0 and iv and delta`, mirroring `market_data._is_usable`)
+**and median bid/ask spread ≤25% of mid**. 43 passed; the 50 below are those 43 plus the seven
+next-best by spread.
+
+Median spread is the metric that matters: `walk_to_fill` walks from mid toward natural bounded by
+`WALK_CAP_FRACTION = 0.70`, so a spread it cannot cross is a name that generates decisions and never
+fills.
+
+```python
+# Day 4 Step 7. Selected on MEASURED 3-7 DTE chain liquidity (probe:
+# scripts/probe_universe.py), not on market cap. Ordered by median bid/ask
+# spread, tightest first -- the ordering is also the UNIVERSE.index() tiebreak
+# used by shortlist() and select_top(), so ties now break toward the more
+# fillable name rather than toward an arbitrary alphabetical position.
+UNIVERSE: Final[tuple[str, ...]] = (
+    "IWM", "PLTR", "DIA", "AVGO", "TSLA", "AMD", "QQQ", "AMZN", "SPY", "SMCI",
+    "META", "BAC", "CRM", "GS", "MSFT", "NVDA", "NFLX", "ARM", "UBER", "AAPL",
+    "C", "QCOM", "ORCL", "GOOGL", "NKE", "PFE", "CVX", "V", "LLY", "KO",
+    "BA", "UNH", "WFC", "JPM", "XOM", "WMT", "CAT", "INTC", "SCHW", "ADBE",
+    "DIS", "MS", "MCD", "MRK", "MA", "COST", "TMO", "GE", "AXP", "CSCO",
+)
+```
+
+Measured spreads, tightest first: IWM 3.3%, PLTR 4.4%, DIA 4.9%, AVGO 5.1%, TSLA 5.8%, AMD 5.8%,
+QQQ 6.6%, AMZN 7.0%, SPY 7.9%, SMCI 8.4%, META 8.7% … through MRK 24.4%, then the seven additions
+MA 25.3%, COST 25.3%, TMO 26.5%, GE 27.1%, AXP 29.1%, CSCO 29.4%.
+
+**Excluded and why:** `MU` returned **zero** usable contracts — no populated greeks at all, would drop
+as `NO_ATM_IV` every cycle. `PEP` (45.6%), `SBUX` (44.5%), `JNJ` (39.5%), `TXN` (39.3%), `HD` (39.1%),
+`PG` (37.1%), `VZ` (33.4%) all carry spreads `walk_to_fill` cannot reasonably cross. `T` had only 17
+usable contracts.
+
+**SPY is included despite failing the bar** (19 usable contracts, one short) because it is the most
+liquid options underlying listed and 19-vs-20 is snapshot noise — but note this is **consistent with
+the 6 `DEGENERATE_CHAIN` rows** SPY and QQQ already have in `agent.db`, so expect it to drop
+occasionally. That is the gate working, not a defect.
+
+**Caveat on the probe.** It ran near the close on the `indicative` feed, where spreads are widest.
+Re-run `scripts/probe_universe.py` once during RTH before committing the list — the ordering is
+likely stable but the absolute spreads will tighten. The script is the deliverable; the list is its
+output on one snapshot.
+
+---
+
+# Step 8 — Make `analyst_score` do something (1 h)
+
+**Group B.** Independent of Steps 3–7, but only worth doing once Step 7 raises `SHORTLIST_MAX`.
+
+## 8.1 Today it is computed, printed, and discarded
+
+`select_top(results, candidates, n=DEBATE_CANDIDATES)` sorts by `-analyst_score(r)` and returns
+`ordered[:n]`. With `SHORTLIST_MAX = 4` and `DEBATE_CANDIDATES = 4`, it selects **4 from at most 4**.
+The sort runs; the truncation never removes anything. `analyst_score` is then stored on
+`PipelineOutcome`, printed as `score N.NN` by `_format_analysts_line`, and never read again — it is
+**not persisted to any queryable column**, so it cannot even be correlated with outcomes after the
+fact.
+
+That means the entire analyst layer — two LLM calls per candidate, ~35% of all token spend —
+currently influences nothing. The debate consumes the analysts' *text* through the evidence bundle,
+but their *score* is inert.
+
+## 8.2 Three uses, in ascending order of intrusiveness
+
+### 8.2a Make it select (Step 7 already does this)
+
+`SHORTLIST_MAX = 8`, `DEBATE_CANDIDATES = 4` → `select_top` discards the worse half. This alone turns
+the analysts into a real filter and costs nothing beyond Step 7's config change. **Do this first and
+measure before adding anything below.**
+
+### 8.2b A rejection floor — analysts as a veto, never an authoriser
+
+Add an early reject *before* the debate, so a rejected candidate costs 2 analyst calls instead of 9.3:
+
+```python
+# agent/config.py
+# Day 4 Step 8. analyst_score components are each in {0.0, 0.5, 1.0}, so the
+# score takes 9 discrete values. 0.40 is the smallest floor that rejects every
+# combination in which the QUANT analyst -- reading the same numbers the
+# deterministic layer used -- contradicts the chosen structure on BOTH
+# momentum and IV (quant_component == 0.0 => score <= 0.375), plus the one
+# case where quant is neutral and news actively disagrees (0.3125).
+# It never lets a high score authorise or enlarge anything: this is a veto.
+ANALYST_SCORE_FLOOR: Final[float] = 0.40
+```
+
+Reachable scores and their disposition at the floor:
+
+| `quant` | `news` | score | |
+| --- | --- | --- | --- |
+| 0.0 | 0.0 | 0.000 | rejected |
+| 0.0 | 0.5 | 0.188 | rejected |
+| 0.5 | 0.0 | 0.313 | rejected |
+| 0.0 | 1.0 | 0.375 | rejected |
+| 0.5 | 0.5 | 0.500 | passes |
+| 1.0 | 0.0 | 0.625 | passes |
+| 0.5 | 1.0 | 0.688 | passes |
+| 1.0 | 0.5 | 0.813 | passes |
+| 1.0 | 1.0 | 1.000 | passes |
+
+Four of nine combinations rejected — exactly the ones where the quant analyst has no positive read.
+
+Implementation in `pipeline.run_llm_pipeline`, at the existing `select_top` line:
+
+```python
+    ranked = select_top(analyst_results, candidates)
+    debated_symbols = {r.symbol for r in ranked if analyst_score(r) >= ANALYST_SCORE_FLOOR}
+```
+
+Candidates filtered here already fall through to the existing `other_outcomes` branch and get a
+`decisions` row; give them `reason="ANALYST_SCORE_BELOW_FLOOR"` instead of
+`"NOT_TOP_DEBATE_CANDIDATE"` so the log distinguishes "ranked too low" from "analysts disagreed".
+
+**This is consistent with the project's central architectural claim** — the LLM can shrink or remove,
+never create or enlarge. Worth naming explicitly in the one-pager: *the analysts hold a veto and no
+authorisation.*
+
+### 8.2c Persist it
+
+Add `analyst_score` to the `quant_json` merge at `main.py:972` (the same zero-migration mechanism
+Step 3 uses for `macro_regime`). Once persisted it can be plotted against realised P&L, which is the
+only way to ever learn whether the analyst layer is worth its tokens. **Do this even if 8.2b is
+skipped** — it is two lines and it is the difference between a signal you can evaluate and one you
+cannot.
+
+## 8.3 What NOT to do
+
+**Do not feed `analyst_score` into `GateContext.conviction`.** Tempting — conviction is already a
+size multiplier — but wrong for two reasons. It double-counts: the debate personas already read the
+analysts' output through the evidence bundle, so their conviction is partly a function of the same
+signal. And `agent/risk/` is guarded by `test_agent_import_graph.py` from importing `agent.agents`;
+routing a second LLM-derived multiplier into the gate erodes the separation that makes the gate
+auditable. One LLM-sourced multiplier, sourced from one place, is the invariant worth keeping.
+
+## 8.4 Tests
+
+| Test | Criterion |
+| --- | --- |
+| `test_shortlist_max_exceeds_debate_candidates` | `SHORTLIST_MAX > DEBATE_CANDIDATES`, so `select_top` truncates |
+| `test_select_top_truncates` | 8 results, `n=4` → 4 returned, highest-scoring |
+| `test_floor_rejects_quant_disagreement` | `quant_component == 0` → below floor for every `news` value |
+| `test_floor_passes_quant_support` | `quant_component == 1` → above floor for every `news` value |
+| `test_floor_reject_costs_no_debate_calls` | Rejected candidate → exactly 2 LLM calls, no `DEBATE_*` node |
+| `test_floor_reject_still_writes_decision` | A `decisions` row exists with `ANALYST_SCORE_BELOW_FLOOR` |
+| `test_analyst_score_persisted` | `quant_json` carries `analyst_score` |
+
+---
+
+# Step 9 — Stop `skew_abs` deciding the structure side (1 h)
+
+**Group B.** Independent of everything else.
+
+## 9.1 The measurement
+
+All 75 `data_ok` snapshots in `agent.db`:
+
+| Statistic | Value |
+| --- | --- |
+| Median | **+0.06 IV points** |
+| Range | −5.82 → +4.78 |
+| **Negative readings** | **35 / 75 (47%)** |
+| `|skew| < 1.0` | 42 / 75 (56%) |
+
+A 25-delta put skew that is **symmetric about zero and negative 47% of the time is not a skew
+measurement.** Equity index and large-cap single-name options carry a persistent *positive* put skew
+— OTM puts trade above ATM IV — typically +2 to +6 points. A near-zero median with half the mass
+negative is the signature of a noise process.
+
+And the same name reverses between cycles: AMZN read −0.73 → −0.86 → −3.25 → −3.03 → −4.80 → +0.29;
+AAPL +1.44 → −0.54 → −1.93 → +0.13.
+
+## 9.2 Where that noise reaches a decision
+
+Three places, in descending severity:
+
+1. **`regime.select`'s `SKEW_SIDED_NO_DIRECTION` branch** —
+   `BULL_PUT_SPREAD if q.skew_abs >= 0 else BEAR_CALL_SPREAD`. With a median of +0.06, **the
+   structure side is a coin flip.** This is the branch that fires whenever a credit name has no
+   VWAP/RSI directional read, which is the most common credit state.
+2. **`ticker_screener.composite_score`** — `0.30 * _clip(q.skew_abs / 10.0, 0.0, 1.0)`. Since
+   `skew_abs` rarely exceeds 1.5, the term is almost always < 0.15 and is *always* noise. It carries
+   30% of the credit-side ranking weight and dilutes the VRP term, which is the one that works.
+3. **`skew_threshold`'s `SKEW_PUT_BIAS_OVERLAY`** — the 70th percentile of this distribution is
+   ~+0.85, so the overlay fires on names whose "put bias" is under one vol point.
+
+## 9.3 Why it is broken — two mechanical causes
+
+```python
+put_25d = min(puts, key=lambda q: (abs(abs(q.delta) - 0.25), q.strike))
+return (put_25d.iv - atm) * 100.0
+```
+
+**Cause 1 — no delta band.** `min()` always returns *something*. If the chain has no put near 0.25
+delta — sparse strikes, or degenerate `indicative` greeks — it silently returns the nearest
+available, which may be a 0.02-delta or a 0.55-delta put. `spread_builder._pick_short_leg` already
+solves exactly this problem correctly, with `SHORT_DELTA_BAND = (0.22, 0.33)` and an explicit
+`in_band` filter. `skew_abs` has no equivalent.
+
+**Cause 2 — the ATM baseline is a call/put average.** `atm_iv` averages call and put IV at the
+nearest strike. Equity puts normally carry higher IV than calls at the same strike, so the average
+sits *above* the call IV and *below* the put IV. Comparing a 25-delta put against that blended
+baseline structurally understates the skew and pushes marginal readings negative.
+
+## 9.4 Fixes, in order
+
+### 9.4a Delta band on the 25-delta put (data quality at source)
+
+```python
+# agent/config.py -- mirrors SHORT_DELTA_BAND's existing pattern
+SKEW_DELTA_BAND: Final[tuple[float, float]] = (0.18, 0.32)
+```
+
+```python
+# agent/tools/quant.py -- skew_abs
+lo, hi = SKEW_DELTA_BAND
+in_band = [q for q in puts if lo <= abs(q.delta) <= hi]
+if not in_band:
+    return None          # -> NO_SKEW_QUOTE -> data_ok=False, the existing path
+put_25d = min(in_band, key=lambda q: (abs(abs(q.delta) - 0.25), q.strike))
+```
+
+Returning `None` routes to `compute_snapshot`'s existing `NO_SKEW_QUOTE` drop. **This will reduce the
+candidate count** — which is the correct trade: Step 7's 50-name universe supplies the headroom to
+afford being strict. Do these two steps together.
+
+### 9.4b A noise floor before the sign is trusted
+
+```python
+# Day 4 Step 9. Below this, the smile is flat and the sign carries no
+# information: the measured median is +0.06 with 47% of readings negative.
+SKEW_SIDE_MIN_POINTS: Final[float] = 1.5
+```
+
+```python
+# agent/strategy/regime.py -- SKEW_SIDED_NO_DIRECTION branch
+if abs(q.skew_abs) >= SKEW_SIDE_MIN_POINTS:
+    structure = Structure.BULL_PUT_SPREAD if q.skew_abs > 0 else Structure.BEAR_CALL_SPREAD
+    reason = "SKEW_SIDED_NO_DIRECTION"
+else:
+    # Skew is inside the noise band. Fall back to the volume-weighted price
+    # location, which is computed from real traded minute bars rather than
+    # modelled greeks: above VWAP -> sell calls into it, below -> sell puts.
+    # Same mean-reversion logic the VWAP_RSI branch uses, without requiring
+    # the RSI confirmation that branch demands.
+    structure = Structure.BEAR_CALL_SPREAD if q.vwap_dev_pct > 0 else Structure.BULL_PUT_SPREAD
+    reason = "VWAP_SIDED_NO_DIRECTION"
+```
+
+At 1.5 points, 73% of observed readings fall back to VWAP. **That is the intended outcome** — it
+routes the common case to the more reliable quantity and reserves the skew branch for genuinely
+skewed chains. Note honestly in the one-pager that the negative tail (−5.82 → −4.45) is as heavy as
+the positive one, so even large readings may be artifacts; 1.5 is a defensible floor, not a
+validated one.
+
+### 9.4c Cut the `composite_score` skew weight
+
+```python
+# was: 0.50*credit_term + 0.30*skew + 0.20*rsi
+return (
+    0.70 * credit_term                                   # VRP -- the term that works
+    + 0.20 * _clip(abs(q.rsi - 50.0) / 50.0, 0.0, 1.0)
+    + 0.10 * _clip(abs(q.skew_abs) / 5.0, 0.0, 1.0)      # magnitude only, never sign
+)
+```
+
+Two changes beyond the weight: use `abs(skew_abs)` (a strongly skewed chain is interesting in either
+direction; the *sign* is what is unreliable) and divide by 5.0 rather than 10.0 so the term uses its
+range — no observed reading ever reached 10.
+
+### 9.4d Optional — a cleaner ATM baseline
+
+Change `atm_iv` to return the **call** IV at the nearest strike rather than the call/put average,
+making `skew_abs` a true put-over-call comparison at matched strike. **Not recommended this week:**
+`atm_iv` also feeds `vrp_ratio`, which is the single most load-bearing number in the system, and
+changing its definition on Day 4 invalidates every VRP reading in `agent.db` and the Step 6 sweep
+baseline. Record it as post-hackathon work.
+
+## 9.5 Scan timing is part of the fix
+
+The worst readings in the sample came from cycles run **pre-market**, where `feed=indicative` quotes
+are modelled rather than traded. Step 7's `SCAN_OFFSETS_MIN = (45, 135, 225, 315)` are all measured
+from `open_utc`, so every scheduled scan is inside RTH by construction. The contaminated rows came
+from ad-hoc `--once` runs. **Add a warning banner to `--once` when `session.is_open` is `False`**, so
+a manual pre-market run cannot be mistaken for a representative scan.
+
+## 9.6 Tests
+
+| Test | Criterion |
+| --- | --- |
+| `test_skew_requires_delta_band` | Chain whose only puts are 0.05‑delta → `skew_abs` returns `None` |
+| `test_skew_picks_nearest_in_band` | Puts at 0.19/0.26/0.31 delta → 0.26 chosen |
+| `test_no_skew_quote_drops_snapshot` | `None` → `data_ok=False`, `drop_reason="NO_SKEW_QUOTE"` |
+| `test_skew_below_floor_uses_vwap` | `skew_abs=+0.06`, `vwap_dev_pct=+0.5` → `BEAR_CALL_SPREAD`, reason `VWAP_SIDED_NO_DIRECTION` |
+| `test_skew_above_floor_uses_skew` | `skew_abs=+2.5` → `BULL_PUT_SPREAD`, reason `SKEW_SIDED_NO_DIRECTION` |
+| `test_skew_sign_flip_does_not_flip_structure_below_floor` | ±0.06 with the same `vwap_dev_pct` → the same structure both times. **The regression this step exists to prevent.** |
+| `test_composite_score_skew_uses_magnitude` | Equal-magnitude opposite-sign skew → identical score |
+
+## 9.7 Definition of done
+
+- Full suite green.
+- A replayed cycle shows `VWAP_SIDED_NO_DIRECTION` on the majority of no-direction credit names.
+- `SELECT COUNT(*) FROM decisions WHERE gate_reason='NO_SKEW_QUOTE'` is non-zero and explicable —
+  the delta band is meant to reject bad chains, and zero rejections means it is not binding.
+
+---
+
 # Self-Review Findings
 
 Second pass over Steps 1–6 against the four mandated questions. Findings are applied back into the
@@ -1213,9 +1882,14 @@ review strengthened rather than altered.
 
 ## Residual risks accepted
 
-1. **Reddit can abort a cycle.** `_fetch_reddit` failure re-raises at `main.py:869` and kills the
-   whole scan, entries included. Mitigation is the revert path in §1.5, not a code change — adding a
-   swallow here would change failure semantics for a Tier-2 feature during market hours.
+1. **The `analyst_score` re-weighting changes debate selection.** Dropping the sentiment term
+   re-normalises to 0.625/0.375 and therefore changes `select_top`'s ordering. Intended — the removed
+   term was a constant — but it is a behavioural change, pinned by
+   `test_analyst_score_ignores_sentiment` (§1.8).
+1b. **`_fetch_reddit` stays in the tree, permanently returning `{}`.** It is dead code by
+   circumstance, not by design; its `tool_calls` row still records `REDDIT ok=1` with an empty
+   result. Accurate, but a reader could mistake it for a working integration — note it in the
+   one-pager rather than deleting a cleanly-isolated port that may become usable again.
 2. **Minute bars fetched for three unused symbols.** Payload waste, zero extra round trips.
 3. **Sweep re-fetches bars three times.** 3× API traffic on an offline job.
 4. **`SHORTLIST_MAX`/`DEBATE_CANDIDATES` = 4 now bind.** Intended; raising them is a separate change
