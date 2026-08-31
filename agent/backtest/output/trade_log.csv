@@ -1,0 +1,4 @@
+symbol,structure,regime,entry_date,expiry,entry_fill,settle_spot,realized_pnl,max_profit_per_spread,max_loss_per_spread
+AAPL,BULL_PUT_SPREAD,CREDIT,2026-08-24,2026-08-31,-0.1710,316.53,17.1,24.38,75.62
+NVDA,BULL_PUT_SPREAD,CREDIT,2026-08-24,2026-08-31,-0.1800,219.07,18.0,26.59,73.41
+SPY,BULL_PUT_SPREAD,CREDIT,2026-08-24,2026-08-31,-0.1530,765.76,15.3,25.42,74.58
