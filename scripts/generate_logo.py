@@ -14,7 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SIZE = 64
-CX, CY, R = 32.0, 26.5, 16.5
+CX, CY, R = 32.0, 32.0, 16.5
 
 BG_TOP = "#0b0e17"
 BG_BOTTOM = "#141a2b"

@@ -147,11 +147,13 @@ export default async function Page() {
           gives it, so a wide table can breathe without the header/footer
           stretching to match. */}
       <div className="mx-auto w-full max-w-5xl">
-        <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
-          <h1 className="text-xl font-semibold sm:text-2xl">Autonomous Debate Trading Agent</h1>
-          <span className="flex items-center gap-2 text-sm text-muted-foreground">
+        <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-3">
+            <Image src="/logo.png" alt="" width={64} height={64} className="rounded-lg" />
+            <h1 className="text-xl font-semibold sm:text-2xl">Autonomous Debate Trading Agent</h1>
+          </div>
+          <span className="text-sm text-muted-foreground">
             <LiveRefresh />
-            <Image src="/logo.png" alt="" width={28} height={28} className="rounded-md" />
           </span>
         </div>
         <StatusBar status={status} />
