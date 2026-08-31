@@ -5,6 +5,7 @@ import { AssignmentPanel } from "@/components/AssignmentPanel";
 import { DecisionsLog } from "@/components/DecisionsLog";
 import { Funnel } from "@/components/Funnel";
 import { GreeksGauges } from "@/components/GreeksGauges";
+import { LiveRefresh } from "@/components/LiveRefresh";
 import { OpenPositionsTable } from "@/components/OpenPositionsTable";
 import { ReasoningFeed } from "@/components/ReasoningFeed";
 import { ServiceDown } from "@/components/ServiceDown";
@@ -39,7 +40,12 @@ export default async function Page() {
   ]);
 
   if (decisionsRes === null || statusRes === null || assignmentsRes === null) {
-    return <ServiceDown />;
+    return (
+      <>
+        <LiveRefresh />
+        <ServiceDown />
+      </>
+    );
   }
 
   // Everything below is independently optional -- a missing/erroring
@@ -63,6 +69,7 @@ export default async function Page() {
 
   return (
     <main className="mx-auto max-w-5xl p-4 font-mono text-base sm:p-8">
+      <LiveRefresh />
       <h1 className="mb-1 text-xl font-semibold sm:text-2xl">Autonomous Debate Trading Agent</h1>
       <StatusBar status={status} />
 
