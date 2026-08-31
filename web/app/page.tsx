@@ -1,4 +1,4 @@
-import { ArrowLeftRight, LayoutDashboard, ScrollText } from "lucide-react";
+import { Activity, ArrowLeftRight, LayoutDashboard, ScrollText } from "lucide-react";
 import { AccountVitals } from "@/components/AccountVitals";
 import { AgentConfigPanel } from "@/components/AgentConfigPanel";
 import { AssignmentPanel } from "@/components/AssignmentPanel";
@@ -106,7 +106,6 @@ export default async function Page() {
     <main className="mx-auto max-w-5xl p-4 font-mono text-base sm:p-8">
       <h1 className="mb-1 text-xl font-semibold sm:text-2xl">Autonomous Debate Trading Agent</h1>
       <StatusBar status={status} />
-      <HealthStrip samples={healthHistory} />
 
       {/* Alert-like and reference material stay outside the tabs -- an
           assignment event matters regardless of which tab a judge is on. */}
@@ -126,6 +125,10 @@ export default async function Page() {
             <ScrollText className="size-3.5" />
             Logs
           </TabsTrigger>
+          <TabsTrigger value="usage" className="gap-1.5">
+            <Activity className="size-3.5" />
+            Usage
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview">
@@ -144,10 +147,17 @@ export default async function Page() {
         </TabsContent>
 
         <TabsContent value="logs">
-          <LlmUsage usage={llmUsage} />
-          <ToolUsage usage={toolUsage} />
           <DecisionsLog decisions={decisions} />
           <AgentConfigPanel config={config} />
+        </TabsContent>
+
+        <TabsContent value="usage">
+          <HealthStrip samples={healthHistory} />
+          <LlmUsage usage={llmUsage} />
+          <ToolUsage usage={toolUsage} />
+          {!healthHistory?.length && !llmUsage?.totals.calls && !toolUsage?.totals.calls && (
+            <p className="text-muted-foreground">No usage data recorded yet this deploy.</p>
+          )}
         </TabsContent>
       </Tabs>
 
