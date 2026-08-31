@@ -64,6 +64,20 @@ def _reconcile_deps(db_path: str, *, broker: MockBroker | None = None) -> main_m
     return _deps(db_path, FakeClients(), broker or MockBroker([]), _FastClock(NOW))
 
 
+def _fake_run_no_positions(order_responder):
+    """Wraps an order-get responder so `_is_position_class`'s own
+    `cli_bridge.list_positions()` call (`_run(["position", "list"])`) gets a
+    well-shaped empty list instead of whatever the order-get branch would
+    have returned for mismatched args."""
+
+    async def fake_run(args, *, timeout: float = 10.0):
+        if args[:2] == ["position", "list"]:
+            return []
+        return await order_responder(args, timeout=timeout)
+
+    return fake_run
+
+
 async def test_reconcile_skips_terminal_rows(tmp_path) -> None:
     db_path = str(tmp_path / "agent.db")
     await storage_db.init_db(db_path)
@@ -71,7 +85,9 @@ async def test_reconcile_skips_terminal_rows(tmp_path) -> None:
         await _seed(conn, status="FILLED", order_id="o1", final_order_id="o1", filled_qty=2)
         report = await main_module.startup_reconcile(_reconcile_deps(db_path), conn)
 
-    assert report == main_module.ReconcileReport(inspected=0, repaired=0, unresolved=0, cancelled_working=0)
+    assert report == main_module.ReconcileReport(
+        inspected=0, repaired=0, unresolved_transient=0, unresolved_position=0, cancelled_working=0
+    )
 
 
 async def test_reconcile_follows_replace_chain_to_head(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -99,7 +115,7 @@ async def test_reconcile_follows_replace_chain_to_head(tmp_path, monkeypatch: py
         )
         row = await cur.fetchone()
 
-    assert report.repaired == 1 and report.unresolved == 0
+    assert report.repaired == 1 and report.unresolved_transient == 0 and report.unresolved_position == 0
     assert tuple(row) == ("FILLED", "o1-r1", 2, 1)
 
 
@@ -111,19 +127,20 @@ async def test_reconcile_chain_cycle_is_bounded(tmp_path, monkeypatch: pytest.Mo
 
     calls = {"n": 0}
 
-    async def fake_run(args, *, timeout: float = 10.0):
+    async def order_responder(args, *, timeout: float = 10.0):
         calls["n"] += 1
         return {"id": "o1", "status": "replaced", "replaced_by": "o1", "filled_qty": "0",
                  "filled_avg_price": None, "limit_price": "-0.90"}
 
-    monkeypatch.setattr(cli_bridge, "_run", fake_run)
+    monkeypatch.setattr(cli_bridge, "_run", _fake_run_no_positions(order_responder))
 
     async with storage_db.connect(db_path) as conn:
         import asyncio
         report = await asyncio.wait_for(main_module.startup_reconcile(_reconcile_deps(db_path), conn), timeout=5.0)
 
     assert calls["n"] <= main_module.RECONCILE_MAX_CHAIN_HOPS
-    assert report.unresolved == 1
+    assert report.unresolved_transient == 1  # no held position confirmed -> does not halt
+    assert report.unresolved_position == 0
 
 
 async def test_reconcile_never_decreases_filled_qty(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -244,7 +261,7 @@ async def test_reconcile_no_order_id_no_position_marks_unfilled(tmp_path, monkey
         cur = await conn.execute("SELECT status, filled_qty, cli_verified FROM trades WHERE id=?", (trade_id,))
         row = await cur.fetchone()
 
-    assert report.repaired == 1 and report.unresolved == 0
+    assert report.repaired == 1 and report.unresolved_transient == 0 and report.unresolved_position == 0
     assert tuple(row) == ("UNFILLED_REJECT", 0, 1)
 
 
@@ -267,16 +284,19 @@ async def test_reconcile_no_order_id_with_live_position_is_unresolved(tmp_path, 
         report = await main_module.startup_reconcile(_reconcile_deps(db_path), conn)
         cur = await conn.execute("SELECT status FROM trades WHERE id=?", (trade_id,))
         row = await cur.fetchone()
-        reduce_only = await main_module._read_state_value(conn, "reduce_only")
+        entries_halted = await main_module._read_state_value(conn, "entries_halted")
 
     assert row[0] == "NEW"  # untouched -- operator escalation, not auto-healed
-    assert report.unresolved == 1
-    assert reduce_only is True
+    assert report.unresolved_position == 1
+    assert report.unresolved_transient == 0
+    assert entries_halted is True
 
 
-async def test_reconcile_cli_unavailable_sets_reduce_only_and_does_not_raise(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_reconcile_cli_unavailable_does_not_halt_entries(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A CLI outage confirms nothing either way -- transient, not a halt.
+    scan_cycle's own CliUnavailable guard already blocks trading if the CLI
+    is still down at scan time, so double-halting here would just leave a
+    stale entries_halted flag an operator has to notice and clear by hand."""
     db_path = str(tmp_path / "agent.db")
     await storage_db.init_db(db_path)
     async with storage_db.connect(db_path) as conn:
@@ -289,10 +309,44 @@ async def test_reconcile_cli_unavailable_sets_reduce_only_and_does_not_raise(
 
     async with storage_db.connect(db_path) as conn:
         report = await main_module.startup_reconcile(_reconcile_deps(db_path), conn)  # must not raise
-        reduce_only = await main_module._read_state_value(conn, "reduce_only")
+        entries_halted = await main_module._read_state_value(conn, "entries_halted")
 
-    assert report.unresolved == 1
-    assert reduce_only is True
+    assert report.unresolved_transient == 1
+    assert report.unresolved_position == 0
+    assert not entries_halted  # absent/False -- no halt
+
+
+async def test_reconcile_unexplained_position_halts_entries(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A different unresolved path than the no-anchor case above (here: the
+    order id is known but the CLI can't find it) still escalates to a halt
+    once a held position is confirmed -- the position check applies at every
+    unresolved site, not just the no-anchor one."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    plan = _plan()
+    async with storage_db.connect(db_path) as conn:
+        trade_id = await _seed(conn, status="ACCEPTED", order_id="o1", final_order_id="o1", qty=2, plan=plan)
+
+    async def fake_run(args, *, timeout: float = 10.0):
+        if args[:2] == ["position", "list"]:
+            return [{
+                "symbol": plan.legs[0].occ_symbol, "asset_class": "us_option", "side": "short",
+                "qty": "2", "avg_entry_price": "1.0", "market_value": "-200", "unrealized_pl": "0",
+            }]
+        return None  # `order get` -- CLI has no record of this order at all
+
+    monkeypatch.setattr(cli_bridge, "_run", fake_run)
+
+    async with storage_db.connect(db_path) as conn:
+        report = await main_module.startup_reconcile(_reconcile_deps(db_path), conn)
+        cur = await conn.execute("SELECT status FROM trades WHERE id=?", (trade_id,))
+        row = await cur.fetchone()
+        entries_halted = await main_module._read_state_value(conn, "entries_halted")
+
+    assert row[0] == "ACCEPTED"  # untouched
+    assert report.unresolved_position == 1
+    assert report.unresolved_transient == 0
+    assert entries_halted is True
 
 
 async def test_reconcile_never_writes_realized_pnl_or_closed_at(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -316,28 +370,92 @@ async def test_reconcile_never_writes_realized_pnl_or_closed_at(tmp_path, monkey
     assert row[1] is None
 
 
-async def test_reconcile_unmapped_status_is_unresolved_not_coerced(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_reconcile_unknown_status_without_position_is_transient(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """S3.3: unlike the SDK path (broker._order_state_from_sdk, which
     defaults an unknown status to ACCEPTED for live-trading compatibility),
-    the reconcile must never guess -- an unmapped status is unresolved."""
+    the reconcile must never guess a terminal state for an unmapped status --
+    but with no held position confirmed, it's transient, not a halt."""
     db_path = str(tmp_path / "agent.db")
     await storage_db.init_db(db_path)
     async with storage_db.connect(db_path) as conn:
         trade_id = await _seed(conn, status="ACCEPTED", order_id="o1", final_order_id="o1", qty=2)
 
-    async def fake_run(args, *, timeout: float = 10.0):
+    async def order_responder(args, *, timeout: float = 10.0):
         return {"id": "o1", "status": "some_future_status_we_dont_know", "replaced_by": None,
                  "filled_qty": "0", "filled_avg_price": None, "limit_price": "-0.90"}
 
-    monkeypatch.setattr(cli_bridge, "_run", fake_run)
+    monkeypatch.setattr(cli_bridge, "_run", _fake_run_no_positions(order_responder))
 
     async with storage_db.connect(db_path) as conn:
         report = await main_module.startup_reconcile(_reconcile_deps(db_path), conn)
         cur = await conn.execute("SELECT status FROM trades WHERE id=?", (trade_id,))
         row = await cur.fetchone()
+        entries_halted = await main_module._read_state_value(conn, "entries_halted")
 
-    assert report.unresolved == 1
+    assert report.unresolved_transient == 1
+    assert report.unresolved_position == 0
     assert row[0] == "ACCEPTED"  # untouched
+    assert not entries_halted
+
+
+async def test_entries_halted_survives_management_tick(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """THE regression this fix exists for: management_tick unconditionally
+    overwrites 'reduce_only' from the greeks breach every cycle (main.py's
+    own management_tick), which used to silently clear startup_reconcile's
+    halt within one MANAGEMENT_INTERVAL_S. entries_halted is a separate key
+    management_tick never touches, so it must survive."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    _patch_cli(monkeypatch, positions=[])  # unbreached greeks -- reduce_only recomputes to False
+
+    async with storage_db.connect(db_path) as conn:
+        await storage_write.put_state(conn, "entries_halted", True)
+
+    clients = FakeClients()
+    deps = _deps(db_path, clients, MockBroker([]), _FastClock(NOW))
+    session = await main_module.current_or_next_session(clients)
+
+    await main_module.management_tick(deps, session)
+
+    async with storage_db.connect(db_path) as conn:
+        entries_halted = await main_module._read_state_value(conn, "entries_halted")
+        reduce_only = await main_module._read_state_value(conn, "reduce_only")
+
+    assert entries_halted is True   # survived the tick
+    assert reduce_only is False     # management_tick's own key did recompute
+
+
+async def test_scan_cycle_rejects_entries_when_entries_halted(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    _patch_cli(monkeypatch)
+
+    import agent.strategy.ticker_screener as ticker_screener_module
+    from agent.strategy.regime import RegimeDecision
+    from agent.strategy.regime import select as real_select
+
+    def forced_select(q, assigned, skew_threshold):
+        if q.symbol == "SPY" and q.data_ok:
+            return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
+        return real_select(q, assigned, skew_threshold)
+
+    monkeypatch.setattr(main_module, "select", forced_select)
+    monkeypatch.setattr(ticker_screener_module, "select", forced_select)
+
+    async with storage_db.connect(db_path) as conn:
+        await storage_write.put_state(conn, "entries_halted", True)
+
+    clients = FakeClients()
+    deps = _deps(db_path, clients, MockBroker([]), _FastClock(NOW))
+    session = await main_module.current_or_next_session(clients)
+
+    await main_module.scan_cycle(deps, session, dry_run=True)
+
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT gate_reason FROM decisions WHERE symbol='SPY'")
+        gate_reason = (await cur.fetchone())[0]
+
+    assert gate_reason == "REDUCE_ONLY"
 
 
 class _SimulatedCrash(BaseException):
@@ -473,7 +591,7 @@ async def test_mid_walk_restart_reconstructs_filled_position(tmp_path, monkeypat
         open_trades = await main_module._open_trades(conn)
         risk = await main_module._open_defined_risk(conn)
 
-    assert report.repaired == 1 and report.unresolved == 0
+    assert report.repaired == 1 and report.unresolved_transient == 0 and report.unresolved_position == 0
     assert tuple(row) == ("FILLED", qty, 1, "o1-r1")
     assert len(open_trades) == 1
     assert risk == plan.max_loss_per_spread * qty

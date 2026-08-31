@@ -384,17 +384,41 @@ break                                               # raw is terminal-most known
    deferred to Phase 3**; it needs walk-state persistence we do not have time to build and
    test before 16:15. `TimeInForce.DAY` bounds the risk to one session either way.
 
-6. **Fail-safe.** If `unresolved > 0`, or the routine raised, or it timed out:
+6. **Fail-safe — revised to a targeted halt, not a blanket one.** The original design
+   ("any `unresolved` row sets `reduce_only=True`") turned out to be a no-op: `management_tick`
+   unconditionally overwrites that same key with `put_state("reduce_only", breached)` every
+   `MANAGEMENT_INTERVAL_S`, so the halt self-cleared within one tick and was always gone
+   before `scan_1`. Fixed by splitting `unresolved` into two classes on one discriminator —
+   **are this trade's legs actually held in the live position list?** — and writing to a key
+   `management_tick` never touches:
+
+   - **Position-class (halt).** We positively confirmed a real open position we cannot tie to
+     an order — money at risk `_open_defined_risk` cannot see. `ReconcileReport.unresolved_position`.
+   - **Transient-class (no halt, log only).** CLI unreachable, timeout, order not found, or an
+     unmapped status — with *no* confirmed held legs. `ReconcileReport.unresolved_transient`.
+     Not a silent gap: `scan_cycle` already returns early (`HALT`, no decision reaches the
+     gate) on `CliUnavailable` at scan time, so a CLI that's still down blocks trading anyway
+     without needing a standing flag that could go stale.
+
+   The check itself (`_legs_are_held`, reusing the lazily-fetched `live_positions` list) is run
+   at *every* unresolved site, wrapped in its own `except CliUnavailable` — if we can't even
+   confirm the position check, that defaults to transient, never to a halt:
 
 ```python
-await storage_write.put_state(conn, "reduce_only", True)
+if unresolved_position > 0:
+    await storage_write.put_state(conn, "entries_halted", True)
 ```
 
-   `gates.evaluate` already rejects every new entry with `GateReason.REDUCE_ONLY` when that
-   flag is set, and `management_tick` recomputes it from the greeks breach each cycle — so
-   the halt is not permanent, it is *reasserted until a clean cycle clears it*. `/status`
-   and the dashboard show it. This is `plan.md`'s own rule: **we do not trade on unverified
-   account state.**
+   `gates.evaluate` already rejects every new entry with `GateReason.REDUCE_ONLY` when that's
+   set — `entries_halted` is OR'd together with `reduce_only` at scan_cycle's one read site, so
+   `gates.py` itself needed no change. Unlike `reduce_only`, **`entries_halted` is never written
+   anywhere else** (specifically: `management_tick` never touches it), so it is not
+   self-clearing — it persists until a Railway redeploy or a future operator admin action
+   clears it. The API stays intentionally GET-only (`test_api_is_get_only`), so there is no
+   in-band way to clear it from `/status`; that's deliberate; a live, judged competition
+   backend should not have a POST that silently reopens the book. `/status` (and the
+   dashboard) surface it so the halt is at least visible, per `plan.md`'s own rule: **we do not
+   trade on unverified account state.**
 
 7. **Wiring.** In `main()`, between `build_deps(...)` and the `asyncio.gather(...)`, replacing
    the current log-only orphan check ([main.py:866-871](../agent/main.py#L866-L871)):
@@ -407,14 +431,14 @@ try:
         )
     logger.info("startup reconcile: %s", report)
 except Exception:
-    logger.exception("startup reconcile FAILED -- entering reduce_only for safety")
-    async with storage_db.connect(settings.db_path) as conn:
-        await storage_write.put_state(conn, "reduce_only", True)
+    logger.exception("startup reconcile FAILED -- booting anyway, no entries halt")
 ```
 
-   Runs after `init_db()` (so the B1 migration has applied) and **before** `gather`, so the
-   API is not yet serving and there is no write contention. `--once` skips it: that path is
-   a manual dry-run, not a restarted live process.
+   A raise or a `wait_for` timeout means we never confirmed anything either way — transient by
+   the same reasoning as step 6, so it must never halt entries or block boot. No `put_state`
+   call on this path at all. Runs after `init_db()` (so the B1 migration has applied) and
+   **before** `gather`, so the API is not yet serving and there is no write contention.
+   `--once` skips it: that path is a manual dry-run, not a restarted live process.
 
 ### §2.5 (B5) `_open_trades` must see partial fills
 
@@ -583,11 +607,24 @@ This is the subtle one and the draft did not pin it down. Making it explicit:
   Whole-routine: `except Exception` in `main()` → `logger.exception` and boot proceeds.
   **The container must always come up** — the API is what judges see, and a dashboard that
   500s because of a CLI hiccup is a worse outcome than a halted trader.
-- **A failed reconcile is not a silent failure.** Both guards route to
-  `put_state('reduce_only', True)`, which `gates.evaluate` turns into
-  `GateReason.REDUCE_ONLY` on every entry attempt, and which `/status` exposes. `plan.md`:
-  *we do not trade on unverified account state.* Management, exits, and the unwind still run
-  — `reduce_only` blocks entries only.
+- **A failed reconcile is not a silent failure, but it is deliberately not a blanket one
+  either (revised from the original draft).** Only a *confirmed held position* we cannot tie
+  to an order — `unresolved_position` — routes to `put_state('entries_halted', True)`, which
+  `gates.evaluate` turns into `GateReason.REDUCE_ONLY` on every entry attempt (OR'd with
+  `reduce_only` at the one read site) and which `/status` exposes. A whole-routine exception
+  or timeout is treated the same as any other transient/`unresolved_transient` case — log and
+  boot, no halt — because it confirms nothing either way, and because `scan_cycle`'s own
+  `CliUnavailable` guard already blocks trading if the CLI is still down at scan time. This is
+  the fix for a real bug in the original draft: `management_tick` recomputes `reduce_only` from
+  the greeks breach every `MANAGEMENT_INTERVAL_S`, unconditionally overwriting whatever
+  `startup_reconcile` had written to that same key — so the original "blanket `reduce_only`"
+  design self-cleared within one tick and never actually halted anything by the time `scan_1`
+  ran. `entries_halted` is a separate key `management_tick` never writes, so it holds until a
+  redeploy or a future operator action — the API is GET-only by design
+  (`test_api_is_get_only`), so there is deliberately no in-band way to clear it. `plan.md`: *we
+  do not trade on unverified account state* — but an unconfirmed CLI hiccup is not the same
+  claim as a confirmed unexplained position. Management, exits, and the unwind still run —
+  `entries_halted`, like `reduce_only`, blocks entries only.
 - **`--order-id` is a flag, not a positional.** Verified against the installed v0.0.14 binary.
   Getting this wrong fails only in production, which is why it gets its own unit test.
 - **Unknown status strings.** `ALPACA_STATUS_MAP` is extended to the CLI's full documented

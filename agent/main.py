@@ -228,7 +228,15 @@ _TERMINAL_WALK_STATUSES: Final[frozenset[str]] = frozenset(
 class ReconcileReport:
     inspected: int
     repaired: int
-    unresolved: int          # > 0 => fail safe, see step 6
+    # Split by whether we could confirm the trade's legs are actually held
+    # (docs/phase1_premarket_execution.md S2.4 step 6, revised): a confirmed
+    # position is money at risk _open_defined_risk cannot see -- entries stay
+    # halted until a human clears it. Everything else (CLI down, timeout,
+    # order not found, unmapped status, with no confirmed position) is
+    # transient and does not halt -- scan_cycle's own CliUnavailable guard
+    # already blocks trading if the CLI is still down at scan time.
+    unresolved_transient: int
+    unresolved_position: int
     cancelled_working: int
 
 
@@ -264,6 +272,16 @@ def _reconcile_classify(
     return None
 
 
+async def _legs_are_held(legs_json: str, live_positions: list[cli_bridge.CliPosition]) -> bool:
+    """True if any OCC symbol on this trade's legs appears in the live
+    position list -- the discriminator between a position-class unresolved
+    (money at risk we cannot see) and a transient one (nothing confirmed
+    held, safe to leave for the next boot/scan to re-check)."""
+    occ_symbols = {leg["occ_symbol"] for leg in json.loads(legs_json)}
+    held = {p.symbol for p in live_positions}
+    return bool(occ_symbols & held)
+
+
 async def startup_reconcile(deps: Deps, conn: aiosqlite.Connection) -> ReconcileReport:
     """Runs once at boot, before the API/loop start (main() wiring below).
     Walks every trades row that could hide a live position and repairs it
@@ -282,9 +300,22 @@ async def startup_reconcile(deps: Deps, conn: aiosqlite.Connection) -> Reconcile
 
     inspected = 0
     repaired = 0
-    unresolved = 0
+    unresolved_transient = 0
+    unresolved_position = 0
     cancelled_working = 0
     live_positions: list[cli_bridge.CliPosition] | None = None  # fetched once, lazily, not per row
+
+    async def _is_position_class(legs_json: str) -> bool:
+        """True (halt) only if we can positively confirm the legs are held.
+        False (transient, no halt) if they're not held, OR if we can't even
+        confirm that -- an unconfirmable check must never escalate to a halt."""
+        nonlocal live_positions
+        try:
+            if live_positions is None:
+                live_positions = await cli_bridge.list_positions()
+            return await _legs_are_held(legs_json, live_positions)
+        except cli_bridge.CliUnavailable:
+            return False
 
     for trade_id, order_id, final_order_id, qty, filled_qty, walk_steps, status, symbol, legs_json in rows:
         inspected += 1
@@ -292,17 +323,13 @@ async def startup_reconcile(deps: Deps, conn: aiosqlite.Connection) -> Reconcile
 
         try:
             if anchor is None:
-                if live_positions is None:
-                    live_positions = await cli_bridge.list_positions()
-                occ_symbols = {leg["occ_symbol"] for leg in json.loads(legs_json)}
-                held = {p.symbol for p in live_positions}
-                if occ_symbols & held:
+                if await _is_position_class(legs_json):
                     logger.error(
-                        "startup_reconcile: trade %d (%s) has a live position (%s) but no order id -- "
-                        "operator escalation required, leaving row untouched",
-                        trade_id, symbol, sorted(occ_symbols & held),
+                        "startup_reconcile: trade %d (%s) has a live position but no order id -- "
+                        "entries halted, operator escalation required, leaving row untouched",
+                        trade_id, symbol,
                     )
-                    unresolved += 1
+                    unresolved_position += 1
                     continue
                 await storage_write.repair_trade(conn, trade_id, storage_write.TradeRepair(
                     status="UNFILLED_REJECT", final_order_id=None, final_limit=None, fill_price=None,
@@ -327,8 +354,11 @@ async def startup_reconcile(deps: Deps, conn: aiosqlite.Connection) -> Reconcile
                 break
 
             if raw is None:
-                logger.error("startup_reconcile: trade %d order %s not found via CLI -- unresolved", trade_id, current)
-                unresolved += 1
+                logger.error("startup_reconcile: trade %d order %s not found via CLI", trade_id, current)
+                if await _is_position_class(legs_json):
+                    unresolved_position += 1
+                else:
+                    unresolved_transient += 1
                 continue
 
             # Invariant (§3.2): filled_qty is monotonic. Alpaca never
@@ -350,7 +380,10 @@ async def startup_reconcile(deps: Deps, conn: aiosqlite.Connection) -> Reconcile
                 raw = await cli_bridge.get_order(raw["id"])
                 cancelled_working += 1
                 if raw is None:
-                    unresolved += 1
+                    if await _is_position_class(legs_json):
+                        unresolved_position += 1
+                    else:
+                        unresolved_transient += 1
                     continue
                 filled_qty_new = max(filled_qty, int(float(raw.get("filled_qty") or 0)))
                 outcome = _reconcile_classify(raw, qty, filled_qty_new)
@@ -360,7 +393,10 @@ async def startup_reconcile(deps: Deps, conn: aiosqlite.Connection) -> Reconcile
                     "startup_reconcile: trade %d order %s unresolved (status=%r)",
                     trade_id, raw["id"], raw.get("status"),
                 )
-                unresolved += 1
+                if await _is_position_class(legs_json):
+                    unresolved_position += 1
+                else:
+                    unresolved_transient += 1
                 continue
 
             new_status, reject_code = outcome
@@ -373,14 +409,25 @@ async def startup_reconcile(deps: Deps, conn: aiosqlite.Connection) -> Reconcile
             ))
             repaired += 1
         except cli_bridge.CliUnavailable as e:
-            logger.error("startup_reconcile: trade %d CLI unavailable -- unresolved: %s", trade_id, e)
-            unresolved += 1
+            logger.error("startup_reconcile: trade %d CLI unavailable: %s", trade_id, e)
+            if await _is_position_class(legs_json):
+                unresolved_position += 1
+            else:
+                unresolved_transient += 1
 
-    if unresolved > 0:
-        await storage_write.put_state(conn, "reduce_only", True)
+    if unresolved_position > 0:
+        # Separate key from "reduce_only" (docs/phase1_premarket_execution.md
+        # S2.4 step 6, revised): management_tick recomputes "reduce_only"
+        # from the greeks breach every cycle and would silently clobber a
+        # blanket write to that same key within one MANAGEMENT_INTERVAL_S.
+        # entries_halted is never written anywhere else, so it survives
+        # until an operator clears it (redeploy, or a future admin action --
+        # the API stays GET-only by design, see test_api_is_get_only).
+        await storage_write.put_state(conn, "entries_halted", True)
 
     return ReconcileReport(
-        inspected=inspected, repaired=repaired, unresolved=unresolved, cancelled_working=cancelled_working,
+        inspected=inspected, repaired=repaired, unresolved_transient=unresolved_transient,
+        unresolved_position=unresolved_position, cancelled_working=cancelled_working,
     )
 
 
@@ -736,7 +783,14 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
 
         aggregate_risk = await _open_defined_risk(conn)  # running local -- docs/day3_llm_plan.md S1a/G6
 
-        reduce_only = bool(await _read_state_value(conn, "reduce_only") or False)
+        # entries_halted (startup_reconcile's position-class fail-safe) is a
+        # separate key from reduce_only (management_tick's greeks-breach
+        # fail-safe) so neither can clobber the other -- OR them together at
+        # the one read site the gate actually consults.
+        reduce_only = (
+            bool(await _read_state_value(conn, "reduce_only") or False)
+            or bool(await _read_state_value(conn, "entries_halted") or False)
+        )
         now_utc = deps.clock.now()
         past_entry_cutoff = now_utc >= session.cutoff_utc
         day_pnl_pct = float((account.equity - account.last_equity) / account.last_equity) if account.last_equity else 0.0
@@ -961,6 +1015,7 @@ def _next_action(session: SessionPlan, now_utc: datetime, completed: int) -> tup
 
 async def _publish_status(conn: aiosqlite.Connection, deps: Deps, session: SessionPlan, now_utc: datetime, completed: int) -> None:
     label, at_utc = _next_action(session, now_utc, completed)
+    entries_halted = bool(await _read_state_value(conn, "entries_halted") or False)
     await storage_write.put_state(conn, "status", {
         "live": not deps.settings.dry_run,
         "llm_enabled": deps.llm_enabled,
@@ -974,6 +1029,10 @@ async def _publish_status(conn: aiosqlite.Connection, deps: Deps, session: Sessi
         "next_action": label,
         "next_action_utc": at_utc.isoformat(),
         "now_utc": now_utc.isoformat(),
+        # docs/phase1_premarket_execution.md S2.4 step 6: a halt nobody can
+        # see is a halt nobody can clear. Cleared only by redeploy or a
+        # future operator action -- the API stays GET-only by design.
+        "entries_halted": entries_halted,
     })
 
 
@@ -1070,9 +1129,11 @@ async def main() -> None:
             )
         logger.info("startup reconcile: %s", report)
     except Exception:
-        logger.exception("startup reconcile FAILED -- entering reduce_only for safety")
-        async with storage_db.connect(settings.db_path) as conn:
-            await storage_write.put_state(conn, "reduce_only", True)
+        # A raise or a timeout means we never confirmed anything either way
+        # -- transient, not a confirmed position, so this must never halt
+        # entries or block boot (docs/phase1_premarket_execution.md S2.4 step
+        # 6, revised). The API is what judges see; log loudly and boot.
+        logger.exception("startup reconcile FAILED -- booting anyway, no entries halt")
 
     await asyncio.gather(serve_api(settings), supervised_loop(deps))
 
