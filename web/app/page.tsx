@@ -1,4 +1,5 @@
 import { ArrowLeftRight, Coins, Database, Globe, LayoutDashboard, MessagesSquare, Server, Settings } from "lucide-react";
+import Image from "next/image";
 import { AccountVitals } from "@/components/AccountVitals";
 import { AgentConfigPanel } from "@/components/AgentConfigPanel";
 import { AssignmentPanel } from "@/components/AssignmentPanel";
@@ -148,8 +149,9 @@ export default async function Page() {
       <div className="mx-auto w-full max-w-5xl">
         <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
           <h1 className="text-xl font-semibold sm:text-2xl">Autonomous Debate Trading Agent</h1>
-          <span className="text-sm text-muted-foreground">
+          <span className="flex items-center gap-2 text-sm text-muted-foreground">
             <LiveRefresh />
+            <Image src="/logo.png" alt="" width={28} height={28} className="rounded-md" />
           </span>
         </div>
         <StatusBar status={status} />
