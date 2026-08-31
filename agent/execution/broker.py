@@ -11,7 +11,7 @@ from alpaca.trading.enums import OrderClass, OrderSide, PositionIntent, TimeInFo
 from alpaca.trading.requests import LimitOrderRequest, OptionLegRequest
 
 from agent.execution.alpaca_client import AlpacaClients
-from agent.schemas.execution import Intent, OrderStatus, RejectCode, SpreadPlan
+from agent.schemas.execution import ALPACA_STATUS_MAP, Intent, OrderStatus, RejectCode, SpreadPlan
 
 # alpaca.* imports confined to this module, alpaca_client.py, and
 # tools/market_data.py -- enforced by agent/tests/test_no_blocking_sdk.py.
@@ -114,21 +114,13 @@ def _build_close_request(symbol: str, qty: int, side: Literal["BUY", "SELL"],
     )
 
 
-_STATUS_MAP: dict[str, OrderStatus] = {
-    "new": OrderStatus.NEW,
-    "pending_new": OrderStatus.NEW,
-    "accepted": OrderStatus.ACCEPTED,
-    "partially_filled": OrderStatus.PARTIALLY_FILLED,
-    "filled": OrderStatus.FILLED,
-    "canceled": OrderStatus.CANCELED,
-    "replaced": OrderStatus.REPLACED,
-    "rejected": OrderStatus.REJECTED,
-}
-
-
 def _order_state_from_sdk(order: Any) -> OrderState:
     raw_status = order.status.value if hasattr(order.status, "value") else str(order.status)
-    status = _STATUS_MAP.get(raw_status, OrderStatus.ACCEPTED)
+    # SDK path keeps its original default: an unmapped status is coerced to
+    # ACCEPTED here so live trading behaviour is unchanged. The reconcile
+    # (main.py's startup_reconcile) uses ALPACA_STATUS_MAP directly and
+    # treats an unmapped status as unresolved instead -- see §3.3.
+    status = ALPACA_STATUS_MAP.get(raw_status, OrderStatus.ACCEPTED)
     return OrderState(
         order_id=str(order.id),
         status=status,

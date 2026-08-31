@@ -180,6 +180,37 @@ async def test_no_exception_escapes() -> None:
     assert result.reject_code == RejectCode.UNKNOWN
 
 
+async def test_walk_persists_order_id_on_submit_and_every_replace() -> None:
+    broker = MockBroker([
+        _state("o1", OrderStatus.NEW),
+        _state("o1", OrderStatus.NEW),  # first replace response (id gets minted)
+        _state("o1", OrderStatus.FILLED, filled_qty=1, fill_avg_price=Decimal("2.11")),
+    ])
+    calls: list[tuple[str, int]] = []
+
+    async def sink(order_id: str, step: int) -> None:
+        calls.append((order_id, step))
+
+    result = await walk_to_fill(broker, _debit_plan("2.06", "2.40"), 1, clock=FakeClock(), on_order_id=sink)
+
+    assert result.status == "FILLED"
+    assert calls[0] == ("o1", 0)              # SUBMIT -- step 0
+    assert calls[-1] == (result.order_id, 1)  # last REPLACE -- newest minted id
+
+
+async def test_on_order_id_sink_failure_does_not_abort_walk() -> None:
+    broker = MockBroker([
+        _state("o1", OrderStatus.NEW),
+        _state("o1", OrderStatus.FILLED, filled_qty=6, fill_avg_price=Decimal("-0.90")),
+    ])
+
+    async def bad_sink(order_id: str, step: int) -> None:
+        raise RuntimeError("db is down")
+
+    result = await walk_to_fill(broker, _credit_plan("-0.90", "-0.75"), 6, clock=FakeClock(), on_order_id=bad_sink)
+    assert result.status == "FILLED"
+
+
 def test_mleg_request_shape() -> None:
     plan = _credit_plan("-0.90", "-0.75")
     req = _build_mleg_request(plan, 6, Decimal("-0.90"))

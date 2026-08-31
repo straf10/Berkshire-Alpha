@@ -109,6 +109,20 @@ async def list_orders(*, status: str = "open") -> list[dict[str, Any]]:
     return await _run(["order", "list", "--status", status])
 
 
+async def get_order(order_id: str) -> dict[str, Any] | None:
+    """`alpaca order get --order-id <id>` -- note the FLAG, not a positional
+    (verified against the installed v0.0.14 binary). Returns None when the CLI
+    reports the order does not exist; raises CliUnavailable on any other
+    failure. Read-only: cli_bridge stays a pure GET surface, every write goes
+    through the SDK broker."""
+    try:
+        return await _run(["order", "get", "--order-id", order_id])
+    except CliUnavailable as e:
+        if "not found" in str(e).lower() or "404" in str(e):
+            return None
+        raise
+
+
 async def health() -> bool:
     """True only if get_account() succeeded, the account number matches the
     judged account, and options_approved_level >= 3. A lower level logs

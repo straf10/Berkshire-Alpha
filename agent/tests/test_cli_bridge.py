@@ -53,6 +53,42 @@ async def test_cli_bridge_raises_on_nonzero(monkeypatch: pytest.MonkeyPatch) -> 
         await cli_bridge._run(["account", "get"])
 
 
+async def test_get_order_uses_order_id_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    fixture = load_json("cli_order_mleg.json")
+    seen_args = None
+
+    async def fake_run(args, *, timeout: float = 10.0):
+        nonlocal seen_args
+        seen_args = args
+        return fixture
+
+    monkeypatch.setattr(cli_bridge, "_run", fake_run)
+
+    raw = await cli_bridge.get_order("abc-123")
+
+    assert seen_args == ["order", "get", "--order-id", "abc-123"]
+    assert raw == fixture
+
+
+async def test_get_order_returns_none_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_run(args, *, timeout: float = 10.0):
+        raise cli_bridge.CliUnavailable("order not found: abc-123")
+
+    monkeypatch.setattr(cli_bridge, "_run", fake_run)
+
+    assert await cli_bridge.get_order("abc-123") is None
+
+
+async def test_get_order_raises_cli_unavailable_on_other_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_run(args, *, timeout: float = 10.0):
+        raise cli_bridge.CliUnavailable("some other CLI failure")
+
+    monkeypatch.setattr(cli_bridge, "_run", fake_run)
+
+    with pytest.raises(cli_bridge.CliUnavailable, match="some other CLI failure"):
+        await cli_bridge.get_order("abc-123")
+
+
 async def test_cli_bridge_raises_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli_bridge, "_run", _REAL_RUN)
     killed = False

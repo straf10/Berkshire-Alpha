@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Literal
+from typing import Awaitable, Callable, Literal
 
 from agent.config import (
     PARTIAL_FILL_MAX_POLL_S,
@@ -15,7 +16,11 @@ from agent.config import (
 from agent.execution.broker import BrokerPort, ClockPort
 from agent.schemas.execution import OrderStatus, RejectCode, SpreadPlan
 
+logger = logging.getLogger(__name__)
+
 _CENT = Decimal("0.01")
+
+OrderIdSink = Callable[[str, int], Awaitable[None]]   # (order_id, step)
 
 
 def _quantize_cent(x: Decimal) -> Decimal:
@@ -78,13 +83,16 @@ async def _poll_partial_until_terminal(
     return state
 
 
-async def walk_to_fill(broker: BrokerPort, plan: SpreadPlan, qty: int, *, clock: ClockPort) -> WalkResult:
+async def walk_to_fill(
+    broker: BrokerPort, plan: SpreadPlan, qty: int, *, clock: ClockPort,
+    on_order_id: OrderIdSink | None = None,
+) -> WalkResult:
     """Never raises -- every broker exception is caught, classified, and
     returned as a REJECTED result. An overnight crash loop would otherwise
     cost a full session."""
     events: list[WalkEvent] = []
     try:
-        return await _walk(broker, plan, qty, clock, events)
+        return await _walk(broker, plan, qty, clock, events, on_order_id)
     except Exception:  # noqa: BLE001 -- deliberate: no reject path may raise out of the loop
         return WalkResult(
             status="REJECTED", order_id=None, final_limit=None, fill_price=None,
@@ -92,8 +100,17 @@ async def walk_to_fill(broker: BrokerPort, plan: SpreadPlan, qty: int, *, clock:
         )
 
 
+async def _emit_order_id(on_order_id: OrderIdSink | None, order_id: str, step: int) -> None:
+    if on_order_id is not None:
+        try:
+            await on_order_id(order_id, step)
+        except Exception:
+            logger.exception("on_order_id sink failed at step %d -- walk continues", step)
+
+
 async def _walk(
-    broker: BrokerPort, plan: SpreadPlan, qty: int, clock: ClockPort, events: list[WalkEvent]
+    broker: BrokerPort, plan: SpreadPlan, qty: int, clock: ClockPort, events: list[WalkEvent],
+    on_order_id: OrderIdSink | None = None,
 ) -> WalkResult:
     # mid/natural come from the plan, computed once from the cached chain --
     # the walk does not re-quote (docs/day2_spine_plan.md Group 5).
@@ -105,6 +122,7 @@ async def _walk(
     state = await broker.submit_mleg(plan, qty, limit)
     order_id = state.order_id
     events.append(WalkEvent(ts=clock.now(), step=0, action="SUBMIT", order_id=order_id, limit=limit, status=state.status))
+    await _emit_order_id(on_order_id, order_id, 0)
 
     if state.status == OrderStatus.REJECTED:
         return WalkResult(
@@ -150,3 +168,4 @@ async def _walk(
         order_id = state.order_id  # replace mints a NEW id -- rebind every step
         step += 1
         events.append(WalkEvent(ts=clock.now(), step=step, action="REPLACE", order_id=order_id, limit=limit, status=state.status))
+        await _emit_order_id(on_order_id, order_id, step)

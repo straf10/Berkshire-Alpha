@@ -67,3 +67,8 @@ async def _migrate(conn: aiosqlite.Connection) -> None:
     debate_summary_cols = await _column_names(conn, "debate_summaries")
     if debate_summary_cols and "conviction" not in debate_summary_cols:
         await conn.execute("ALTER TABLE debate_summaries ADD COLUMN conviction REAL")
+
+    # P1-B (docs/phase1_premarket_execution.md S2.1): DEFAULT 0 is correct for
+    # every pre-existing row -- none were CLI-verified. No backfill needed.
+    if "cli_verified" not in await _column_names(conn, "trades"):
+        await conn.execute("ALTER TABLE trades ADD COLUMN cli_verified INTEGER NOT NULL DEFAULT 0")

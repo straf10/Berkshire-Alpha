@@ -47,6 +47,38 @@ class RejectCode(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
+# P1-B (docs/phase1_premarket_execution.md S2.4): the shared CLI/SDK status
+# vocabulary. schemas/ has no SDK imports, so both broker.py (SDK path) and
+# startup_reconcile (CLI path) share ONE map instead of two that can drift.
+# Extended past broker.py's original set with statuses the CLI schema lists
+# but the SDK path never produced. Everything not explicitly filled /
+# partially_filled / canceled / rejected maps to ACCEPTED ("still working")
+# -- the reconcile's cancel-and-reread path (§2.4 step 5a) self-corrects
+# regardless of whether the cancel itself succeeds against an
+# already-terminal-ish order. `expired` is the one exception: it is grouped
+# with canceled/rejected in the reconcile's own repair table, so it maps to
+# CANCELED rather than ACCEPTED.
+ALPACA_STATUS_MAP: Final[dict[str, OrderStatus]] = {
+    "new": OrderStatus.NEW,
+    "pending_new": OrderStatus.NEW,
+    "accepted": OrderStatus.ACCEPTED,
+    "partially_filled": OrderStatus.PARTIALLY_FILLED,
+    "filled": OrderStatus.FILLED,
+    "canceled": OrderStatus.CANCELED,
+    "replaced": OrderStatus.REPLACED,
+    "rejected": OrderStatus.REJECTED,
+    "expired": OrderStatus.CANCELED,
+    "done_for_day": OrderStatus.ACCEPTED,
+    "held": OrderStatus.ACCEPTED,
+    "pending_cancel": OrderStatus.ACCEPTED,
+    "pending_replace": OrderStatus.ACCEPTED,
+    "suspended": OrderStatus.ACCEPTED,
+    "calculated": OrderStatus.ACCEPTED,
+    "stopped": OrderStatus.ACCEPTED,
+    "accepted_for_bidding": OrderStatus.ACCEPTED,
+}
+
+
 STRUCTURE_IS_CREDIT: Final[dict[Structure, bool]] = {
     Structure.BULL_PUT_SPREAD: True,
     Structure.BEAR_CALL_SPREAD: True,

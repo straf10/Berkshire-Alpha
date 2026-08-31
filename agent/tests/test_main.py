@@ -837,6 +837,29 @@ async def test_aggregate_risk_partial_fill_weighted(tmp_path) -> None:
         assert await main_module._open_defined_risk(conn) == Decimal("500")
 
 
+async def test_open_trades_includes_partial_suspended(tmp_path) -> None:
+    """P1-B5 (docs/phase1_premarket_execution.md S2.5): a PARTIAL_SUSPENDED
+    row is a real open position -- exit_tick must see it, not just FILLED."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    async with storage_db.connect(db_path) as conn:
+        trade_id = await _seed_open_trade(
+            conn, symbol="SPY", structure="BULL_PUT_SPREAD", filled_qty=1,
+            entry_limit=Decimal("-0.90"), max_profit_per_spread=Decimal("90"),
+            legs=[
+                _closing_leg_dict("SPY260904P00100000", 100.0, "SELL", "SELL_TO_OPEN"),
+                _closing_leg_dict("SPY260904P00097000", 97.0, "BUY", "BUY_TO_OPEN"),
+            ],
+        )
+        await conn.execute("UPDATE trades SET status='PARTIAL_SUSPENDED' WHERE id=?", (trade_id,))
+        await conn.commit()
+
+        open_trades = await main_module._open_trades(conn)
+
+    assert len(open_trades) == 1
+    assert open_trades[0].trade_id == trade_id
+
+
 async def test_aggregate_risk_accumulates_in_cycle(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Two approvable candidates (SPY, then NVDA) in one scan_cycle; the
     aggregate cap is seeded so only the first fits -- the second must reject
