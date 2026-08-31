@@ -1,4 +1,4 @@
-import { ArrowLeftRight, LayoutDashboard, MessagesSquare, ScrollText } from "lucide-react";
+import { ArrowLeftRight, LayoutDashboard, ScrollText } from "lucide-react";
 import { AccountVitals } from "@/components/AccountVitals";
 import { AgentConfigPanel } from "@/components/AgentConfigPanel";
 import { AssignmentPanel } from "@/components/AssignmentPanel";
@@ -90,14 +90,7 @@ export default async function Page() {
           <AccountVitals account={account} history={equityHistory} sessionDate={status.session_date} />
           <GreeksGauges snapshot={greeksLatest} />
           <Funnel funnel={funnel} />
-
-          <div className="mb-6">
-            <p className="mb-2 flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              <MessagesSquare className="size-3.5" />
-              Reasoning feed
-            </p>
-            <ReasoningFeed decisions={decisions} />
-          </div>
+          <ReasoningFeed decisions={decisions} />
         </TabsContent>
 
         <TabsContent value="trades">
@@ -109,14 +102,7 @@ export default async function Page() {
         </TabsContent>
 
         <TabsContent value="logs">
-          <div className="mb-6">
-            <p className="mb-2 flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              <ScrollText className="size-3.5" />
-              Decisions log
-            </p>
-            <DecisionsLog decisions={decisions} />
-          </div>
-
+          <DecisionsLog decisions={decisions} />
           <AgentConfigPanel config={config} />
         </TabsContent>
       </Tabs>

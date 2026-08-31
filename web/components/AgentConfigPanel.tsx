@@ -27,8 +27,8 @@ export function AgentConfigPanel({ config }: { config: AgentConfig | null }) {
   if (config === null) return null;
   return (
     <Collapsible className="mb-6 rounded-md border border-border">
-      <CollapsibleTrigger className="flex w-full cursor-pointer select-none items-center gap-1.5 p-3 text-left font-semibold">
-        <Settings className="size-4" />
+      <CollapsibleTrigger className="flex w-full cursor-pointer select-none items-center gap-1.5 p-3 text-left text-sm font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground">
+        <Settings className="size-3.5" />
         Agent configuration (hardcoded)
       </CollapsibleTrigger>
       <CollapsibleContent>

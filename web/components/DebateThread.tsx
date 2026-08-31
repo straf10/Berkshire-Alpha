@@ -36,7 +36,21 @@ export function DebateThread({
   turns: DebateTurn[];
   summary: DebateSummary | null;
 }) {
-  if (turns.length === 0 && summary === null) return null;
+  const header = (
+    <p className="mb-1 flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+      <Swords className="size-3.5" />
+      Debate
+    </p>
+  );
+
+  if (turns.length === 0 && summary === null) {
+    return (
+      <div>
+        {header}
+        <p className="text-sm text-muted-foreground">No debate — quant-only decision.</p>
+      </div>
+    );
+  }
 
   const byRound = new Map<number, DebateTurn[]>();
   for (const t of turns) {
@@ -47,10 +61,7 @@ export function DebateThread({
 
   return (
     <div>
-      <p className="mb-1 flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-        <Swords className="size-3.5" />
-        Bull / Bear debate
-      </p>
+      {header}
       <div className="space-y-2">
         {rounds.map((r) => (
           <div key={r} className="grid gap-2 sm:grid-cols-2">
