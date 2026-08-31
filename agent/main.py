@@ -56,7 +56,13 @@ from agent.schemas.execution import (
     SpreadPlan,
     Structure,
 )
-from agent.session import SessionPlan, current_or_next_session, is_unwind_triggered, seconds_until_next_boundary
+from agent.session import (
+    SessionPlan,
+    current_or_next_session,
+    is_unwind_triggered,
+    minute_bar_window,
+    seconds_until_next_boundary,
+)
 from agent.storage import db as storage_db
 from agent.storage import write as storage_write
 from agent.strategy.regime import select
@@ -790,8 +796,9 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
             print(f"HALT: CLI unavailable -- {e}")
             return decisions
 
+        bar_window = minute_bar_window(session, deps.clock.now())
         bars = await _tracked(conn, "ALPACA_MARKET_DATA", "fetch_universe_bars", fetch_universe_bars(
-            deps.clients, UNIVERSE, session.session_date, session.last_session_utc, deps.feed
+            deps.clients, UNIVERSE, session.session_date, bar_window, deps.feed
         ))
         spots = {sym: bars.minute[sym][-1].close for sym in UNIVERSE if bars.minute.get(sym)}
         await storage_write.put_state(conn, "spots", spots)
@@ -1068,10 +1075,16 @@ def _next_action(session: SessionPlan, now_utc: datetime, completed: int) -> tup
     exactly so this can never drift out of sync with what actually runs."""
     if not session.is_open:
         return "market open", session.open_utc
-    if now_utc < session.scan_1_utc and completed < 1:
-        return "entry scan 1", session.scan_1_utc
-    if now_utc < session.scan_2_utc and completed < 2:
-        return "entry scan 2", session.scan_2_utc
+    # Keyed on `completed` alone, exactly like trading_loop's own branches. The
+    # earlier `now_utc < scan_N_utc and completed < N` form fell through to the
+    # scan_2 branch the moment the clock passed scan_1 with the scan still
+    # in-flight, so on 2026-08-31 the dashboard read "entry scan 2 @ 18:00"
+    # while scan_1 was actually running -- display-only, but it is what made
+    # the operator think nothing was happening (memory.md, Day-1 post-mortem).
+    if completed < 1:
+        return "entry scan 1", max(session.scan_1_utc, now_utc)
+    if completed < 2:
+        return "entry scan 2", max(session.scan_2_utc, now_utc)
     return "management tick", now_utc + timedelta(seconds=MANAGEMENT_INTERVAL_S)
 
 

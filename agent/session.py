@@ -96,6 +96,26 @@ async def current_or_next_session(clients: AlpacaClients) -> SessionPlan:
     )
 
 
+def minute_bar_window(session: SessionPlan, now_utc: datetime) -> tuple[datetime, datetime]:
+    """The window fetch_universe_bars pulls minute bars over.
+
+    plan.md describes VWAP deviation as an *intraday* trend baseline and the
+    quant snapshot's spot as the current price, so while the session is open
+    that window is this session's open -> now. Passing last_session_utc
+    unconditionally (the behaviour before 2026-08-31) meant both entry scans
+    computed VWAP, VWAP deviation and spot from YESTERDAY's tape: identical
+    inputs at 14:15 and 18:00 UTC, hence identical decisions, and a spot up to
+    a full session stale (memory.md, Day-1 post-mortem).
+
+    Closed, or at/before the open (a pre-market `--once` run), there is no
+    intraday tape to read yet and the most recent completed session stands in
+    -- which is also what keeps the NO_MINUTE_BARS guard from dropping the
+    whole universe outside RTH."""
+    if session.is_open and now_utc > session.open_utc:
+        return (session.open_utc, now_utc)
+    return session.last_session_utc
+
+
 _UNWIND_UTC = _to_utc(datetime(UNWIND_DATE.year, UNWIND_DATE.month, UNWIND_DATE.day, UNWIND_ET_HOUR, UNWIND_ET_MINUTE))
 
 

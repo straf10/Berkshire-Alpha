@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -271,6 +272,39 @@ async def test_full_happy_path_produces_plan() -> None:
     assert outcome.mode == "llm"
     assert outcome.artifacts.proposal_row.accepted is True
     assert len(outcome.artifacts.risk_rows) == 3
+
+
+async def test_trader_failure_falls_back_to_deterministic_strikes() -> None:
+    """Day-1 post-mortem (2026-08-31): 6/6 debated candidates died at
+    STRUCTURE_MISMATCH and the session produced no trades. A trader model that
+    cannot format two strikes now hands strike selection to
+    spread_builder.build() and the candidate continues to the risk team and the
+    gate, recorded as mode='llm-fallback' with the model's failure kept in the
+    proposal row."""
+    llm = ScriptedLlm()
+    hallucinated = _proposal().model_copy(update={"underlying": UNIVERSE[0], "legs": [
+        OptionLegProposal(contract_type="PUT", side="SELL", strike_price=999.0, ratio_qty=1),
+        OptionLegProposal(contract_type="PUT", side="BUY", strike_price=997.0, ratio_qty=1),
+    ]})
+    llm.script("TRADER", [hallucinated, hallucinated])
+    candidates = [_candidate(UNIVERSE[0])]
+    chains = FakeChains({UNIVERSE[0]: _put_credit_chain(UNIVERSE[0])})
+    sinks = {UNIVERSE[0]: []}
+
+    outcomes = await run_llm_pipeline(
+        llm, candidates, chains, {}, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
+        sem=asyncio.Semaphore(6), sinks=sinks,
+    )
+    outcome = outcomes[0]
+    assert outcome.reason == "OK"
+    assert outcome.plan is not None
+    assert outcome.mode == "llm-fallback"
+    assert llm.calls.count("TRADER") == 2                 # the single retry is still the budget
+    assert len(outcome.artifacts.risk_rows) == 3          # risk team still votes
+    row = json.loads(outcome.artifacts.proposal_row.proposal_json)
+    assert row["source"] == "spread_builder.build"
+    assert row["fallback_from"] == "STRIKE_NOT_IN_CHAIN"
+    assert {leg["strike_price"] for leg in row["legs"]} == {100.0, 97.0}
 
 
 async def test_mode_degraded_when_analyst_dropped() -> None:

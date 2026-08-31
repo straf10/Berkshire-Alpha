@@ -8,7 +8,7 @@ export interface Decision {
   cycle_id: string;
   session_date: string;
   symbol: string;
-  mode: string; // 'llm' | 'llm-degraded' | 'quant-only'
+  mode: string; // 'llm' | 'llm-degraded' | 'llm-fallback' | 'quant-only'
   regime: string; // CREDIT | DEBIT | NO_TRADE
   structure: string | null;
   action: string; // ENTER | NO_TRADE | HALT

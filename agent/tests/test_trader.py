@@ -7,7 +7,14 @@ import pytest
 
 from agent.agents.evidence import EvidenceBundle
 from agent.agents.researchers import DebateResult, Verdict
-from agent.agents.trader import ProposalFailure, propose, strike_table, validate_proposal
+from agent.agents.trader import (
+    ProposalFailure,
+    ProposalOutcome,
+    _infer_structure,
+    propose,
+    strike_table,
+    validate_proposal,
+)
 from agent.schemas.execution import Regime, SpreadPlan, Structure
 from agent.schemas.llm import DebateNodeOutput, OptionLegProposal, SpreadProposal
 from agent.schemas.market import ChainSnapshot, OptionQuote, QuantSnapshot
@@ -104,14 +111,55 @@ class FakeLlm:
         return item
 
 
-async def test_hallucinated_strike_one_retry_then_drop() -> None:
+async def test_hallucinated_strike_one_retry_then_deterministic_fallback() -> None:
+    """Two bad proposals still buy exactly one retry -- but the candidate is no
+    longer dropped: spread_builder.build() picks the strikes, and the outcome
+    says so. Day-1 post-mortem (2026-08-31): a formatting failure here was the
+    single reason the agent traded nothing all session."""
     llm = FakeLlm()
     bad = _bull_put_proposal(sell_strike=999.0, buy_strike=97.0)
     llm.script("TRADER", [bad, bad])
     q, d = _snapshot(), _decision(Structure.BULL_PUT_SPREAD)
     result = await propose(llm, _bundle(q, d), _debate_result(), _PUT_CREDIT_CHAIN, TRADING_DAYS, sink=[])
-    assert result == ProposalFailure.STRIKE_NOT_IN_CHAIN
     assert llm.calls == 2
+    assert isinstance(result, ProposalOutcome)
+    assert result.proposal is None                                   # never a fabricated model response
+    assert result.fallback_from == ProposalFailure.STRIKE_NOT_IN_CHAIN
+    assert result.plan == build(q, d, _PUT_CREDIT_CHAIN)             # identical to the quant-only pick
+
+
+async def test_fallback_drops_candidate_when_builder_also_declines() -> None:
+    """An untradeable chain still ends in a real no-trade -- the fallback is a
+    second opinion, not a guarantee of a trade."""
+    llm = FakeLlm()
+    bad = _bull_put_proposal(sell_strike=999.0, buy_strike=97.0)
+    llm.script("TRADER", [bad, bad])
+    # No delta inside SHORT_DELTA_BAND, so build() returns
+    # NO_SHORT_STRIKE_IN_DELTA_BAND and there is nothing to fall back to.
+    chain = _chain([
+        _quote(97.0, "P", delta=-0.02, bid=0.05, ask=0.08),
+        _quote(100.0, "P", delta=-0.05, bid=0.10, ask=0.20),
+    ])
+    q, d = _snapshot(), _decision(Structure.BULL_PUT_SPREAD)
+    result = await propose(llm, _bundle(q, d), _debate_result(), chain, TRADING_DAYS, sink=[])
+    assert result == ProposalFailure.STRIKE_NOT_IN_CHAIN
+
+
+def test_infer_structure_covers_all_four_verticals() -> None:
+    """Regression, 2026-08-31: the call side of the ordering table was
+    inverted, so a correctly-formed BEAR_CALL_SPREAD read as a
+    BULL_CALL_SPREAD and every call-credit proposal failed validation as
+    STRUCTURE_MISMATCH no matter what the model proposed. Four of the six
+    candidates that reached the trader on Day 1 were bear call spreads."""
+    def legs(a_side, a_strike, b_side, b_strike, right):
+        return (
+            OptionLegProposal(contract_type=right, side=a_side, strike_price=a_strike, ratio_qty=1),
+            OptionLegProposal(contract_type=right, side=b_side, strike_price=b_strike, ratio_qty=1),
+        )
+    assert _infer_structure(legs("SELL", 95.0, "BUY", 100.0, "CALL")) == Structure.BEAR_CALL_SPREAD
+    assert _infer_structure(legs("BUY", 95.0, "SELL", 100.0, "CALL")) == Structure.BULL_CALL_SPREAD
+    assert _infer_structure(legs("SELL", 100.0, "BUY", 97.0, "PUT")) == Structure.BULL_PUT_SPREAD
+    assert _infer_structure(legs("BUY", 100.0, "SELL", 97.0, "PUT")) == Structure.BEAR_PUT_SPREAD
 
 
 def test_proposal_expiry_out_of_window() -> None:
