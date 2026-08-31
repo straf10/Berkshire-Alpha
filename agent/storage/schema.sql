@@ -47,7 +47,10 @@ CREATE TABLE IF NOT EXISTS trades (
   -- Day 3: the aggregate-defined-risk ledger. Alpaca reports each mleg leg as a
   -- separate position and never reports the spread's defined risk, so the only
   -- source for MAX_AGGREGATE_RISK is our own SpreadPlan at entry.
-  max_loss_per_spread REAL NOT NULL DEFAULT 0
+  max_loss_per_spread REAL NOT NULL DEFAULT 0,
+  -- P1-B: set to 1 only when this row's terminal state was confirmed against
+  -- the Alpaca CLI (`order get`), not merely inferred from our own walk result.
+  cli_verified    INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ix_trades_ts ON trades(ts_utc DESC);
 CREATE INDEX IF NOT EXISTS ix_trades_open ON trades(closed_at) WHERE closed_at IS NULL;

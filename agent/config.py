@@ -134,6 +134,10 @@ EQUITY_LIQUIDATION_SLIP_PCT: Final[Decimal] = Decimal("0.01")
 ASSIGNMENT_ORDER_POLL_S: Final[float] = 30.0
 SHARES_PER_CONTRACT: Final[int] = 100
 
+# P1-B startup reconcile.
+RECONCILE_MAX_S: Final[float] = 60.0        # whole-routine wall-clock ceiling
+RECONCILE_MAX_CHAIN_HOPS: Final[int] = 32   # replace-chain follow limit
+
 
 @dataclass(frozen=True)
 class Settings:

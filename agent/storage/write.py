@@ -57,6 +57,8 @@ class TradeRow:
     realized_pnl: Decimal | None = None
     # Day 3 (docs/day3_llm_plan.md S1a): the aggregate-defined-risk ledger.
     max_loss_per_spread: Decimal = Decimal("0")
+    # P1-B: terminal state confirmed against the CLI, not just our own walk result.
+    cli_verified: bool = False
 
 
 @dataclass(frozen=True)
@@ -196,8 +198,8 @@ async def insert_trade(conn: aiosqlite.Connection, t: TradeRow) -> int:
            (decision_id, ts_utc, symbol, structure, expiry, legs_json, qty,
             submitted_limit, final_limit, fill_price, filled_qty, walk_steps,
             order_id, final_order_id, status, reject_code, events_json,
-            closed_at, realized_pnl, max_loss_per_spread)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            closed_at, realized_pnl, max_loss_per_spread, cli_verified)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             t.decision_id, t.ts_utc, t.symbol, t.structure, t.expiry, t.legs_json, t.qty,
             float(t.submitted_limit),
@@ -206,7 +208,7 @@ async def insert_trade(conn: aiosqlite.Connection, t: TradeRow) -> int:
             t.filled_qty, t.walk_steps, t.order_id, t.final_order_id, t.status,
             t.reject_code, t.events_json, t.closed_at,
             float(t.realized_pnl) if t.realized_pnl is not None else None,
-            float(t.max_loss_per_spread),
+            float(t.max_loss_per_spread), int(t.cli_verified),
         ),
     )
     await conn.commit()
@@ -224,6 +226,53 @@ async def update_trade_result(conn: aiosqlite.Connection, trade_id: int, r: Walk
             float(r.fill_price) if r.fill_price is not None else None,
             r.filled_qty, r.steps, r.reject_code,
             json.dumps([e.__dict__ for e in r.events], default=str),
+            trade_id,
+        ),
+    )
+    await conn.commit()
+
+
+async def update_trade_order_id(
+    conn: aiosqlite.Connection, trade_id: int, *, order_id: str, step: int
+) -> None:
+    """Called on SUBMIT (step 0) and after EVERY replace_order. `order_id` is
+    written once at step 0 and never again -- it is the anchor of the replace
+    chain. `final_order_id` is overwritten on every step, because
+    replace_order mints a NEW id (order_manager.py:150) and only the newest id
+    is live at the broker. Commits per call: the whole point is that the row
+    survives a kill -9 between two steps."""
+    await conn.execute(
+        """UPDATE trades SET order_id = COALESCE(order_id, ?), final_order_id = ?,
+           walk_steps = ?, status = ? WHERE id = ?""",
+        (order_id, order_id, step, "ACCEPTED", trade_id),
+    )
+    await conn.commit()
+
+
+@dataclass(frozen=True)
+class TradeRepair:
+    status: str
+    final_order_id: str | None
+    final_limit: Decimal | None
+    fill_price: Decimal | None
+    filled_qty: int
+    walk_steps: int
+    reject_code: str | None
+    cli_verified: bool
+
+
+async def repair_trade(conn: aiosqlite.Connection, trade_id: int, r: TradeRepair) -> None:
+    """The ONLY writer used by startup_reconcile. Deliberately touches neither
+    `closed_at` nor `realized_pnl` -- an open entry position has no realized
+    P&L, and `close_trade` remains their sole writer (see §3.2)."""
+    await conn.execute(
+        """UPDATE trades SET status=?, final_order_id=?, final_limit=?, fill_price=?,
+           filled_qty=?, walk_steps=?, reject_code=?, cli_verified=? WHERE id=?""",
+        (
+            r.status, r.final_order_id,
+            float(r.final_limit) if r.final_limit is not None else None,
+            float(r.fill_price) if r.fill_price is not None else None,
+            r.filled_qty, r.walk_steps, r.reject_code, int(r.cli_verified),
             trade_id,
         ),
     )

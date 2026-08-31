@@ -9,6 +9,7 @@ __pycache__/
 *.db
 *.db-shm
 *.db-wal
+agent.db.pre-*
 .DS_Store
 memory.md
 CLAUDE.md

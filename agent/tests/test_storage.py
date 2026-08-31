@@ -363,6 +363,95 @@ async def test_assignment_event_allows_null_trade_id(tmp_path) -> None:
         assert event_id is not None
 
 
+async def test_migrate_adds_cli_verified_to_legacy_trades(tmp_path) -> None:
+    from agent.storage.db import _migrate
+
+    db_path = str(tmp_path / "legacy.db")
+    await _seed_legacy_db(db_path)  # a pre-P1-B trades table, no cli_verified column
+
+    async with connect(db_path) as conn:
+        await _migrate(conn)
+        await conn.commit()
+        cur = await conn.execute("PRAGMA table_info(trades)")
+        cols = [row[1] for row in await cur.fetchall()]
+        assert cols.count("cli_verified") == 1
+
+        cur = await conn.execute(
+            """INSERT INTO decisions (ts_utc, cycle_id, session_date, symbol, mode, regime,
+               structure, action, gate_reason, gate_detail, qty, equity_feed, earnings_armed,
+               quant_json, plan_json) VALUES ('t','c','2026-08-31','SPY','quant-only','CREDIT',
+               'BULL_PUT_SPREAD','ENTER','APPROVED','APPROVED',1,'iex',0,'{}',NULL)"""
+        )
+        decision_id = cur.lastrowid
+        await conn.execute(
+            """INSERT INTO trades (decision_id, ts_utc, symbol, structure, expiry, legs_json,
+               qty, submitted_limit, status, events_json) VALUES (?, 't', 'SPY', 'BULL_PUT_SPREAD',
+               '2026-09-04', '[]', 1, -0.9, 'NEW', '[]')""",
+            (decision_id,),
+        )
+        await conn.commit()
+        cur = await conn.execute("SELECT cli_verified FROM trades")
+        assert (await cur.fetchone())[0] == 0  # DEFAULT 0 -- correct for every pre-existing row
+
+        await _migrate(conn)  # idempotent
+        await conn.commit()
+        cur = await conn.execute("PRAGMA table_info(trades)")
+        cols = [row[1] for row in await cur.fetchall()]
+        assert cols.count("cli_verified") == 1
+
+
+async def test_update_trade_order_id_sets_order_id_once(tmp_path) -> None:
+    db_path = str(tmp_path / "agent.db")
+    await init_db(db_path)
+    async with connect(db_path) as conn:
+        decision_id = await write.insert_decision(conn, _decision_row())
+        trade_id = await write.insert_trade(conn, write.TradeRow(
+            decision_id=decision_id, ts_utc="t", symbol="SPY", structure="BULL_PUT_SPREAD",
+            expiry="2026-09-04", legs_json="[]", qty=1, submitted_limit=Decimal("-0.90"),
+        ))
+
+        await write.update_trade_order_id(conn, trade_id, order_id="o1", step=0)
+        await write.update_trade_order_id(conn, trade_id, order_id="o1-r1", step=1)
+
+        cur = await conn.execute(
+            "SELECT order_id, final_order_id, walk_steps, status FROM trades WHERE id=?", (trade_id,)
+        )
+        row = await cur.fetchone()
+
+    assert row[0] == "o1"        # written once at step 0, never overwritten
+    assert row[1] == "o1-r1"     # overwritten on every step -- the newest id is the live one
+    assert row[2] == 1
+    assert row[3] == "ACCEPTED"
+
+
+async def test_repair_trade_leaves_closed_at_and_realized_pnl_untouched(tmp_path) -> None:
+    db_path = str(tmp_path / "agent.db")
+    await init_db(db_path)
+    async with connect(db_path) as conn:
+        decision_id = await write.insert_decision(conn, _decision_row())
+        trade_id = await write.insert_trade(conn, write.TradeRow(
+            decision_id=decision_id, ts_utc="t", symbol="SPY", structure="BULL_PUT_SPREAD",
+            expiry="2026-09-04", legs_json="[]", qty=1, submitted_limit=Decimal("-0.90"),
+            order_id="o1", final_order_id="o1", status="ACCEPTED",
+        ))
+
+        await write.repair_trade(conn, trade_id, write.TradeRepair(
+            status="FILLED", final_order_id="o1", final_limit=Decimal("-0.90"),
+            fill_price=Decimal("-0.90"), filled_qty=1, walk_steps=0, reject_code=None, cli_verified=True,
+        ))
+
+        cur = await conn.execute(
+            "SELECT status, filled_qty, cli_verified, closed_at, realized_pnl FROM trades WHERE id=?", (trade_id,)
+        )
+        row = await cur.fetchone()
+
+    assert row[0] == "FILLED"
+    assert row[1] == 1
+    assert row[2] == 1
+    assert row[3] is None  # repair_trade never writes closed_at
+    assert row[4] is None  # or realized_pnl -- close_trade is their sole writer
+
+
 def test_money_boundary_is_explicit() -> None:
     write_src = (STORAGE_DIR / "write.py").read_text(encoding="utf-8")
     assert "float(" in write_src  # the Decimal -> REAL boundary lives here
