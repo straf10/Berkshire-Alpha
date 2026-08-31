@@ -30,7 +30,23 @@ async def connect(db_path: str) -> AsyncIterator[aiosqlite.Connection]:
             yield pg_conn  # type: ignore[misc]
         return
 
-    conn = await aiosqlite.connect(db_path)
+    # aiosqlite.Connection is a Thread subclass whose worker loop blocks on a
+    # plain queue.get() until close() sends it a stop sentinel -- close()
+    # skips that step entirely if _connection is ever None when it runs (see
+    # aiosqlite/core.py), and that thread is non-daemon, so any code path
+    # that abandons a connection without a clean close() hangs the WHOLE
+    # interpreter at exit waiting to join a thread that will never stop.
+    # Confirmed via faulthandler as the exact intermittent CI/local hang
+    # (~30-50% of runs) in the test suite -- pre-existing, unrelated to any
+    # of today's fixes. Marking it daemon must happen before connect()
+    # starts the thread (aiosqlite.connect() returns the not-yet-started
+    # Connection synchronously; awaiting it is what calls .start()), so a
+    # leaked connection can never again block process shutdown. Production
+    # runs Postgres (db_pg branch above) and is unaffected; SQLite is test/
+    # local-dev only pending the planned full Postgres migration.
+    raw_conn = aiosqlite.connect(db_path)
+    raw_conn.daemon = True
+    conn = await raw_conn
     conn.row_factory = aiosqlite.Row
     try:
         await conn.execute("PRAGMA busy_timeout=5000")
