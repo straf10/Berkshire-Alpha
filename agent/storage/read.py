@@ -215,6 +215,60 @@ async def llm_usage(conn: aiosqlite.Connection, session_date: str | None = None)
     return {"session_date": session_date, "totals": totals, "by_node_model": by_node_model}
 
 
+async def tool_usage(conn: aiosqlite.Connection, session_date: str | None = None) -> dict[str, Any]:
+    """Calls/latency/failures per (tool, endpoint) from tool_calls -- the
+    non-LLM counterpart to llm_usage. No decision_id link (most of these
+    calls happen outside any single decision's scope -- get_account,
+    list_positions, management-tick reads), so session_date filters on
+    ts_utc's YYYY-MM-DD date prefix instead of a decisions join."""
+    where = ""
+    params: tuple[Any, ...] = ()
+    if session_date is not None:
+        where = "WHERE ts_utc LIKE ?"
+        params = (f"{session_date}%",)
+
+    cur = await conn.execute(
+        f"""SELECT tool, endpoint,
+               COUNT(*) AS calls,
+               SUM(CASE WHEN ok = 0 THEN 1 ELSE 0 END) AS failures,
+               AVG(latency_ms) AS avg_latency_ms
+           FROM tool_calls {where}
+           GROUP BY tool, endpoint
+           ORDER BY calls DESC""",
+        params,
+    )
+    by_tool_endpoint = [dict(row) for row in await cur.fetchall()]
+
+    cur = await conn.execute(
+        f"""SELECT COUNT(*) AS calls,
+               SUM(CASE WHEN ok = 0 THEN 1 ELSE 0 END) AS failures
+           FROM tool_calls {where}""",
+        params,
+    )
+    totals = dict(await cur.fetchone())
+    totals["calls"] = totals["calls"] or 0
+    totals["failures"] = totals["failures"] or 0
+
+    for row in by_tool_endpoint:
+        row["failures"] = row["failures"] or 0
+        row["avg_latency_ms"] = row["avg_latency_ms"] or 0.0
+
+    return {"session_date": session_date, "totals": totals, "by_tool_endpoint": by_tool_endpoint}
+
+
+async def health_history(conn: aiosqlite.Connection, limit: int = 288) -> list[dict[str, Any]]:
+    """Most recent `limit` health_samples, oldest first -- the uptime strip's
+    data source. Default 288 matches one full trading day of 5-minute
+    management_tick samples (MANAGEMENT_INTERVAL_S), same bound-then-reverse
+    pattern as equity_history so cost doesn't grow with total history."""
+    cur = await conn.execute(
+        "SELECT ts_utc, ok FROM health_samples ORDER BY ts_utc DESC LIMIT ?", (limit,)
+    )
+    rows = [dict(row) for row in await cur.fetchall()]
+    rows.reverse()
+    return rows
+
+
 async def decision_chain(conn: aiosqlite.Connection, decision_id: int) -> dict[str, Any]:
     """decision + analyst_outputs + debates + debate_summary + proposal +
     risk_votes + trade + llm_calls -- the full reasoning chain in one request

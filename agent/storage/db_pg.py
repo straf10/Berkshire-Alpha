@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from contextlib import asynccontextmanager
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, AsyncIterator, Sequence
 
@@ -14,7 +15,7 @@ _SCHEMA_PATH = Path(__file__).parent / "schema_pg.sql"
 _HAS_ID = {
     "decisions", "trades", "greeks_snapshots", "assignment_events", "debates",
     "sentiment_snapshots", "llm_calls", "analyst_outputs", "debate_summaries",
-    "proposals", "risk_votes",
+    "proposals", "risk_votes", "tool_calls", "health_samples",
 }
 _INSERT_TABLE_RE = re.compile(r"(?is)^\s*INSERT\s+INTO\s+([a-zA-Z_][a-zA-Z0-9_]*)")
 
@@ -40,6 +41,16 @@ def _to_pg(sql: str) -> str:
         return f"${count}"
 
     return re.sub(r"\?", repl, sql)
+
+
+def _normalize(record: asyncpg.Record) -> dict[str, Any]:
+    """asyncpg maps Postgres NUMERIC (e.g. AVG() over an integer column) to
+    Decimal, where SQLite's equivalent query returns a plain float -- read.py
+    is written backend-agnostic and never expects a Decimal from a query
+    that isn't touching a money column stored as REAL, so this normalizes
+    at the adapter boundary rather than pushing a float() cast into read.py
+    (which test_money_boundary_is_explicit reserves for write.py alone)."""
+    return {k: (float(v) if isinstance(v, Decimal) else v) for k, v in record.items()}
 
 
 class _PgCursor:
@@ -74,7 +85,7 @@ class PgConnection:
         stripped = sql.strip().upper()
         if stripped.startswith("SELECT") or stripped.startswith("WITH"):
             records = await self._raw.fetch(pg_sql, *params)
-            return _PgCursor(records=records)
+            return _PgCursor(records=[_normalize(r) for r in records])
 
         await self._raw.execute(pg_sql, *params)
         return _PgCursor()

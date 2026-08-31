@@ -159,3 +159,22 @@ CREATE INDEX IF NOT EXISTS ix_risk_votes_decision ON risk_votes(decision_id);
 CREATE INDEX IF NOT EXISTS ix_debates_decision   ON debates(decision_id);
 CREATE INDEX IF NOT EXISTS ix_llm_calls_decision ON llm_calls(decision_id);
 CREATE INDEX IF NOT EXISTS ix_llm_calls_ts       ON llm_calls(ts_utc);
+
+CREATE TABLE IF NOT EXISTS tool_calls (
+  id         SERIAL PRIMARY KEY,
+  ts_utc     TEXT    NOT NULL,
+  tool       TEXT    NOT NULL,
+  endpoint   TEXT    NOT NULL,
+  ok         INTEGER NOT NULL,
+  latency_ms INTEGER NOT NULL,
+  error      TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_tool_calls_ts   ON tool_calls(ts_utc DESC);
+CREATE INDEX IF NOT EXISTS ix_tool_calls_tool ON tool_calls(tool);
+
+CREATE TABLE IF NOT EXISTS health_samples (
+  id      SERIAL PRIMARY KEY,
+  ts_utc  TEXT    NOT NULL,
+  ok      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_health_samples_ts ON health_samples(ts_utc DESC);

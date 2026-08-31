@@ -163,6 +163,22 @@ class AssignmentEventRow:
 
 
 @dataclass(frozen=True)
+class ToolCallRow:
+    ts_utc: str
+    tool: str
+    endpoint: str
+    ok: bool
+    latency_ms: int
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class HealthSampleRow:
+    ts_utc: str
+    ok: bool
+
+
+@dataclass(frozen=True)
 class GreeksRow:
     ts_utc: str
     equity: Decimal
@@ -277,6 +293,27 @@ async def repair_trade(conn: aiosqlite.Connection, trade_id: int, r: TradeRepair
         ),
     )
     await conn.commit()
+
+
+async def insert_tool_call(conn: aiosqlite.Connection, t: ToolCallRow) -> int:
+    cur = await conn.execute(
+        """INSERT INTO tool_calls (ts_utc, tool, endpoint, ok, latency_ms, error)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (t.ts_utc, t.tool, t.endpoint, int(t.ok), t.latency_ms, t.error),
+    )
+    await conn.commit()
+    assert cur.lastrowid is not None
+    return cur.lastrowid
+
+
+async def insert_health_sample(conn: aiosqlite.Connection, h: HealthSampleRow) -> int:
+    cur = await conn.execute(
+        "INSERT INTO health_samples (ts_utc, ok) VALUES (?, ?)",
+        (h.ts_utc, int(h.ok)),
+    )
+    await conn.commit()
+    assert cur.lastrowid is not None
+    return cur.lastrowid
 
 
 async def insert_greeks_snapshot(conn: aiosqlite.Connection, g: GreeksRow) -> int:

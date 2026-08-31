@@ -6,6 +6,7 @@ import dataclasses
 import json
 import logging
 import os
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -68,6 +69,42 @@ from agent.tools.quant import compute_all
 from agent.tools.reddit import MentionSignal, PrawReddit, mention_signals
 
 logger = logging.getLogger(__name__)
+
+
+async def _timed(coro: Any) -> tuple[Any, int, str | None]:
+    """Runs one coroutine, returning (result, latency_ms, error_message)
+    instead of raising -- never touches a DB connection itself, so several
+    of these can run concurrently under asyncio.gather and the caller logs
+    tool_calls for each sequentially afterward, rather than racing each
+    other (or a coroutine's own conn use) on a shared connection. Pairs with
+    _tracked below for call sites where only one coroutine in the batch
+    needs tracking and there's no concurrent conn access to worry about."""
+    t0 = time.monotonic()
+    try:
+        result = await coro
+        return result, int((time.monotonic() - t0) * 1000), None
+    except Exception as e:
+        return None, int((time.monotonic() - t0) * 1000), str(e)[:500]
+
+
+async def _tracked(conn: aiosqlite.Connection, tool: str, endpoint: str, coro: Any) -> Any:
+    """Times one non-LLM tool call and logs it to tool_calls (dashboard
+    /tools/usage). Every call site here already has `conn` open for its own
+    writes, so this stays a thin wrapper rather than threading DB access
+    into agent/tools/* or agent/execution/cli_bridge.py -- neither needs to
+    know it's being measured, and their own unit tests are unaffected."""
+    t0 = time.monotonic()
+    error: str | None = None
+    try:
+        return await coro
+    except Exception as e:
+        error = str(e)[:500]
+        raise
+    finally:
+        await storage_write.insert_tool_call(conn, storage_write.ToolCallRow(
+            ts_utc=datetime.now(timezone.utc).isoformat(), tool=tool, endpoint=endpoint,
+            ok=error is None, latency_ms=int((time.monotonic() - t0) * 1000), error=error,
+        ))
 
 
 @dataclass
@@ -528,7 +565,7 @@ async def exit_tick(
         return
 
     occ_symbols = [leg.occ_symbol for t in open_trades for leg in t.legs]
-    quotes = await fetch_leg_snapshots(deps.clients, occ_symbols)
+    quotes = await _tracked(conn, "ALPACA_MARKET_DATA", "fetch_leg_snapshots", fetch_leg_snapshots(deps.clients, occ_symbols))
     unwind = is_unwind_triggered(deps.clock.now())
 
     for trade in open_trades:
@@ -740,7 +777,7 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
 
     async with storage_db.connect(deps.settings.db_path) as conn:
         try:
-            account = await cli_bridge.get_account()
+            account = await _tracked(conn, "ALPACA_CLI", "get_account", cli_bridge.get_account())
         except cli_bridge.CliUnavailable as e:
             row = storage_write.DecisionRow(
                 ts_utc=ts_utc, cycle_id=cycle_id, session_date=session.session_date.isoformat(),
@@ -753,9 +790,9 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
             print(f"HALT: CLI unavailable -- {e}")
             return decisions
 
-        bars = await fetch_universe_bars(
+        bars = await _tracked(conn, "ALPACA_MARKET_DATA", "fetch_universe_bars", fetch_universe_bars(
             deps.clients, UNIVERSE, session.session_date, session.last_session_utc, deps.feed
-        )
+        ))
         spots = {sym: bars.minute[sym][-1].close for sym in UNIVERSE if bars.minute.get(sym)}
         await storage_write.put_state(conn, "spots", spots)
 
@@ -776,7 +813,7 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
         candidates = shortlist(snapshots, assigned_regimes, skew_thresh)
         shortlisted_symbols = {c.snapshot.symbol for c in candidates}
 
-        positions = await cli_bridge.list_positions()
+        positions = await _tracked(conn, "ALPACA_CLI", "list_positions", cli_bridge.list_positions())
         exposures = await build_exposures(positions, deps.clients, spots)
         portfolio = aggregate(exposures, account.equity)
         open_underlyings = frozenset(underlying for underlying, _ in portfolio.position_keys)
@@ -817,10 +854,29 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
         )
         if run_llm_this_cycle:
             since = now_utc - timedelta(hours=NEWS_LOOKBACK_H)
-            news_by_symbol, mentions_by_symbol = await asyncio.gather(
-                fetch_headlines(deps.clients, UNIVERSE, since),
-                _fetch_reddit(deps, conn),
+            # fetch_headlines and _fetch_reddit run concurrently under gather, and
+            # _fetch_reddit also touches `conn` internally -- _timed() below never
+            # touches conn itself, so both tool_calls rows get written sequentially
+            # AFTER the gather resolves instead of racing each other (or racing
+            # _fetch_reddit's own conn use) on the one shared connection.
+            (news_by_symbol, news_latency_ms, news_error), (mentions_by_symbol, reddit_latency_ms, reddit_error) = (
+                await asyncio.gather(
+                    _timed(fetch_headlines(deps.clients, UNIVERSE, since)),
+                    _timed(_fetch_reddit(deps, conn)),
+                )
             )
+            await storage_write.insert_tool_call(conn, storage_write.ToolCallRow(
+                ts_utc=datetime.now(timezone.utc).isoformat(), tool="NEWS", endpoint="fetch_headlines",
+                ok=news_error is None, latency_ms=news_latency_ms, error=news_error,
+            ))
+            await storage_write.insert_tool_call(conn, storage_write.ToolCallRow(
+                ts_utc=datetime.now(timezone.utc).isoformat(), tool="REDDIT", endpoint="mention_signals",
+                ok=reddit_error is None, latency_ms=reddit_latency_ms, error=reddit_error,
+            ))
+            if news_error is not None:
+                raise RuntimeError(f"fetch_headlines failed: {news_error}") from None
+            if reddit_error is not None:
+                raise RuntimeError(f"_fetch_reddit failed: {reddit_error}") from None
             llm_client = _build_llm_client(deps.http, conn, budget, deps.settings)
             sem = asyncio.Semaphore(LLM_SEMAPHORE_LIMIT)
             sinks: dict[str, list[int]] = {c.snapshot.symbol: [] for c in candidates}
@@ -969,15 +1025,18 @@ async def management_tick(deps: Deps, session: SessionPlan) -> None:
     ceiling halts new entries only, never management."""
     async with storage_db.connect(deps.settings.db_path) as conn:
         try:
-            account = await cli_bridge.get_account()
-            positions = await cli_bridge.list_positions()
+            account = await _tracked(conn, "ALPACA_CLI", "get_account", cli_bridge.get_account())
+            positions = await _tracked(conn, "ALPACA_CLI", "list_positions", cli_bridge.list_positions())
         except cli_bridge.CliUnavailable as e:
             logger.error("management_tick: CLI unavailable: %s", e)
+            await storage_write.insert_health_sample(
+                conn, storage_write.HealthSampleRow(ts_utc=datetime.now(timezone.utc).isoformat(), ok=False)
+            )
             return
 
         assignment = await assignment_tick(deps, session, conn, positions)
         if assignment.acted:
-            positions = await cli_bridge.list_positions()
+            positions = await _tracked(conn, "ALPACA_CLI", "list_positions", cli_bridge.list_positions())
 
         spots = await _read_state_value(conn, "spots") or {}
         exposures = await build_exposures(positions, deps.clients, spots)
@@ -998,6 +1057,9 @@ async def management_tick(deps: Deps, session: SessionPlan) -> None:
             "buying_power": str(account.buying_power), "cash": str(account.cash),
         })
         await storage_write.put_state(conn, "positions", [p.symbol for p in positions])
+        await storage_write.insert_health_sample(
+            conn, storage_write.HealthSampleRow(ts_utc=datetime.now(timezone.utc).isoformat(), ok=True)
+        )
 
 
 def _next_action(session: SessionPlan, now_utc: datetime, completed: int) -> tuple[str, datetime]:

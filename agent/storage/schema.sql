@@ -176,3 +176,30 @@ CREATE INDEX IF NOT EXISTS ix_risk_votes_decision ON risk_votes(decision_id);
 CREATE INDEX IF NOT EXISTS ix_debates_decision   ON debates(decision_id);
 CREATE INDEX IF NOT EXISTS ix_llm_calls_decision ON llm_calls(decision_id);
 CREATE INDEX IF NOT EXISTS ix_llm_calls_ts       ON llm_calls(ts_utc);
+
+-- Non-LLM tool calls: Alpaca market data, Alpaca CLI, News, Reddit. Not tied
+-- to a decision_id (unlike llm_calls) -- most of these (get_account,
+-- list_positions, management-tick reads) happen outside any single
+-- decision's scope, so session-scoping filters on ts_utc's date prefix
+-- instead (see read.py's tool_usage).
+CREATE TABLE IF NOT EXISTS tool_calls (
+  id         INTEGER PRIMARY KEY,
+  ts_utc     TEXT    NOT NULL,
+  tool       TEXT    NOT NULL,  -- ALPACA_MARKET_DATA | ALPACA_CLI | NEWS | REDDIT
+  endpoint   TEXT    NOT NULL,  -- function name / purpose, e.g. 'fetch_universe_bars', 'get_account'
+  ok         INTEGER NOT NULL,
+  latency_ms INTEGER NOT NULL,
+  error      TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_tool_calls_ts   ON tool_calls(ts_utc DESC);
+CREATE INDEX IF NOT EXISTS ix_tool_calls_tool ON tool_calls(tool);
+
+-- One row per periodic health check (written from management_tick), the
+-- uptime dashboard's data source (read.py's health_history) -- a persisted
+-- strip, not a client-side poll, so every visitor sees the same real history.
+CREATE TABLE IF NOT EXISTS health_samples (
+  id     INTEGER PRIMARY KEY,
+  ts_utc TEXT    NOT NULL,
+  ok     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_health_samples_ts ON health_samples(ts_utc DESC);

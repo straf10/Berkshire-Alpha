@@ -32,6 +32,8 @@ _TABLES_IN_ORDER = [
     "debate_summaries",
     "proposals",
     "risk_votes",
+    "tool_calls",
+    "health_samples",
 ]
 
 _HAS_SERIAL_ID = {t for t in _TABLES_IN_ORDER if t != "agent_state"}

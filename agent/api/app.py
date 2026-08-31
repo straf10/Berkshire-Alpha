@@ -114,6 +114,20 @@ async def llm_usage(session_date: str | None = None, conn: aiosqlite.Connection 
     return await read.llm_usage(conn, session_date)
 
 
+@app.get("/tools/usage")
+async def tools_usage(session_date: str | None = None, conn: aiosqlite.Connection = Depends(get_conn)) -> dict[str, Any]:
+    """Calls/latency/failures per non-LLM tool (Alpaca market data, Alpaca
+    CLI, News, Reddit) -- the counterpart to /llm/usage for tools that
+    aren't metered per-call, so counts/latency/failure-rate rather than cost."""
+    return await read.tool_usage(conn, session_date)
+
+
+@app.get("/health/history")
+async def health_history(limit: int = 288, conn: aiosqlite.Connection = Depends(get_conn)) -> list[dict[str, Any]]:
+    """Uptime strip data: recent health_samples, oldest first."""
+    return await read.health_history(conn, limit)
+
+
 def _jsonable(value: Any) -> Any:
     if isinstance(value, (Decimal, date)):
         return str(value)
