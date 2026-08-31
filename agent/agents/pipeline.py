@@ -92,7 +92,7 @@ class PipelineOutcome:
     symbol: str
     plan: SpreadPlan | None            # None => this candidate is a no-trade
     mode: str                          # 'llm' | 'llm-degraded'
-    reason: str                        # DEBATE_UNANIMOUS_DISAGREE | RISK_TEAM_VETO | ProposalFailure member | NOT_TOP_DEBATE_CANDIDATE | 'OK'
+    reason: str                        # RISK_TEAM_VETO | ProposalFailure member | NOT_TOP_DEBATE_CANDIDATE | 'OK'
     artifacts: PipelineArtifacts
     # main.py's DoD print line ('Analysts: ... score N.NN') reads this
     # directly rather than recomputing it from artifacts.analyst_rows, which
@@ -169,9 +169,11 @@ async def run_llm_pipeline(
     *, sem: asyncio.Semaphore, sinks: Mapping[str, list[int]],
 ) -> list[PipelineOutcome]:
     """1. run_analysts over all shortlisted candidates (<=12 calls, one gather)
-       2. rank by analyst_score, take DEBATE_CANDIDATES (2)
+       2. rank by analyst_score, take DEBATE_CANDIDATES
        3. per surviving candidate, concurrently with the others:
-            run_debate -> conviction == 0.0 (unanimous DISAGREE)? stop, no_trade
+            run_debate -> conviction floored, never a veto (agent/config.py
+              CONVICTION_UNANIMOUS_DISAGREE_FLOOR); the deterministic gate is
+              what turns a too-low conviction into a LOW_CONVICTION reject
             propose    -> ProposalFailure? stop, no_trade
             run_risk_team -> vetoed? stop, no_trade
        4. return one PipelineOutcome per SHORTLISTED candidate (not just the
@@ -189,20 +191,12 @@ async def run_llm_pipeline(
         debate = await run_debate(llm, r.bundle, sink=sink)
         mode = _mode(r, debate)
 
-        # docs/day4_track_ab_plan.md §2.3: the old UNRESOLVED early-return
-        # (D5/D6 -- a lone bear veto, or unanimous COMMIT with thin
-        # citations) is gone. The only remaining debate-driven no-trade is
-        # unanimous DISAGREE, which conviction() scores exactly 0.0.
-        if debate.conviction == 0.0:
-            return PipelineOutcome(
-                symbol=symbol, plan=None, mode=mode, reason="DEBATE_UNANIMOUS_DISAGREE",
-                analyst_score=analyst_score(r), conviction=debate.conviction,
-                artifacts=PipelineArtifacts(
-                    analyst_rows=analyst_artifacts, debate_nodes=_debate_artifacts(debate),
-                    debate_summary=_debate_summary_artifact(debate), llm_call_ids=tuple(sink),
-                ),
-            )
-
+        # 2026-08-31 pre-market unblock (docs/day4_track_ab_plan.md §2.3 superseded):
+        # unanimous DISAGREE is no longer an absolute veto here. conviction()
+        # floors it to CONVICTION_UNANIMOUS_DISAGREE_FLOOR instead of 0.0, and
+        # every candidate proceeds to proposal -> risk team -> the
+        # deterministic gate, which is the only place a too-low conviction can
+        # still reject the trade (as LOW_CONVICTION).
         chain = chains.get(symbol)
         proposal_result = (
             await propose(llm, r.bundle, debate, chain, trading_days, sink=sink)

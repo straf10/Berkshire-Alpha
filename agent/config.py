@@ -117,8 +117,15 @@ LLM_DAILY_SPEND_CEILING_USD: Final[Decimal] = Decimal("4.00")
 LLM_MAX_CALLS_PER_SESSION: Final[int] = 80
 CONSENSUS_HIGH_THRESHOLD: Final[float] = 0.85
 DEBATE_MAX_ROUNDS: Final[int] = 2
-DEBATE_CANDIDATES: Final[int] = 2
+DEBATE_CANDIDATES: Final[int] = 4
 EVIDENCE_CITES_EXPECTED: Final[int] = 3
+# 2026-08-31 pre-market unblock: unanimous DISAGREE was an absolute veto
+# (conviction 0.0) gating the debate persona's own boilerplate caution bias
+# rather than a genuine numeric objection -- see memory.md for the Task 0
+# evidence. It is now a size floor, not a veto; the deterministic gate
+# (agent/risk/gates.py) still sizes down to LOW_CONVICTION rejection if this
+# floor is too thin to clear a cap.
+CONVICTION_UNANIMOUS_DISAGREE_FLOOR: Final[float] = 0.34
 REDDIT_SUBS: Final[tuple[str, ...]] = ("wallstreetbets", "stocks", "options")
 REDDIT_POST_LIMIT: Final[int] = 250
 REDDIT_MENTION_BASELINE_N: Final[int] = 6

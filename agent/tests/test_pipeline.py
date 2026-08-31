@@ -8,7 +8,7 @@ from decimal import Decimal
 import pytest
 
 from agent.agents.pipeline import run_llm_pipeline
-from agent.config import UNIVERSE
+from agent.config import CONVICTION_UNANIMOUS_DISAGREE_FLOOR, UNIVERSE
 from agent.schemas.execution import Regime, Structure
 from agent.schemas.llm import (
     DebateNodeOutput,
@@ -169,11 +169,11 @@ class ScriptedLlm:
 
 
 async def test_not_top_candidates_get_not_top_debate_outcome() -> None:
-    """4 shortlisted, only DEBATE_CANDIDATES=2 survive to debate -- every
+    """6 shortlisted, only DEBATE_CANDIDATES=4 survive to debate -- every
     candidate still gets a PipelineOutcome, per Day 2's 'no_trade is a
     first-class decision' (docs/day3_llm_plan.md Group 5 property 4)."""
     llm = ScriptedLlm()
-    candidates = [_candidate(UNIVERSE[i], score=float(i)) for i in range(4)]
+    candidates = [_candidate(UNIVERSE[i], score=float(i)) for i in range(6)]
     chains = FakeChains({c.snapshot.symbol: _put_credit_chain(c.snapshot.symbol) for c in candidates})
     sinks = {c.snapshot.symbol: [] for c in candidates}
 
@@ -181,7 +181,7 @@ async def test_not_top_candidates_get_not_top_debate_outcome() -> None:
         llm, candidates, chains, {}, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
         sem=asyncio.Semaphore(6), sinks=sinks,
     )
-    assert len(outcomes) == 4
+    assert len(outcomes) == 6
     not_top = [o for o in outcomes if o.reason == "NOT_TOP_DEBATE_CANDIDATE"]
     assert len(not_top) == 2
     for o in not_top:
@@ -189,9 +189,12 @@ async def test_not_top_candidates_get_not_top_debate_outcome() -> None:
         assert o.artifacts.debate_nodes == ()
 
 
-async def test_debate_unanimous_disagree_stops_before_trader() -> None:
-    """docs/day4_track_ab_plan.md §2.3: unanimous DISAGREE terminates at round
-    1 (conviction 0.0) and is the only remaining debate-driven no-trade."""
+async def test_debate_unanimous_disagree_floors_conviction_but_still_trades() -> None:
+    """2026-08-31 pre-market unblock: unanimous DISAGREE no longer stops the
+    candidate before the trader -- conviction floors to
+    CONVICTION_UNANIMOUS_DISAGREE_FLOOR and the candidate still reaches
+    proposal -> risk team -> the deterministic gate (which is the only layer
+    left that can still reject on conviction, as LOW_CONVICTION)."""
     llm = ScriptedLlm()
     llm.script("DEBATE_BULL", [_debate_node("BULL", "DISAGREE", [])])
     llm.script("DEBATE_BEAR", [_debate_node("BEAR", "DISAGREE", [])])
@@ -204,11 +207,11 @@ async def test_debate_unanimous_disagree_stops_before_trader() -> None:
         sem=asyncio.Semaphore(6), sinks=sinks,
     )
     assert len(outcomes) == 1
-    assert outcomes[0].reason == "DEBATE_UNANIMOUS_DISAGREE"
-    assert outcomes[0].plan is None
-    assert outcomes[0].conviction == 0.0
-    assert "TRADER" not in llm.calls
-    assert not any(c.startswith("RISK_") for c in llm.calls)
+    assert outcomes[0].reason == "OK"
+    assert outcomes[0].plan is not None
+    assert outcomes[0].conviction == pytest.approx(CONVICTION_UNANIMOUS_DISAGREE_FLOOR)
+    assert "TRADER" in llm.calls
+    assert any(c.startswith("RISK_") for c in llm.calls)
 
 
 async def test_pipeline_no_unresolved_drop() -> None:
@@ -311,11 +314,11 @@ async def test_budget_exceeded_propagates_out_of_pipeline() -> None:
 
 
 async def test_full_cycle_call_count() -> None:
-    """docs/day3_llm_plan.md Group 5: 4 shortlisted, 2 debated, both
-    terminating at R1 -> exactly 12 (analysts) + 4 (R1 debate) + 2 (trader)
-    + 6 (risk) = 24 FakeLlm calls. Every candidate needs a real headline and
-    mention signal so all 12 analyst calls actually fire (news_analyst and
-    sentiment_analyst skip the call entirely with no input)."""
+    """docs/day3_llm_plan.md Group 5, DEBATE_CANDIDATES=4: 4 shortlisted, all
+    4 debated, all terminating at R1 -> exactly 12 (analysts) + 8 (R1 debate)
+    + 4 (trader) + 12 (risk) = 36 FakeLlm calls. Every candidate needs a real
+    headline and mention signal so all 12 analyst calls actually fire
+    (news_analyst and sentiment_analyst skip the call entirely with no input)."""
     llm = ScriptedLlm()
     candidates = [_candidate(UNIVERSE[i], score=float(i)) for i in range(4)]
     symbols = [c.snapshot.symbol for c in candidates]
@@ -333,5 +336,5 @@ async def test_full_cycle_call_count() -> None:
         sem=asyncio.Semaphore(6), sinks=sinks,
     )
     assert len(outcomes) == 4
-    assert sum(1 for o in outcomes if o.reason == "OK") == 2
-    assert len(llm.calls) == 24
+    assert sum(1 for o in outcomes if o.reason == "OK") == 4
+    assert len(llm.calls) == 36
