@@ -5,6 +5,7 @@ import { AssignmentPanel } from "@/components/AssignmentPanel";
 import { DecisionsLog } from "@/components/DecisionsLog";
 import { Funnel } from "@/components/Funnel";
 import { GreeksGauges } from "@/components/GreeksGauges";
+import { HealthStrip } from "@/components/HealthStrip";
 import { LiveRefresh } from "@/components/LiveRefresh";
 import { LlmUsage } from "@/components/LlmUsage";
 import { OpenPositionsTable } from "@/components/OpenPositionsTable";
@@ -12,6 +13,7 @@ import { ReasoningFeed } from "@/components/ReasoningFeed";
 import { ServiceDown } from "@/components/ServiceDown";
 import { StatusBar } from "@/components/StatusBar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ToolUsage } from "@/components/ToolUsage";
 import { TradeHistoryTable } from "@/components/TradeHistoryTable";
 import { apiBase, fetchJson } from "@/lib/api";
 import type {
@@ -22,9 +24,11 @@ import type {
   EquityPoint,
   FunnelResponse,
   GreeksSnapshot,
+  HealthSample,
   LlmUsageResponse,
   OpenPosition,
   Status,
+  ToolUsageResponse,
   Trade,
 } from "@/lib/types";
 
@@ -80,16 +84,19 @@ export default async function Page() {
   // the whole page. New endpoints (equity/history, greeks/*, positions/open,
   // funnel) may not exist yet on every deploy of the API; fetchJson already
   // resolves to null rather than throwing on a 404/network error.
-  const [config, account, equityHistory, greeksLatest, openPositions, funnel, trades, llmUsage] = await Promise.all([
-    fetchJson<AgentConfig>(`${base}/config`),
-    fetchJson<AccountState>(`${base}/state/account`),
-    fetchJson<EquityPoint[]>(`${base}/equity/history?limit=500`),
-    fetchJson<GreeksSnapshot>(`${base}/greeks/latest`),
-    fetchJson<OpenPosition[]>(`${base}/positions/open`),
-    fetchJson<FunnelResponse>(`${base}/funnel`),
-    fetchJson<Trade[]>(`${base}/trades?limit=100`),
-    fetchJson<LlmUsageResponse>(`${base}/llm/usage`),
-  ]);
+  const [config, account, equityHistory, greeksLatest, openPositions, funnel, trades, llmUsage, toolUsage, healthHistory] =
+    await Promise.all([
+      fetchJson<AgentConfig>(`${base}/config`),
+      fetchJson<AccountState>(`${base}/state/account`),
+      fetchJson<EquityPoint[]>(`${base}/equity/history?limit=500`),
+      fetchJson<GreeksSnapshot>(`${base}/greeks/latest`),
+      fetchJson<OpenPosition[]>(`${base}/positions/open`),
+      fetchJson<FunnelResponse>(`${base}/funnel`),
+      fetchJson<Trade[]>(`${base}/trades?limit=100`),
+      fetchJson<LlmUsageResponse>(`${base}/llm/usage`),
+      fetchJson<ToolUsageResponse>(`${base}/tools/usage`),
+      fetchJson<HealthSample[]>(`${base}/health/history`),
+    ]);
 
   const decisions = decisionsRes;
   const status = statusRes;
@@ -99,6 +106,7 @@ export default async function Page() {
     <main className="mx-auto max-w-5xl p-4 font-mono text-base sm:p-8">
       <h1 className="mb-1 text-xl font-semibold sm:text-2xl">Autonomous Debate Trading Agent</h1>
       <StatusBar status={status} />
+      <HealthStrip samples={healthHistory} />
 
       {/* Alert-like and reference material stay outside the tabs -- an
           assignment event matters regardless of which tab a judge is on. */}
@@ -137,6 +145,7 @@ export default async function Page() {
 
         <TabsContent value="logs">
           <LlmUsage usage={llmUsage} />
+          <ToolUsage usage={toolUsage} />
           <DecisionsLog decisions={decisions} />
           <AgentConfigPanel config={config} />
         </TabsContent>

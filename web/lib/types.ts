@@ -342,3 +342,27 @@ export interface LlmUsageResponse {
   totals: LlmUsageTotals;
   by_node_model: LlmUsageRow[];
 }
+
+export interface ToolUsageRow {
+  tool: string;
+  endpoint: string;
+  calls: number;
+  failures: number;
+  avg_latency_ms: number;
+}
+
+export interface ToolUsageTotals {
+  calls: number;
+  failures: number;
+}
+
+export interface ToolUsageResponse {
+  session_date: string | null;
+  totals: ToolUsageTotals;
+  by_tool_endpoint: ToolUsageRow[];
+}
+
+export interface HealthSample {
+  ts_utc: string;
+  ok: number;
+}
