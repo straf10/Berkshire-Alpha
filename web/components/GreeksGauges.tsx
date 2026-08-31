@@ -1,3 +1,4 @@
+import { Activity } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { GreeksBarChart } from "@/components/charts/GreeksBarChart";
@@ -26,7 +27,8 @@ export function GreeksGauges({ snapshot }: { snapshot: GreeksSnapshot | null }) 
   return (
     <Card className="mb-6">
       <CardHeader className="flex-row items-center justify-between pb-2">
-        <CardTitle className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+        <CardTitle className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+          <Activity className="size-3.5" />
           Portfolio greeks
         </CardTitle>
         {snapshot.breached === 1 && <Badge variant="destructive">REDUCE-ONLY</Badge>}

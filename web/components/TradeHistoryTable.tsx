@@ -1,3 +1,4 @@
+import { History } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { compactLegs, formatSignedMoney } from "@/lib/format";
@@ -14,7 +15,8 @@ export function TradeHistoryTable({ trades }: { trades: Trade[] | null }) {
 
   return (
     <div className="mb-6">
-      <p className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+      <p className="mb-2 flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+        <History className="size-3.5" />
         Trade history
       </p>
       <div className="overflow-x-auto rounded-md border border-border">

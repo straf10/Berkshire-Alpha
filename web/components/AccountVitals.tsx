@@ -1,3 +1,4 @@
+import { Wallet } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EquitySparkline } from "@/components/charts/EquitySparkline";
 import { formatMoney, formatSignedMoney } from "@/lib/format";
@@ -27,7 +28,8 @@ export function AccountVitals({
   return (
     <Card className="mb-6">
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+        <CardTitle className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+          <Wallet className="size-3.5" />
           Account
         </CardTitle>
       </CardHeader>

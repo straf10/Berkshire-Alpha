@@ -1,13 +1,18 @@
+import { Swords, TrendingDown, TrendingUp } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { docActionVariant, safeJsonParse } from "@/lib/format";
 import type { DebateSummary, DebateTurn } from "@/lib/types";
 
 function Turn({ turn }: { turn: DebateTurn }) {
   const evidence = safeJsonParse<string[]>(turn.evidence_cited_json) ?? [];
+  const isBull = turn.persona === "BULL";
   return (
     <div className="rounded-md border border-border/60 p-2">
       <div className="mb-1 flex items-center gap-2">
-        <Badge variant={turn.persona === "BULL" ? "default" : "secondary"}>{turn.persona}</Badge>
+        <Badge variant={isBull ? "default" : "secondary"} className="gap-1">
+          {isBull ? <TrendingUp className="size-3" /> : <TrendingDown className="size-3" />}
+          {turn.persona}
+        </Badge>
         <Badge variant={docActionVariant(turn.doc_action)}>{turn.doc_action}</Badge>
         <span className="text-[11px] text-muted-foreground">round {turn.round}</span>
       </div>
@@ -42,7 +47,8 @@ export function DebateThread({
 
   return (
     <div>
-      <p className="mb-1 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+      <p className="mb-1 flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+        <Swords className="size-3.5" />
         Bull / Bear debate
       </p>
       <div className="space-y-2">

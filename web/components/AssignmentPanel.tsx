@@ -1,10 +1,12 @@
+import { TriangleAlert } from "lucide-react";
 import type { AssignmentEvent } from "@/lib/types";
 
 export function AssignmentPanel({ events }: { events: AssignmentEvent[] }) {
   if (events.length === 0) return null;
   return (
     <div className="mb-6 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-base">
-      <p className="mb-2 font-semibold text-amber-400">
+      <p className="mb-2 flex items-center gap-1.5 font-semibold text-amber-400">
+        <TriangleAlert className="size-4" />
         Assignment reconciliation ({events.length})
       </p>
       <ul className="space-y-1">

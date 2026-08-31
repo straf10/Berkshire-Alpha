@@ -1,5 +1,6 @@
 "use client";
 
+import { BrainCircuit, Clock } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { formatCountdown } from "@/lib/format";
@@ -39,10 +40,14 @@ export function StatusBar({ status }: { status: Status }) {
         {live ? "LIVE" : "DRY-RUN"}
       </Badge>
       {status.llm_enabled !== undefined && (
-        <span className="text-muted-foreground">LLM {status.llm_enabled ? "on" : "off"}</span>
+        <span className="flex items-center gap-1 text-muted-foreground">
+          <BrainCircuit className="size-3.5" />
+          LLM {status.llm_enabled ? "on" : "off"}
+        </span>
       )}
       {known ? (
-        <span className="text-foreground/80">
+        <span className="flex items-center gap-1 text-foreground/80">
+          <Clock className="size-3.5" />
           {status.is_open ? "market open" : "market closed"} — next: {status.next_action} in{" "}
           <span className="font-semibold text-primary" suppressHydrationWarning>
             {formatCountdown(status.next_action_utc!, now)}

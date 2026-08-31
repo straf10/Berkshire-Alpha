@@ -1,3 +1,4 @@
+import { Settings } from "lucide-react";
 import type { ReactNode } from "react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import type { AgentConfig } from "@/lib/types";
@@ -26,7 +27,8 @@ export function AgentConfigPanel({ config }: { config: AgentConfig | null }) {
   if (config === null) return null;
   return (
     <Collapsible className="mb-6 rounded-md border border-border">
-      <CollapsibleTrigger className="w-full cursor-pointer select-none p-3 text-left font-semibold">
+      <CollapsibleTrigger className="flex w-full cursor-pointer select-none items-center gap-1.5 p-3 text-left font-semibold">
+        <Settings className="size-4" />
         Agent configuration (hardcoded)
       </CollapsibleTrigger>
       <CollapsibleContent>

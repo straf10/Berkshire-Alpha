@@ -1,3 +1,4 @@
+import { ArrowLeftRight, LayoutDashboard, MessagesSquare, ScrollText } from "lucide-react";
 import { AccountVitals } from "@/components/AccountVitals";
 import { AgentConfigPanel } from "@/components/AgentConfigPanel";
 import { AssignmentPanel } from "@/components/AssignmentPanel";
@@ -71,9 +72,18 @@ export default async function Page() {
 
       <Tabs defaultValue="overview">
         <TabsList variant="line" className="mb-6">
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="trades">Trades</TabsTrigger>
-          <TabsTrigger value="logs">Logs</TabsTrigger>
+          <TabsTrigger value="overview" className="gap-1.5">
+            <LayoutDashboard className="size-3.5" />
+            Overview
+          </TabsTrigger>
+          <TabsTrigger value="trades" className="gap-1.5">
+            <ArrowLeftRight className="size-3.5" />
+            Trades
+          </TabsTrigger>
+          <TabsTrigger value="logs" className="gap-1.5">
+            <ScrollText className="size-3.5" />
+            Logs
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview">
@@ -82,7 +92,8 @@ export default async function Page() {
           <Funnel funnel={funnel} />
 
           <div className="mb-6">
-            <p className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+            <p className="mb-2 flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              <MessagesSquare className="size-3.5" />
               Reasoning feed
             </p>
             <ReasoningFeed decisions={decisions} />
@@ -99,7 +110,8 @@ export default async function Page() {
 
         <TabsContent value="logs">
           <div className="mb-6">
-            <p className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+            <p className="mb-2 flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              <ScrollText className="size-3.5" />
               Decisions log
             </p>
             <DecisionsLog decisions={decisions} />

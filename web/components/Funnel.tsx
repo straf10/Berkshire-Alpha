@@ -1,3 +1,4 @@
+import { Filter } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { FunnelBarChart } from "@/components/charts/FunnelBarChart";
 import type { FunnelResponse } from "@/lib/types";
@@ -23,7 +24,8 @@ export function Funnel({ funnel }: { funnel: FunnelResponse | null }) {
   return (
     <Card className="mb-6">
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+        <CardTitle className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+          <Filter className="size-3.5" />
           Screen → shortlist → debate → gate ({funnel.session_date})
         </CardTitle>
       </CardHeader>
