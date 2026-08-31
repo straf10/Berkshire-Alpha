@@ -84,6 +84,48 @@ async def fetch_universe_bars(
     return UniverseBars(daily=daily, minute=minute, session_date=session_date, feed=feed_str)
 
 
+async def fetch_daily_bars_range(
+    clients: AlpacaClients, symbols: Sequence[str], start: date, end: date,
+) -> dict[str, tuple[DailyBar, ...]]:
+    """One daily-bar request for the whole [start, end] range, for
+    agent/backtest/replay.py -- unlike fetch_universe_bars, which re-fetches a
+    rolling 130-day lookback on every call, a backtest walk fetches the full
+    window once and slices per-session in memory. IEX feed: SIP's recency
+    embargo doesn't apply to old settled dates, but a fixed feed keeps a
+    multi-month batch job from depending on subscription tier."""
+    req = StockBarsRequest(
+        symbol_or_symbols=list(symbols), timeframe=TimeFrame.Day,
+        start=start, end=end, adjustment=Adjustment.ALL, feed=DataFeed.IEX,
+    )
+    barset = await clients.get_stock_bars(req)
+    return {
+        sym: tuple(
+            DailyBar(ts=b.timestamp, open=b.open, high=b.high, low=b.low, close=b.close, volume=b.volume)
+            for b in barset.data.get(sym, [])
+        )
+        for sym in symbols
+    }
+
+
+async def fetch_session_minute_bars(
+    clients: AlpacaClients, symbols: Sequence[str], session_open_utc: datetime, session_close_utc: datetime,
+) -> dict[str, tuple[MinuteBar, ...]]:
+    """One minute-bar request for a single historical session, for
+    agent/backtest/replay.py's per-session VWAP input."""
+    req = StockBarsRequest(
+        symbol_or_symbols=list(symbols), timeframe=TimeFrame.Minute,
+        start=session_open_utc, end=session_close_utc, feed=DataFeed.IEX,
+    )
+    barset = await clients.get_stock_bars(req)
+    return {
+        sym: tuple(
+            MinuteBar(ts=b.timestamp, high=b.high, low=b.low, close=b.close, volume=b.volume)
+            for b in barset.data.get(sym, [])
+        )
+        for sym in symbols
+    }
+
+
 def _is_usable(snap: Any) -> bool:
     """Drop contracts with degenerate data. plan.md: an all-zero greeks block or
     null IV is a realistic silent-failure mode, not a hypothetical one."""

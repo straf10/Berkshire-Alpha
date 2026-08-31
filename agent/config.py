@@ -145,6 +145,17 @@ SHARES_PER_CONTRACT: Final[int] = 100
 RECONCILE_MAX_S: Final[float] = 60.0        # whole-routine wall-clock ceiling
 RECONCILE_MAX_CHAIN_HOPS: Final[int] = 32   # replace-chain follow limit
 
+# Backtest replay harness (agent/backtest/) ONLY -- Alpaca has no historical
+# options-chain-with-greeks endpoint, so agent/backtest/synthetic_chain.py
+# generates a Black-Scholes chain per session/symbol to feed the real,
+# unmodified spread_builder.build(). None of these affect the live agent.
+BACKTEST_SLIPPAGE_PCT: Final[Decimal] = Decimal("0.10")   # fixed haircut on modeled entry fill
+BACKTEST_IV_RV_MULTIPLIER: Final[float] = 1.15             # synthetic ATM IV = RV_20 * this
+BACKTEST_SKEW_SLOPE: Final[float] = 0.5                    # IV points of equity-style put skew per unit OTM moneyness
+BACKTEST_CHAIN_SPREAD_PCT: Final[float] = 0.03              # synthetic bid/ask width as a fraction of BS mid
+BACKTEST_STRIKE_RANGE_PCT: Final[float] = 0.15               # synthetic strike grid, matches ChainCache's live bounds
+BACKTEST_STRIKE_INCREMENT: Final[float] = 1.0
+
 
 @dataclass(frozen=True)
 class Settings:

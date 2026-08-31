@@ -13,3 +13,4 @@ agent.db.pre-*
 .DS_Store
 memory.md
 CLAUDE.md
+agent/backtest/output*/
