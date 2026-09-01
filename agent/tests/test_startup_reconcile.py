@@ -434,10 +434,10 @@ async def test_scan_cycle_rejects_entries_when_entries_halted(tmp_path, monkeypa
     from agent.strategy.regime import RegimeDecision
     from agent.strategy.regime import select as real_select
 
-    def forced_select(q, assigned, skew_threshold):
+    def forced_select(q, assigned, skew_threshold, vwm_bar):
         if q.symbol == "SPY" and q.data_ok:
             return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
-        return real_select(q, assigned, skew_threshold)
+        return real_select(q, assigned, skew_threshold, vwm_bar)
 
     monkeypatch.setattr(main_module, "select", forced_select)
     monkeypatch.setattr(ticker_screener_module, "select", forced_select)
@@ -484,7 +484,7 @@ async def test_mid_walk_restart_reconstructs_filled_position(tmp_path, monkeypat
     await storage_db.init_db(db_path)
     _patch_cli(monkeypatch)
 
-    def forced_select(q, assigned, skew_threshold):
+    def forced_select(q, assigned, skew_threshold, vwm_bar):
         # Force SPY as the only candidate -- everything else is NO_TRADE
         # regardless of assign_regimes' real cross-sectional output, so this
         # test's single-trade risk assertion stays independent of UNIVERSE

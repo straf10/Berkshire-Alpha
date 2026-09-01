@@ -29,10 +29,12 @@ import pytz
 
 from agent.config import (
     BACKTEST_IV_RV_MULTIPLIER,
+    CROSS_SECTION_N,
     DTE_MAX,
     DTE_MIN,
     RV_WINDOW,
     UNIVERSE,
+    VWM_Z_STRONG,
     load_settings,
 )
 from agent.execution.alpaca_client import AlpacaClients
@@ -144,13 +146,16 @@ async def run_replay(
             chains[sym] = generate_chain(sym, session_date, target_expiry, closes[-1], iv_atm)
 
         snapshots = quant.compute_all(bars, _ChainMap(chains), session_date, trading_days)
-        assigned = ticker_screener.assign_regimes(snapshots)
+        # docs/day4_action_plan.md Step 4: replay.py has no macro overlay (no
+        # GLD/USO/IBIT fetch here) -- it always runs the two selection scalars
+        # at their configured baseline, exactly the pre-Step-3 behaviour.
+        assigned = ticker_screener.assign_regimes(snapshots, CROSS_SECTION_N)
         skew_thresh = ticker_screener.skew_threshold(snapshots)
 
         for q in snapshots:
             if not q.data_ok:
                 continue
-            d = regime_mod.select(q, assigned.get(q.symbol, Regime.NO_TRADE), skew_thresh)
+            d = regime_mod.select(q, assigned.get(q.symbol, Regime.NO_TRADE), skew_thresh, VWM_Z_STRONG)
             if d.regime == Regime.NO_TRADE or d.structure is None:
                 continue
             chain = chains.get(q.symbol)

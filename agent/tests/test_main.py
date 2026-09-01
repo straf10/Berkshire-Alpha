@@ -189,6 +189,45 @@ async def test_dry_run_places_no_orders(tmp_path, monkeypatch: pytest.MonkeyPatc
         assert row[0] == len(main_module.UNIVERSE)
 
 
+async def test_scan_cycle_persists_macro_fields_and_excludes_macro_tickers(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, capsys,
+) -> None:
+    """docs/day4_action_plan.md Step 3.8 Definition of Done: every decisions
+    row carries macro_regime/vwm_bar in quant_json, a macro line is printed,
+    and no GLD/USO/IBIT row is ever written. FakeClients' fixture data has no
+    GLD/USO/IBIT bars, so this also exercises the UNAVAILABLE degrade path."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    _patch_cli(monkeypatch)
+
+    clients = FakeClients()
+    broker = MockBroker([])
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.scan_cycle(deps, session, dry_run=True)
+
+    out = capsys.readouterr().out
+    assert "Macro:" in out
+
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT symbol, quant_json FROM decisions")
+        rows = await cur.fetchall()
+
+    assert len(rows) == len(main_module.UNIVERSE)
+    for symbol, quant_json in rows:
+        assert symbol not in ("GLD", "USO", "IBIT")
+        data = json.loads(quant_json)
+        assert "macro_regime" in data
+        assert "vwm_bar" in data
+        assert "cross_section_n" in data
+        # FakeClients carries no GLD/USO/IBIT bars -- degrades to UNAVAILABLE,
+        # which must resolve to exactly today's baseline (docs/day4_action_plan.md
+        # Step 3's fail-safe).
+        assert data["macro_regime"] == "UNAVAILABLE"
+
+
 async def test_dry_run_prints_expected_line(tmp_path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     db_path = str(tmp_path / "agent.db")
     await storage_db.init_db(db_path)
@@ -205,10 +244,10 @@ async def test_dry_run_prints_expected_line(tmp_path, monkeypatch: pytest.Monkey
     from agent.strategy.regime import RegimeDecision
     from agent.strategy.regime import select as real_select
 
-    def forced_select(q, assigned, skew_threshold):
+    def forced_select(q, assigned, skew_threshold, vwm_bar):
         if q.symbol == "SPY" and q.data_ok:
             return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
-        return real_select(q, assigned, skew_threshold)
+        return real_select(q, assigned, skew_threshold, vwm_bar)
 
     monkeypatch.setattr(main_module, "select", forced_select)
     monkeypatch.setattr(ticker_screener_module, "select", forced_select)
@@ -258,10 +297,10 @@ async def test_dry_run_prints_llm_line(tmp_path, monkeypatch: pytest.MonkeyPatch
 
     import agent.strategy.ticker_screener as ticker_screener_module
 
-    def forced_select(q, assigned, skew_threshold):
+    def forced_select(q, assigned, skew_threshold, vwm_bar):
         if q.symbol == "SPY" and q.data_ok:
             return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
-        return real_select(q, assigned, skew_threshold)
+        return real_select(q, assigned, skew_threshold, vwm_bar)
 
     monkeypatch.setattr(main_module, "select", forced_select)
     monkeypatch.setattr(ticker_screener_module, "select", forced_select)
@@ -352,10 +391,10 @@ async def test_conviction_reaches_gate(tmp_path, monkeypatch: pytest.MonkeyPatch
 
     import agent.strategy.ticker_screener as ticker_screener_module
 
-    def forced_select(q, assigned, skew_threshold):
+    def forced_select(q, assigned, skew_threshold, vwm_bar):
         if q.symbol == "SPY" and q.data_ok:
             return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
-        return real_select(q, assigned, skew_threshold)
+        return real_select(q, assigned, skew_threshold, vwm_bar)
 
     monkeypatch.setattr(main_module, "select", forced_select)
     monkeypatch.setattr(ticker_screener_module, "select", forced_select)
@@ -461,10 +500,10 @@ async def test_unanimous_approve_of_oversized_trade_rejected(tmp_path, monkeypat
 
     import agent.strategy.ticker_screener as ticker_screener_module
 
-    def forced_select(q, assigned, skew_threshold):
+    def forced_select(q, assigned, skew_threshold, vwm_bar):
         if q.symbol == "SPY" and q.data_ok:
             return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
-        return real_select(q, assigned, skew_threshold)
+        return real_select(q, assigned, skew_threshold, vwm_bar)
 
     monkeypatch.setattr(main_module, "select", forced_select)
     monkeypatch.setattr(ticker_screener_module, "select", forced_select)
@@ -474,8 +513,8 @@ async def test_unanimous_approve_of_oversized_trade_rejected(tmp_path, monkeypat
     # plan now -- isolate this adversarial test to SPY alone so a real,
     # independently-approvable AMD/NVDA trade can't slip into
     # broker.submitted and mask the assertion below.
-    monkeypatch.setattr(main_module, "assign_regimes", lambda snapshots: {})
-    monkeypatch.setattr(ticker_screener_module, "assign_regimes", lambda snapshots: {})
+    monkeypatch.setattr(main_module, "assign_regimes", lambda snapshots, n: {})
+    monkeypatch.setattr(ticker_screener_module, "assign_regimes", lambda snapshots, n: {})
 
     # Strikes taken from the real chain_SPY.json fixture (both already used
     # by FAKE_POSITIONS above) so the gate reaches Phase B's MAX_RISK check
@@ -562,10 +601,10 @@ async def _run_llm_scan_with_full_artifacts(tmp_path, monkeypatch: pytest.Monkey
 
     import agent.strategy.ticker_screener as ticker_screener_module
 
-    def forced_select(q, assigned, skew_threshold):
+    def forced_select(q, assigned, skew_threshold, vwm_bar):
         if q.symbol == "SPY" and q.data_ok:
             return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
-        return real_select(q, assigned, skew_threshold)
+        return real_select(q, assigned, skew_threshold, vwm_bar)
 
     monkeypatch.setattr(main_module, "select", forced_select)
     monkeypatch.setattr(ticker_screener_module, "select", forced_select)
@@ -981,7 +1020,7 @@ async def test_aggregate_risk_accumulates_in_cycle(tmp_path, monkeypatch: pytest
     from agent.schemas.market import ChainSnapshot, OptionQuote
     from datetime import datetime as dt_cls, timezone as tz
 
-    def forced_select(q, assigned, skew_threshold):
+    def forced_select(q, assigned, skew_threshold, vwm_bar):
         # Force exactly SPY and NVDA as the only candidates -- everything else
         # is NO_TRADE regardless of assign_regimes' real cross-sectional
         # output, so this test's two-candidate scenario stays independent of
@@ -1083,10 +1122,10 @@ async def test_budget_ceiling_blocks_entries_not_management(tmp_path, monkeypatc
     from agent.strategy.regime import select as real_select
     from agent.schemas.execution import Regime, Structure
 
-    def forced_select(q, assigned, skew_threshold):
+    def forced_select(q, assigned, skew_threshold, vwm_bar):
         if q.symbol == "SPY" and q.data_ok:
             return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
-        return real_select(q, assigned, skew_threshold)
+        return real_select(q, assigned, skew_threshold, vwm_bar)
 
     monkeypatch.setattr(main_module, "select", forced_select)
     monkeypatch.setattr(ticker_screener_module, "select", forced_select)

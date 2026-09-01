@@ -16,6 +16,7 @@ from agent.config import ANALYST_SCORE_FLOOR
 from agent.schemas.execution import Regime, Structure
 from agent.schemas.llm import NewsAnalystOutput, QuantAnalystOutput, SentimentAnalystOutput
 from agent.schemas.market import QuantSnapshot
+from agent.strategy.macro import MacroRegime, MacroSnapshot
 from agent.strategy.regime import RegimeDecision
 from agent.strategy.ticker_screener import ScreenedCandidate
 from agent.tools.llm import LlmBudgetExceeded, LlmUnavailable, LlmValidationDropped
@@ -26,6 +27,11 @@ from datetime import date, datetime, timezone
 SESSION_DATE = date(2026, 8, 31)
 EXPIRY = date(2026, 9, 4)
 _TS = datetime(2026, 8, 28, tzinfo=timezone.utc)
+
+_MACRO = MacroSnapshot(
+    regime=MacroRegime.NEUTRAL, gold_z=0.0, oil_z=0.0, btc_z=0.0,
+    bars_used=65, horizon="SLOW", detail="test fixture",
+)
 
 
 def _headlines(symbol: str) -> tuple[Headline, ...]:
@@ -118,7 +124,7 @@ async def test_analysts_run_concurrently() -> None:
     sem = asyncio.Semaphore(6)
     sinks = {c.snapshot.symbol: [] for c in candidates}
     t0 = time.monotonic()
-    results = await run_analysts(llm, candidates, news, mentions, sem=sem, sinks=sinks)
+    results = await run_analysts(llm, candidates, news, mentions, sem=sem, sinks=sinks, macro=_MACRO)
     elapsed = time.monotonic() - t0
     assert llm.calls == 8  # QUANT + NEWS only (docs/day4_action_plan.md Step 1) x 4 candidates
     assert llm.max_concurrent == 6
@@ -133,7 +139,7 @@ async def test_one_analyst_validation_drop_isolated() -> None:
     news = {"SPY": _headlines("SPY")}
     mentions = {"SPY": _mention_signal("SPY")}
     sinks = {"SPY": []}
-    results = await run_analysts(llm, candidates, news, mentions, sem=asyncio.Semaphore(6), sinks=sinks)
+    results = await run_analysts(llm, candidates, news, mentions, sem=asyncio.Semaphore(6), sinks=sinks, macro=_MACRO)
     bundle = results[0].bundle
     assert bundle.news_analyst is None
     assert bundle.quant_analyst is not None
@@ -147,7 +153,7 @@ async def test_all_analysts_fail_candidate_survives() -> None:
         llm.script(node, [LlmValidationDropped("x")])
     candidates = [_candidate("SPY")]
     sinks = {"SPY": []}
-    results = await run_analysts(llm, candidates, {}, {}, sem=asyncio.Semaphore(6), sinks=sinks)
+    results = await run_analysts(llm, candidates, {}, {}, sem=asyncio.Semaphore(6), sinks=sinks, macro=_MACRO)
     bundle = results[0].bundle
     assert bundle.quant is not None
     assert bundle.regime is not None
@@ -166,7 +172,7 @@ async def test_partial_outage_degrades_cycle() -> None:
     llm.script("QUANT", [LlmUnavailable("x")] * 4)
     sinks = {c.snapshot.symbol: [] for c in candidates}
     with pytest.raises(LlmUnavailable):
-        await run_analysts(llm, candidates, news, {}, sem=asyncio.Semaphore(6), sinks=sinks)
+        await run_analysts(llm, candidates, news, {}, sem=asyncio.Semaphore(6), sinks=sinks, macro=_MACRO)
 
 
 async def test_single_flap_does_not_degrade() -> None:
@@ -174,7 +180,7 @@ async def test_single_flap_does_not_degrade() -> None:
     candidates = [_candidate(f"SYM{i}") for i in range(4)]
     llm.script("QUANT", [LlmUnavailable("x")])  # only the first QUANT call fails
     sinks = {c.snapshot.symbol: [] for c in candidates}
-    results = await run_analysts(llm, candidates, {}, {}, sem=asyncio.Semaphore(6), sinks=sinks)
+    results = await run_analysts(llm, candidates, {}, {}, sem=asyncio.Semaphore(6), sinks=sinks, macro=_MACRO)
     assert len(results) == 4
     total_failures = sum(len(r.failures) for r in results)
     assert total_failures == 1
@@ -186,13 +192,13 @@ async def test_budget_exceeded_propagates() -> None:
     candidates = [_candidate(f"SYM{i}") for i in range(4)]
     sinks = {c.snapshot.symbol: [] for c in candidates}
     with pytest.raises(LlmBudgetExceeded):
-        await run_analysts(llm, candidates, {}, {}, sem=asyncio.Semaphore(6), sinks=sinks)
+        await run_analysts(llm, candidates, {}, {}, sem=asyncio.Semaphore(6), sinks=sinks, macro=_MACRO)
 
 
 def test_evidence_keys_match_prompt() -> None:
     candidate = _candidate("SPY")
     bundle = EvidenceBundle(
-        symbol="SPY", quant=candidate.snapshot, regime=candidate.decision,
+        symbol="SPY", quant=candidate.snapshot, regime=candidate.decision, macro=_MACRO,
         quant_analyst=_quant_out("SPY"), news_analyst=_news_out("SPY"),
         sentiment_analyst=_sentiment_out("SPY"), headlines=(), mentions=None,
     )
@@ -204,7 +210,7 @@ def test_evidence_keys_match_prompt() -> None:
 def test_evidence_keys_exclude_failed_analysts() -> None:
     candidate = _candidate("SPY")
     bundle = EvidenceBundle(
-        symbol="SPY", quant=candidate.snapshot, regime=candidate.decision,
+        symbol="SPY", quant=candidate.snapshot, regime=candidate.decision, macro=_MACRO,
         quant_analyst=_quant_out("SPY"), news_analyst=None, sentiment_analyst=None,
         headlines=(), mentions=None,
     )
@@ -219,7 +225,7 @@ def test_analyst_score_direction_agreement() -> None:
     bull = AnalystResult(
         symbol="SPY",
         bundle=EvidenceBundle(
-            symbol="SPY", quant=candidate.snapshot, regime=candidate.decision,
+            symbol="SPY", quant=candidate.snapshot, regime=candidate.decision, macro=_MACRO,
             quant_analyst=_quant_out("SPY", iv_rv_interpretation="CHEAP", directional_momentum="STRONG_UP"),
             news_analyst=_news_out("SPY", expected_impact="BULLISH"),
             sentiment_analyst=_sentiment_out("SPY", sentiment_score=0.8, confidence=0.9),
@@ -232,7 +238,7 @@ def test_analyst_score_direction_agreement() -> None:
     bear = AnalystResult(
         symbol="SPY",
         bundle=EvidenceBundle(
-            symbol="SPY", quant=candidate.snapshot, regime=candidate.decision,
+            symbol="SPY", quant=candidate.snapshot, regime=candidate.decision, macro=_MACRO,
             quant_analyst=_quant_out("SPY", iv_rv_interpretation="RICH", directional_momentum="STRONG_DOWN"),
             news_analyst=_news_out("SPY", expected_impact="BEARISH"),
             sentiment_analyst=_sentiment_out("SPY", sentiment_score=-0.8, confidence=0.9),
@@ -248,7 +254,7 @@ def test_analyst_score_missing_is_neutral() -> None:
     result = AnalystResult(
         symbol="SPY",
         bundle=EvidenceBundle(
-            symbol="SPY", quant=candidate.snapshot, regime=candidate.decision,
+            symbol="SPY", quant=candidate.snapshot, regime=candidate.decision, macro=_MACRO,
             quant_analyst=None, news_analyst=None, sentiment_analyst=None, headlines=(), mentions=None,
         ),
         failures=(),
@@ -266,7 +272,7 @@ def test_analyst_score_ignores_sentiment() -> None:
         result = AnalystResult(
             symbol="SPY",
             bundle=EvidenceBundle(
-                symbol="SPY", quant=candidate.snapshot, regime=candidate.decision,
+                symbol="SPY", quant=candidate.snapshot, regime=candidate.decision, macro=_MACRO,
                 quant_analyst=_quant_out("SPY", iv_rv_interpretation="CHEAP", directional_momentum="STRONG_UP"),
                 news_analyst=_news_out("SPY", expected_impact="BULLISH"),
                 sentiment_analyst=sentiment, headlines=(), mentions=None,
@@ -288,7 +294,7 @@ def _quant_disagree_result(symbol: str, news_impact: str) -> AnalystResult:
     return AnalystResult(
         symbol=symbol,
         bundle=EvidenceBundle(
-            symbol=symbol, quant=candidate.snapshot, regime=candidate.decision,
+            symbol=symbol, quant=candidate.snapshot, regime=candidate.decision, macro=_MACRO,
             quant_analyst=_quant_out(symbol, iv_rv_interpretation="RICH", directional_momentum="STRONG_DOWN"),
             news_analyst=_news_out(symbol, expected_impact=news_impact),
             sentiment_analyst=None, headlines=(), mentions=None,
@@ -304,7 +310,7 @@ def _quant_agree_result(symbol: str, news_impact: str) -> AnalystResult:
     return AnalystResult(
         symbol=symbol,
         bundle=EvidenceBundle(
-            symbol=symbol, quant=candidate.snapshot, regime=candidate.decision,
+            symbol=symbol, quant=candidate.snapshot, regime=candidate.decision, macro=_MACRO,
             quant_analyst=_quant_out(symbol, iv_rv_interpretation="CHEAP", directional_momentum="STRONG_UP"),
             news_analyst=_news_out(symbol, expected_impact=news_impact),
             sentiment_analyst=None, headlines=(), mentions=None,
@@ -339,7 +345,7 @@ def test_floor_admits_fully_missing_analysts() -> None:
     result = AnalystResult(
         symbol="SPY",
         bundle=EvidenceBundle(
-            symbol="SPY", quant=candidate.snapshot, regime=candidate.decision,
+            symbol="SPY", quant=candidate.snapshot, regime=candidate.decision, macro=_MACRO,
             quant_analyst=None, news_analyst=None, sentiment_analyst=None, headlines=(), mentions=None,
         ),
         failures=(),
@@ -379,7 +385,7 @@ def test_top_two_selection_deterministic() -> None:
     results = []
     for c in candidates:
         bundle = EvidenceBundle(
-            symbol=c.snapshot.symbol, quant=c.snapshot, regime=c.decision,
+            symbol=c.snapshot.symbol, quant=c.snapshot, regime=c.decision, macro=_MACRO,
             quant_analyst=_quant_out(c.snapshot.symbol, directional_momentum="STRONG_UP", iv_rv_interpretation="RICH"),
             news_analyst=None, sentiment_analyst=None, headlines=(), mentions=None,
         )
@@ -394,7 +400,7 @@ def test_top_two_selection_deterministic() -> None:
 def test_analyst_prompt_token_budget() -> None:
     candidate = _candidate("SPY")
     bundle = EvidenceBundle(
-        symbol="SPY", quant=candidate.snapshot, regime=candidate.decision,
+        symbol="SPY", quant=candidate.snapshot, regime=candidate.decision, macro=_MACRO,
         quant_analyst=_quant_out("SPY"), news_analyst=_news_out("SPY"),
         sentiment_analyst=_sentiment_out("SPY"), headlines=(), mentions=None,
     )

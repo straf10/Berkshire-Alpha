@@ -18,6 +18,7 @@ from agent.agents.trader import (
 from agent.schemas.execution import Regime, SpreadPlan, Structure
 from agent.schemas.llm import DebateNodeOutput, OptionLegProposal, SpreadProposal
 from agent.schemas.market import ChainSnapshot, OptionQuote, QuantSnapshot
+from agent.strategy.macro import MacroRegime, MacroSnapshot
 from agent.strategy.regime import RegimeDecision
 from agent.strategy.spread_builder import build, build_from_proposal
 from agent.tests.fixture_helpers import load_chain_raw
@@ -69,9 +70,15 @@ def _decision(structure: Structure, regime: Regime = Regime.CREDIT) -> RegimeDec
     return RegimeDecision(regime, structure, "test", "TEST", None, None)
 
 
+_MACRO = MacroSnapshot(
+    regime=MacroRegime.NEUTRAL, gold_z=0.0, oil_z=0.0, btc_z=0.0,
+    bars_used=65, horizon="SLOW", detail="test fixture",
+)
+
+
 def _bundle(q: QuantSnapshot, d: RegimeDecision) -> EvidenceBundle:
     return EvidenceBundle(
-        symbol=q.symbol, quant=q, regime=d, quant_analyst=None, news_analyst=None,
+        symbol=q.symbol, quant=q, regime=d, macro=_MACRO, quant_analyst=None, news_analyst=None,
         sentiment_analyst=None, headlines=(), mentions=None,
     )
 

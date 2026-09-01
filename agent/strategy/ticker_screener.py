@@ -4,7 +4,7 @@ import math
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
-from agent.config import CROSS_SECTION_N, SHORTLIST_MAX, UNIVERSE, VRP_CREDIT_MIN, VRP_DEBIT_MAX
+from agent.config import SHORTLIST_MAX, UNIVERSE, VRP_CREDIT_MIN, VRP_DEBIT_MAX
 from agent.schemas.execution import Regime
 from agent.schemas.market import QuantSnapshot
 from agent.strategy.regime import RegimeDecision, select
@@ -27,7 +27,7 @@ class ScreenedCandidate:
     score: float                   # [0, 1], comparable across regimes
 
 
-def assign_regimes(snapshots: Sequence[QuantSnapshot]) -> dict[str, Regime]:
+def assign_regimes(snapshots: Sequence[QuantSnapshot], n: int) -> dict[str, Regime]:
     """Cross-sectional VRP rank (docs/day4_track_ab_plan.md §1.3, A3). We do not
     know the correct ABSOLUTE level of the volatility risk premium in a
     four-day sample -- the 29-Aug cross-section had a median VRP of 0.96
@@ -35,9 +35,14 @@ def assign_regimes(snapshots: Sequence[QuantSnapshot]) -> dict[str, Regime]:
     of an arbitrary constant. Scale-invariant by construction, which is also
     what makes it robust to the RV estimator change in §1.2.
 
-    Top CROSS_SECTION_N by VRP, guarded at > 1.0    -> CREDIT
-    Bottom CROSS_SECTION_N by VRP, guarded at < 1.0 -> DEBIT
-    Everything else                                  -> NO_TRADE (absent from the map)
+    Top `n` by VRP, guarded at > 1.0    -> CREDIT
+    Bottom `n` by VRP, guarded at < 1.0 -> DEBIT
+    Everything else                      -> NO_TRADE (absent from the map)
+
+    `n` (docs/day4_action_plan.md Step 4) is CROSS_SECTION_N at the
+    macro-baseline NEUTRAL/UNAVAILABLE regime, otherwise resolved by
+    agent.strategy.macro.tuning() from the cycle's MacroSnapshot -- the
+    caller's job, not this function's, since assign_regimes stays pure.
 
     Snapshots with `data_ok is False` are excluded from the ranking entirely
     and never receive a regime; ties break on UNIVERSE index for run-to-run
@@ -46,7 +51,7 @@ def assign_regimes(snapshots: Sequence[QuantSnapshot]) -> dict[str, Regime]:
     thread the resulting map, never call this a second time in the same cycle
     (docs/day4_track_ab_plan.md F6)."""
     ok = [q for q in snapshots if q.data_ok]
-    n = CROSS_SECTION_N if len(ok) >= 2 * CROSS_SECTION_N else len(ok) // 2
+    n = n if len(ok) >= 2 * n else len(ok) // 2
     if n == 0:
         return {}
     ranked = sorted(ok, key=lambda q: (-q.vrp_ratio, UNIVERSE.index(q.symbol)))
@@ -122,6 +127,7 @@ def shortlist(
     snapshots: Sequence[QuantSnapshot],
     assigned: Mapping[str, Regime],
     skew_thresh: float,
+    vwm_bar: float,
     limit: int = SHORTLIST_MAX,
 ) -> list[ScreenedCandidate]:
     """Filters NO_TRADE, sorts by (-score, UNIVERSE index), truncates to `limit`.
@@ -130,13 +136,15 @@ def shortlist(
     `select()` call this cycle (docs/day4_track_ab_plan.md §1.3) -- this
     function does not compute its own regime assignment. Likewise `skew_thresh`
     must be the SAME value from `skew_threshold(snapshots)` the caller threads
-    into its own per-symbol `select()` loop (docs/IMMEDIATE_IMPROVEMENT.md #1)."""
+    into its own per-symbol `select()` loop (docs/IMMEDIATE_IMPROVEMENT.md #1),
+    and `vwm_bar` must be the SAME effective bar threaded into that same loop
+    (docs/day4_action_plan.md Step 4)."""
     ok_vrps = [q.vrp_ratio for q in snapshots if q.data_ok]
     vrp_lo, vrp_hi = (min(ok_vrps), max(ok_vrps)) if ok_vrps else (0.0, 0.0)
 
     candidates = []
     for q in snapshots:
-        d = select(q, assigned.get(q.symbol, Regime.NO_TRADE), skew_thresh)
+        d = select(q, assigned.get(q.symbol, Regime.NO_TRADE), skew_thresh, vwm_bar)
         if d.regime == Regime.NO_TRADE:
             continue
         candidates.append(ScreenedCandidate(snapshot=q, decision=d, score=composite_score(q, d, vrp_lo, vrp_hi)))

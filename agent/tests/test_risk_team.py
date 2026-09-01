@@ -13,8 +13,14 @@ from agent.risk.gates import GateContext, evaluate
 from agent.schemas.execution import Intent, Leg, Regime, SpreadPlan, Structure
 from agent.schemas.llm import RiskManagerOutput
 from agent.schemas.market import QuantSnapshot
+from agent.strategy.macro import MacroRegime, MacroSnapshot
 from agent.strategy.regime import RegimeDecision
 from agent.tools.llm import LlmUnavailable, LlmValidationDropped
+
+_MACRO = MacroSnapshot(
+    regime=MacroRegime.NEUTRAL, gold_z=0.0, oil_z=0.0, btc_z=0.0,
+    bars_used=65, horizon="SLOW", detail="test fixture",
+)
 
 EXPIRY = date(2026, 9, 4)
 SESSION_DATE = date(2026, 8, 31)
@@ -73,7 +79,7 @@ def _bundle() -> EvidenceBundle:
     )
     regime = RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "test", "TEST", None, None)
     return EvidenceBundle(
-        symbol="TST", quant=quant, regime=regime, quant_analyst=None, news_analyst=None,
+        symbol="TST", quant=quant, regime=regime, macro=_MACRO, quant_analyst=None, news_analyst=None,
         sentiment_analyst=None, headlines=(), mentions=None,
     )
 

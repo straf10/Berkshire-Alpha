@@ -14,6 +14,28 @@ EXPIRY = date(2026, 9, 4)
 SESSION_DATE = date(2026, 8, 31)
 
 
+def test_macro_cannot_affect_gate_context() -> None:
+    """docs/day4_action_plan.md Step 4/§4.5: MacroTuning is a selection-only
+    channel (vwm_bar, cross_section_n) -- agent/risk/ must never import
+    agent.strategy.macro, the same import-graph enforcement
+    test_agent_import_graph.py already applies to agent.agents."""
+    import ast
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[2]
+    violations = []
+    for path in (repo_root / "agent" / "risk").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("agent.strategy.macro"):
+                violations.append(f"{path.relative_to(repo_root)}: {node.module}")
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.startswith("agent.strategy.macro"):
+                        violations.append(f"{path.relative_to(repo_root)}: {alias.name}")
+    assert not violations, f"agent/risk must never import agent.strategy.macro: {violations}"
+
+
 def _leg(side: str, strike: float, delta: float, intent: Intent | None = None, occ: str | None = None) -> Leg:
     if intent is None:
         intent = Intent.SELL_TO_OPEN if side == "SELL" else Intent.BUY_TO_OPEN

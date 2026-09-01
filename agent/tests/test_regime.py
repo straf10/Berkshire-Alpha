@@ -32,6 +32,10 @@ _BASE = QuantSnapshot(
 # is irrelevant to those tests. Tests that DO exercise the overlay pick their
 # own skew_abs values relative to this one.
 _SKEW_THRESH = 3.0
+# Placeholder effective VWM bar (docs/day4_action_plan.md Step 4) for tests
+# that don't exercise the macro-adjusted bar directly -- equals the
+# configured baseline so existing DEBIT-branch assertions are unaffected.
+_VWM_BAR = VWM_Z_STRONG
 
 
 def test_assigned_no_trade_returns_no_regime() -> None:
@@ -40,30 +44,50 @@ def test_assigned_no_trade_returns_no_regime() -> None:
     # select() entirely (now a cross-sectional rank in ticker_screener.
     # assign_regimes); select() only reacts to the `assigned` regime it's
     # handed.
-    d = select(_BASE, Regime.NO_TRADE, _SKEW_THRESH)
+    d = select(_BASE, Regime.NO_TRADE, _SKEW_THRESH, _VWM_BAR)
     assert d.regime == Regime.NO_TRADE
     assert d.reason == "NO_REGIME"
 
 
 def test_regime_debit_requires_momentum() -> None:
-    d = select(replace(_BASE, vwm_z=0.4), Regime.DEBIT, _SKEW_THRESH)
+    d = select(replace(_BASE, vwm_z=0.4), Regime.DEBIT, _SKEW_THRESH, _VWM_BAR)
     assert d.regime == Regime.NO_TRADE
     assert d.reason == "DEBIT_NO_MOMENTUM_CONFIRMATION"
 
 
 def test_vwm_gate_at_075() -> None:
     assert VWM_Z_STRONG == 0.75
-    confirmed = select(replace(_BASE, vwm_z=0.80), Regime.DEBIT, _SKEW_THRESH)
+    confirmed = select(replace(_BASE, vwm_z=0.80), Regime.DEBIT, _SKEW_THRESH, _VWM_BAR)
     assert confirmed.regime == Regime.DEBIT
-    not_confirmed = select(replace(_BASE, vwm_z=0.70), Regime.DEBIT, _SKEW_THRESH)
+    not_confirmed = select(replace(_BASE, vwm_z=0.70), Regime.DEBIT, _SKEW_THRESH, _VWM_BAR)
     assert not_confirmed.regime == Regime.NO_TRADE
+
+
+def test_select_respects_injected_bar() -> None:
+    """docs/day4_action_plan.md Step 4: vwm_bar is now injected, not read from
+    the module-level VWM_Z_STRONG constant -- the same vwm_z reading must
+    cross at a lower bar and fail to cross at a higher one."""
+    snap = replace(_BASE, vwm_z=0.50)
+    not_confirmed = select(snap, Regime.DEBIT, _SKEW_THRESH, 0.75)
+    assert not_confirmed.regime == Regime.NO_TRADE
+    confirmed = select(snap, Regime.DEBIT, _SKEW_THRESH, 0.45)
+    assert confirmed.regime == Regime.DEBIT
+
+
+def test_select_reports_effective_bar() -> None:
+    """RegimeDecision.threshold must carry the EFFECTIVE bar passed in, not
+    the module constant, on both debit branches."""
+    confirmed = select(replace(_BASE, vwm_z=0.80), Regime.DEBIT, _SKEW_THRESH, 0.60)
+    assert confirmed.threshold == 0.60
+    not_confirmed = select(replace(_BASE, vwm_z=0.10), Regime.DEBIT, _SKEW_THRESH, 0.60)
+    assert not_confirmed.threshold == 0.60
 
 
 def test_skew_overlay_overrides_direction() -> None:
     # skew_abs=6.0 is above the (test) cross-sectional threshold of 3.0 --
     # the overlay fires and overrides the VWAP/RSI overbought read.
     snap = replace(_BASE, skew_abs=6.0, vwap_dev_pct=1.0, rsi=78.0)
-    d = select(snap, Regime.CREDIT, _SKEW_THRESH)
+    d = select(snap, Regime.CREDIT, _SKEW_THRESH, _VWM_BAR)
     assert d.structure == Structure.BULL_PUT_SPREAD  # NOT BEAR_CALL_SPREAD
     assert d.driver == "SKEW"
     assert d.threshold == _SKEW_THRESH
@@ -74,7 +98,7 @@ def test_skew_overlay_does_not_fire_below_threshold() -> None:
     # cross-sectional threshold -- the overlay must NOT override the
     # directional read here.
     snap = replace(_BASE, skew_abs=2.0, vwap_dev_pct=1.0, rsi=78.0)
-    d = select(snap, Regime.CREDIT, _SKEW_THRESH)
+    d = select(snap, Regime.CREDIT, _SKEW_THRESH, _VWM_BAR)
     assert d.driver == "VWAP_RSI"
     assert d.structure == Structure.BEAR_CALL_SPREAD
 
@@ -86,12 +110,12 @@ def test_credit_skew_sided_fallback() -> None:
     # sale on whichever side the market is over-bidding. Both skew_abs values
     # here (+/-2.0) sit below _SKEW_THRESH so the overlay doesn't preempt this
     # fallback branch.
-    bullish = select(replace(_BASE, skew_abs=2.0, vwap_dev_pct=0.05, rsi=52.0), Regime.CREDIT, _SKEW_THRESH)
+    bullish = select(replace(_BASE, skew_abs=2.0, vwap_dev_pct=0.05, rsi=52.0), Regime.CREDIT, _SKEW_THRESH, _VWM_BAR)
     assert bullish.regime == Regime.CREDIT
     assert bullish.structure == Structure.BULL_PUT_SPREAD
     assert bullish.reason == "SKEW_SIDED_NO_DIRECTION"
 
-    bearish = select(replace(_BASE, skew_abs=-2.0, vwap_dev_pct=0.05, rsi=52.0), Regime.CREDIT, _SKEW_THRESH)
+    bearish = select(replace(_BASE, skew_abs=-2.0, vwap_dev_pct=0.05, rsi=52.0), Regime.CREDIT, _SKEW_THRESH, _VWM_BAR)
     assert bearish.regime == Regime.CREDIT
     assert bearish.structure == Structure.BEAR_CALL_SPREAD
     assert bearish.reason == "SKEW_SIDED_NO_DIRECTION"
@@ -103,7 +127,7 @@ def test_skew_below_floor_uses_vwap() -> None:
     branch falls back to VWAP price location instead."""
     assert 0.06 < SKEW_SIDE_MIN_POINTS
     snap = replace(_BASE, skew_abs=0.06, vwap_dev_pct=0.5, rsi=52.0)
-    d = select(snap, Regime.CREDIT, _SKEW_THRESH)
+    d = select(snap, Regime.CREDIT, _SKEW_THRESH, _VWM_BAR)
     assert d.structure == Structure.BEAR_CALL_SPREAD
     assert d.reason == "VWAP_SIDED_NO_DIRECTION"
     assert d.driver == "VWAP"
@@ -111,7 +135,7 @@ def test_skew_below_floor_uses_vwap() -> None:
 
 def test_skew_above_floor_uses_skew() -> None:
     snap = replace(_BASE, skew_abs=2.5, vwap_dev_pct=-0.5, rsi=52.0)
-    d = select(snap, Regime.CREDIT, _SKEW_THRESH)
+    d = select(snap, Regime.CREDIT, _SKEW_THRESH, _VWM_BAR)
     assert d.structure == Structure.BULL_PUT_SPREAD
     assert d.reason == "SKEW_SIDED_NO_DIRECTION"
     assert d.driver == "SKEW"
@@ -121,15 +145,15 @@ def test_skew_sign_flip_does_not_flip_structure_below_floor() -> None:
     """The regression this step exists to prevent: a skew reading of +0.06 vs
     -0.06 is noise-level and must not change the chosen structure -- only
     vwap_dev_pct, held fixed here, should decide the side."""
-    positive = select(replace(_BASE, skew_abs=0.06, vwap_dev_pct=0.5, rsi=52.0), Regime.CREDIT, _SKEW_THRESH)
-    negative = select(replace(_BASE, skew_abs=-0.06, vwap_dev_pct=0.5, rsi=52.0), Regime.CREDIT, _SKEW_THRESH)
+    positive = select(replace(_BASE, skew_abs=0.06, vwap_dev_pct=0.5, rsi=52.0), Regime.CREDIT, _SKEW_THRESH, _VWM_BAR)
+    negative = select(replace(_BASE, skew_abs=-0.06, vwap_dev_pct=0.5, rsi=52.0), Regime.CREDIT, _SKEW_THRESH, _VWM_BAR)
     assert positive.structure == negative.structure == Structure.BEAR_CALL_SPREAD
     assert positive.reason == negative.reason == "VWAP_SIDED_NO_DIRECTION"
 
 
 def test_data_not_ok_short_circuits() -> None:
     snap = replace(_BASE, data_ok=False, drop_reason="NO_CHAIN")
-    d = select(snap, Regime.CREDIT, _SKEW_THRESH)
+    d = select(snap, Regime.CREDIT, _SKEW_THRESH, _VWM_BAR)
     assert d.regime == Regime.NO_TRADE
     assert d.reason == "NO_CHAIN"
     assert d.driver == "DATA"

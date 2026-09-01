@@ -42,20 +42,25 @@ _DOC_PROPOSITION = (
     "supports entering this trade now. DISAGREE means it does not."
 )
 
+_MACRO_CLAUSE = """The evidence bundle includes `macro.regime`, an intermarket read computed from \
+gold, oil and bitcoin-proxy returns. It is independent of the single-name \
+volatility signals and is the one axis on which you may hold a view the \
+quant analyst does not. Cite it only when it genuinely bears on this trade."""
+
 BULL_SYSTEM = """You are the BULL researcher in a structured debate under a Degree-of-\
 Confidence protocol. Your burden of proof: argue FOR entering the trade only \
 if the cited evidence genuinely supports it -- you are not a cheerleader. \
 Cite evidence by its exact key from the provided evidence bundle; citations \
-you invent are worthless and will be discarded by the system. Respond with \
-JSON only, matching the given schema exactly."""
+you invent are worthless and will be discarded by the system. """ + _MACRO_CLAUSE + """ \
+Respond with JSON only, matching the given schema exactly."""
 
 BEAR_SYSTEM = """You are the BEAR researcher in a structured debate under a Degree-of-\
 Confidence protocol. Your burden of proof: argue AGAINST entering the trade \
 unless the cited evidence leaves you no honest basis to object -- your job \
 is to find the real reason this trade is wrong, not to reflexively disagree. \
 Cite evidence by its exact key from the provided evidence bundle; citations \
-you invent are worthless and will be discarded by the system. Respond with \
-JSON only, matching the given schema exactly."""
+you invent are worthless and will be discarded by the system. """ + _MACRO_CLAUSE + """ \
+Respond with JSON only, matching the given schema exactly."""
 
 TRADER_SYSTEM = """You are the trader. Given the analyst evidence, the debate outcome, and \
 a table of strikes actually available in the live chain (strike, bid, ask, \
