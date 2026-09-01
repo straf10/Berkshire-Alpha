@@ -230,6 +230,14 @@ async def _amain() -> None:
     for reg, s in stats.items():
         print(f"  {reg}: {s['count']} trades, win_rate={s['win_rate']:.2%}, avg_pnl=${s['avg_pnl']:.2f}, total_pnl=${s['total_pnl']:.2f}")
     print(f"  TOTAL pnl: ${total_pnl:.2f}")
+    stability = payoff.window_stability(trades)
+    print(
+        f"  window_stability: p_positive={stability['p_positive']:.2f}, "
+        f"sr_dispersion={stability['sr_dispersion']:.3f}, sr_min={stability['sr_min']:.3f} "
+        f"({stability['windows_used']} windows used)"
+    )
+    print("  caveat: grades the synthetic-chain result (docs/report.md S0.1) -- certifies")
+    print("  'not one lucky window in the model', which is weaker than it sounds.")
     print(f"reports written to {args.out_dir}/")
 
 
