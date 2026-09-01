@@ -136,10 +136,60 @@ PORTFOLIO_VEGA_PCT: Final[float] = 0.02
 DAILY_LOSS_KILL_PCT: Final[float] = -0.05
 DRAWDOWN_CONSERVATIVE_PCT: Final[float] = -0.08
 DRAWDOWN_TERMINAL_PCT: Final[float] = -0.12
-KELLY_FRACTION: Final[float] = 0.5
+# P1 remediation (docs/audit_report_v2.md §9 item 7, 2026-09-01). Halved
+# 0.5 -> 0.25: 0 wins in 2 closed trades plus one execution catastrophe is
+# not a measured production edge that justifies half-Kelly staking. This is
+# a stopgap pending real sample size, not a claim that quarter-Kelly is the
+# "right" number -- revisit after 20+ closed trades once p_success can
+# actually be validated against realised outcomes. Be clear about what this
+# does NOT fix: it does not correct the §7A sizing inflation (ATM credit
+# spreads sizing ~26% more contracts than a band-compliant trade) -- that
+# inflation survives because BOTH f* values already exceed
+# MAX_RISK_PER_TRADE_PCT and the cap binds either way, so a smaller
+# per-spread max-loss denominator flows straight through regardless of
+# KELLY_FRACTION. Only Task 5 (SHORT_DELTA_BAND enforcement on the LLM path)
+# fixes that.
+KELLY_FRACTION: Final[float] = 0.25
 WALK_STEP: Final[Decimal] = Decimal("0.05")
 WALK_REST_S: Final[float] = 15.0
 WALK_CAP_FRACTION: Final[Decimal] = Decimal("0.70")
+# P0 remediation (docs/audit_report_v2.md §4, 2026-09-01 LLY loss). The walk
+# cap above is PURELY RELATIVE -- 70% of the distance from mid to natural --
+# with no absolute bound. On a wide chain `natural` can be several multiples
+# of `mid` (LLY trade 8: mid 1.94, natural 8.84), so the relative cap floats
+# to whatever the quote happens to be, even past the strike's own maximum
+# terminal value. A vertical DEBIT spread can never be worth more than its
+# strike width, so any debit cap above `width` is an arbitrage-certain loss
+# booked at the moment of fill. 0.60 gives room to walk to a real, tradeable
+# price without ever crossing into guaranteed-loss territory (LLY trade 8:
+# cap clamps from $6.77 to $3.00 on a $5.00 width; the walk cancels
+# UNFILLED_REJECT instead of filling at $6.65). Deliberately NOT mirrored as a
+# credit floor -- see the comment at its point of use in order_manager._walk:
+# a symmetric floor is incompatible with Task 5's delta-band enforcement.
+WALK_CAP_MAX_FRACTION_OF_WIDTH: Final[Decimal] = Decimal("0.60")
+# P0 remediation (docs/audit_report_v2.md §4). `_is_usable` (market_data.py)
+# previously rejected only null/zero IV, all-zero greeks, and non-positive or
+# inverted quotes -- there was NO bid-ask width check anywhere in the
+# pipeline, so a market of 8.90/15.09 (51.6% wide) passed every gate. Measured
+# against the 2026-09-01 live legs_json: the four legs that actually filled
+# cleanly were all under 16% wide (NVDA 0.5%, DIA 2.6%, ORCL 8.0%, UBER
+# 15.4%); the four that produced the loss (or nearly did) were all over 32%
+# (LLY 51.6%/54.6%/39.9%, GS 32.3%). 0.25 sits cleanly between those two
+# clusters. This is a per-contract filter, distinct from DEGENERATE_CHAIN
+# (which gates the PROPORTION of contracts dropped, never how wide the
+# survivors are) -- a chain that loses >30% of its contracts to this filter
+# now correctly trips DEGENERATE_CHAIN, which is the intended second-order
+# effect, not a bug.
+MAX_QUOTE_SPREAD_PCT: Final[float] = 0.25   # (ask - bid) / mid
+# P0 remediation (docs/audit_report_v2.md §9 item 4). Defence in depth BEHIND
+# Task 1 (the walk-cap fix), not a substitute for it: this rejects a debit
+# vertical whose entry MID is already structurally overpriced, before it ever
+# reaches the walk. Note this would NOT have blocked the LLY trade that lost
+# $4,380 -- that plan's net_mid was 1.94 on a 5.00 width (38.8%), comfortably
+# inside 0.60; the damage happened entirely in the walk. 0.60 catches a chain
+# that is mispriced from the moment the plan is built, which is a distinct
+# failure mode from a walk that drifts to a bad price on a fair-at-mid plan.
+MAX_DEBIT_FRACTION_OF_WIDTH: Final[Decimal] = Decimal("0.60")
 MAX_LEGS: Final[int] = 4
 # Day 4 Step 7. Raised 4 -> 8: > DEBATE_CANDIDATES(4) so select_top's
 # analyst-score ranking finally discards the worse half instead of selecting
@@ -162,7 +212,9 @@ RSI_OVERSOLD: Final[float] = 30.0
 VWAP_DEV_THRESHOLD_PCT: Final[float] = 0.30
 VWM_LOOKBACK_N: Final[int] = 3
 VWM_Z_WINDOW: Final[int] = 60
-# Day 4 Step 2, REVISED after the Step 6 sensitivity run. UNCHANGED at 0.75.
+# Day 4 Step 2, REVISED after the Step 6 sensitivity run to 0.75, then RAISED
+# AGAIN to 1.00 by the P1 remediation below (docs/audit_report_v2.md §9 item
+# 8). The 0.75 history is kept for context:
 #
 # An earlier draft lowered this to 0.45 on the grounds that "no DEBIT candidate
 # has ever cleared the bar". That reasoning was wrong, and the correction is
@@ -178,12 +230,21 @@ VWM_Z_WINDOW: Final[int] = 60
 #   bar 0.45 admits 63.6% of name-days   <- not a filter, most of the tape
 #   bar 0.60 admits 52.9%
 #   bar 0.75 admits 44.0%                <- selective, and still productive
-#   bar 1.00 admits 31.2%
-# At the Step-7 universe (50 names, CROSS_SECTION_N=6) the 0.75 bar yields
-# ~2.6 debit candidates per scan. The debit drought was caused by a 10-name
-# universe with 3 slots, not by this constant -- Step 7 fixes it, and lowering
-# the bar would only make a genuine momentum filter indiscriminate.
-VWM_Z_STRONG: Final[float] = 0.75
+#   bar 1.00 admits 31.2%                <- current value
+#
+# 2026-09-01 P1 remediation, 0.75 -> 1.00. Both LLY debit entries that day
+# (trades 6 and 8, the latter the $4,380 headline loss) cleared the 0.75 bar
+# by a margin of 0.011 (|-0.761| vs 0.75) -- the thinnest possible admission,
+# on the single worst-liquidity chain in the universe. At 1.00 both are
+# excluded; NVDA (+1.205) and UBER (-1.050) are retained, so this is not a
+# blanket momentum-filter tightening, just a higher bar. BE HONEST about what
+# this is: a stopgap that excludes the LLY trades COINCIDENTALLY, not
+# CAUSALLY -- the momentum signal itself was not the defect (NVDA, the
+# strongest signal in the book at +1.205, filled clean and flat). The actual
+# defect was the unbounded walk cap (see WALK_CAP_MAX_FRACTION_OF_WIDTH
+# above), which is the causal fix. This constant only reduces how often a
+# marginal signal reaches an illiquid chain in the first place.
+VWM_Z_STRONG: Final[float] = 1.00
 SHORT_DELTA_TARGET: Final[float] = 0.275
 SHORT_DELTA_BAND: Final[tuple[float, float]] = (0.22, 0.33)
 # Day 4 (docs/day4_action_plan.md Step 9). skew_abs's 25-delta put lookup had

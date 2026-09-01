@@ -9,12 +9,13 @@ from typing import Awaitable, Callable, Literal
 from agent.config import (
     PARTIAL_FILL_MAX_POLL_S,
     WALK_CAP_FRACTION,
+    WALK_CAP_MAX_FRACTION_OF_WIDTH,
     WALK_POLL_INTERVAL_S,
     WALK_REST_S,
     WALK_STEP,
 )
 from agent.execution.broker import BrokerPort, ClockPort
-from agent.schemas.execution import OrderStatus, RejectCode, SpreadPlan
+from agent.schemas.execution import STRUCTURE_IS_CREDIT, OrderStatus, RejectCode, SpreadPlan
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +122,11 @@ async def _walk(
     mid = _quantize_cent(plan.net_mid)
     natural = _quantize_cent(plan.net_natural)
     cap = _quantize_cent(mid + WALK_CAP_FRACTION * (natural - mid))
+    # A vertical debit spread can never be worth more than its strike width, so a
+    # debit above the width is an arbitrage-certain loss (audit_report_v2.md §4).
+    # WALK_CAP_FRACTION alone is unbounded when the chain is wide -- clamp it.
+    if not STRUCTURE_IS_CREDIT[plan.structure]:
+        cap = min(cap, _quantize_cent(Decimal(str(plan.width)) * WALK_CAP_MAX_FRACTION_OF_WIDTH))
 
     limit = mid
     state = await broker.submit_mleg(plan, qty, limit)

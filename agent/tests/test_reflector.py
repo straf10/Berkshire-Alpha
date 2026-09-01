@@ -60,6 +60,49 @@ def test_digest_pure_no_io() -> None:
     reflector.digest([_row("NO_REGIME")])
 
 
+def test_digest_excludes_denylisted_reasons_from_binding_constraint() -> None:
+    """P1 remediation (docs/audit_report_v2.md §7c/§9 item 9): the 2026-09-01
+    reflection recommended loosening DEGENERATE_CHAIN -- the only liquidity
+    guardrail -- from rejection counts alone. DEGENERATE_CHAIN dominates this
+    session's rows but must never be selected as the binding constraint;
+    NO_REGIME (the next-most-common NON-denylisted reason) wins instead."""
+    rows = [
+        _row("DEGENERATE_CHAIN"), _row("DEGENERATE_CHAIN"), _row("DEGENERATE_CHAIN"),
+        _row("NO_REGIME"), _row("NO_REGIME"),
+    ]
+    d = reflector.digest(rows)
+    assert d.binding_constraint == "NO_REGIME"
+    assert d.constraint_count == 2
+    # The full histogram still carries the denylisted reason for context.
+    assert dict(d.gate_histogram)["DEGENERATE_CHAIN"] == 3
+
+
+def test_digest_returns_none_when_every_reason_is_denylisted() -> None:
+    """No fallback to the next-most-common gate when ALL observed reasons are
+    denylisted -- must be a null/no-verdict result, not a silent pick."""
+    rows = [_row("DEGENERATE_CHAIN"), _row("MAX_QUOTE_SPREAD_PCT"), _row("NO_CHAIN")]
+    d = reflector.digest(rows)
+    assert d.binding_constraint is None
+    assert d.constraint_count == 0
+    assert d.observed_range is None
+    assert d.threshold is None
+
+
+async def test_reflect_returns_null_verdict_with_zero_llm_calls_when_all_denylisted() -> None:
+    """reflect() must not call the LLM at all when digest() found no eligible
+    binding constraint -- there is nothing non-denylisted to argue about."""
+    rows = [_row("DEGENERATE_CHAIN"), _row("DEGENERATE_CHAIN")]
+    d = reflector.digest(rows)
+    assert d.binding_constraint is None
+
+    llm = ScriptedLlm(_OUTPUT)
+    result = await reflector.reflect(llm, d, sink=[])
+    assert result.ok is False
+    assert result.output is None
+    assert result.digest is d
+    assert llm.calls == []  # zero LLM calls
+
+
 class ScriptedLlm:
     def __init__(self, result: ReflectorOutput | Exception) -> None:
         self._result = result

@@ -10,8 +10,8 @@ from typing import Literal
 from agent.agents.evidence import EvidenceBundle
 from agent.agents.prompts import TRADER_SYSTEM
 from agent.agents.researchers import DebateResult
-from agent.config import DTE_MAX, DTE_MIN, MAX_LEGS, STRIKE_TABLE_SPAN
-from agent.schemas.execution import SpreadPlan, Structure
+from agent.config import DTE_MAX, DTE_MIN, MAX_LEGS, SHORT_DELTA_BAND, SHORT_DELTA_TARGET, STRIKE_TABLE_SPAN
+from agent.schemas.execution import STRUCTURE_IS_CREDIT, SpreadPlan, Structure
 from agent.schemas.llm import SpreadProposal
 from agent.schemas.market import ChainSnapshot, QuantSnapshot
 from agent.strategy.regime import RegimeDecision
@@ -27,6 +27,7 @@ class ProposalFailure(StrEnum):
     LEG_COUNT = "LEG_COUNT"
     STRUCTURE_MISMATCH = "STRUCTURE_MISMATCH"
     NOT_DEFINED_RISK = "NOT_DEFINED_RISK"
+    SHORT_DELTA_OUT_OF_BAND = "SHORT_DELTA_OUT_OF_BAND"
 
 
 # OptionLegProposal.contract_type speaks CALL/PUT (plan.md's schema,
@@ -81,21 +82,38 @@ _FAILURE_HELP: dict[ProposalFailure, str] = {
     ProposalFailure.LEG_COUNT: "propose exactly two legs",
     ProposalFailure.STRUCTURE_MISMATCH: "the two legs did not form the required structure",
     ProposalFailure.NOT_DEFINED_RISK: "both legs must have ratio_qty 1",
+    ProposalFailure.SHORT_DELTA_OUT_OF_BAND: (
+        f"the SELL leg's |delta| must be between {SHORT_DELTA_BAND[0]} and {SHORT_DELTA_BAND[1]} "
+        f"(target {SHORT_DELTA_TARGET})"
+    ),
 }
 
 
 def strike_table(
-    chain: ChainSnapshot, expiry: date, right: Literal["C", "P"], spot: float, span: int = STRIKE_TABLE_SPAN
+    chain: ChainSnapshot, expiry: date, right: Literal["C", "P"], spot: float, span: int = STRIKE_TABLE_SPAN,
+    target_delta: float | None = None,
 ) -> tuple[dict, ...]:
     """<=24 rows: strike, bid, ask, delta -- the ONLY chain data the trader
     sees (S0.6). Bounded by construction: at most 2*span+1 distinct strikes,
     centred on the strike nearest spot, never by a dollar-distance filter
-    that could admit an unbounded number of rows on a wide/sparse chain."""
+    that could admit an unbounded number of rows on a wide/sparse chain.
+
+    `target_delta`, when given (credit structures -- Task 6, docs/
+    audit_report_v2.md §7A root cause 2), centres the window on the strike
+    whose |delta| is nearest that target instead of the strike nearest spot.
+    On wide-grid names (GS $2.50, LLY $5) the spot-centred window can leave
+    the compliant SHORT_DELTA_BAND strike outside the table entirely, making
+    it unofferable to the model no matter how clearly the prompt states the
+    requirement. None preserves the original spot-centred behaviour exactly."""
     contracts = chain.for_expiry(expiry, right)
     if not contracts:
         return ()
     strikes = sorted({c.strike for c in contracts})
-    center = min(range(len(strikes)), key=lambda i: abs(strikes[i] - spot))
+    if target_delta is None:
+        center = min(range(len(strikes)), key=lambda i: abs(strikes[i] - spot))
+    else:
+        delta_at = {c.strike: c.delta for c in contracts}
+        center = min(range(len(strikes)), key=lambda i: abs(abs(delta_at[strikes[i]]) - target_delta))
     window = set(strikes[max(0, center - span) : center + span + 1])
     rows = sorted(
         ({"strike": c.strike, "bid": c.bid, "ask": c.ask, "delta": c.delta} for c in contracts if c.strike in window),
@@ -157,6 +175,23 @@ def validate_proposal(
         if not any(round(c.strike, 4) == round(leg.strike_price, 4) for c in listed):
             return ProposalFailure.STRIKE_NOT_IN_CHAIN
 
+    # P0 remediation (docs/audit_report_v2.md §7A / §9 item 5). SHORT_DELTA_BAND
+    # had exactly one consumer in the whole codebase -- spread_builder's
+    # deterministic build() -- so every LLM-picked credit spread bypassed it
+    # entirely. All four live LLM credit trades on 2026-09-01 struck at
+    # 0.486-0.609 delta against the (0.22, 0.33) band. Scoped to credit
+    # structures only -- debit verticals have a different geometry and are
+    # out of scope for this check.
+    if STRUCTURE_IS_CREDIT[d.structure]:
+        lo, hi = SHORT_DELTA_BAND
+        sell = next(l for l in p.legs if l.side == "SELL")
+        listed = chain.for_expiry(expiry, _RIGHT[sell.contract_type])
+        short_q = next(
+            (c for c in listed if round(c.strike, 4) == round(sell.strike_price, 4)), None
+        )
+        if short_q is None or not (lo < abs(short_q.delta) < hi):
+            return ProposalFailure.SHORT_DELTA_OUT_OF_BAND
+
     by_right: dict[str, list] = {}
     for leg in p.legs:
         by_right.setdefault(leg.contract_type, []).append(leg)
@@ -183,16 +218,26 @@ def _trader_prompt(bundle: EvidenceBundle, debate: DebateResult, chain: ChainSna
     assert structure is not None and q.target_expiry is not None
     is_credit = structure in (Structure.BULL_PUT_SPREAD, Structure.BEAR_CALL_SPREAD)
     right: Literal["C", "P"] = "P" if structure in (Structure.BULL_PUT_SPREAD, Structure.BEAR_PUT_SPREAD) else "C"
-    table = strike_table(chain, q.target_expiry, right, q.spot)
+    table = strike_table(chain, q.target_expiry, right, q.spot, target_delta=SHORT_DELTA_TARGET if is_credit else None)
     debate_summary = {
         "verdict": debate.verdict.value, "consensus_score": round(debate.consensus_score, 3),
         "rounds_run": debate.rounds_run,
     }
+    # Task 6a (docs/audit_report_v2.md §7A root cause 1): the prompt never
+    # stated the target delta, so the model optimised the one thing it could
+    # see -- premium -- and struck every credit spread near 0.50-0.60 delta
+    # against a 0.22-0.33 band.
+    delta_requirement = (
+        f"SHORT LEG REQUIREMENT: the SELL leg's |delta| MUST be between {SHORT_DELTA_BAND[0]} and "
+        f"{SHORT_DELTA_BAND[1]} (target {SHORT_DELTA_TARGET}). Proposals outside this band are rejected.\n"
+        if is_credit else ""
+    )
     return (
         f"Underlying: {q.symbol}  Structure required: {structure.value}  "
         f"Expiry: {q.target_expiry.isoformat()}  Right: {right}  Credit spread: {is_credit}\n"
         f"Required legs: {_LEG_RECIPE[structure]} Both legs are {'CALL' if right == 'C' else 'PUT'}s, "
         f"ratio_qty 1, expiring {q.target_expiry.isoformat()}. Spot is {q.spot}.\n"
+        f"{delta_requirement}"
         f"Evidence: {bundle.to_prompt_json()}\n"
         f"Debate outcome: {json.dumps(debate_summary, separators=(',', ':'))}\n"
         f"Strikes available (strike,bid,ask,delta), choose ONLY from this table:\n{json.dumps(table, separators=(',', ':'))}"

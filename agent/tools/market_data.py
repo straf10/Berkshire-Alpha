@@ -10,7 +10,7 @@ from alpaca.data.enums import Adjustment, DataFeed, OptionsFeed
 from alpaca.data.requests import OptionChainRequest, OptionSnapshotRequest, StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
-from agent.config import DEGENERATE_CHAIN_MAX_DROP, DTE_MAX, DTE_MIN, SEMAPHORE_LIMIT
+from agent.config import DEGENERATE_CHAIN_MAX_DROP, DTE_MAX, DTE_MIN, MAX_QUOTE_SPREAD_PCT, SEMAPHORE_LIMIT
 from agent.execution.alpaca_client import AlpacaClients
 from agent.schemas.market import ChainSnapshot, DailyBar, MinuteBar, OptionQuote
 
@@ -137,6 +137,13 @@ def _is_usable(snap: Any) -> bool:
         return False
     q = snap.latest_quote
     if q is None or q.bid_price <= 0 or q.ask_price <= 0 or q.ask_price < q.bid_price:
+        return False
+    # P0 remediation (docs/audit_report_v2.md §4): no bid-ask width check
+    # existed anywhere in the pipeline before this -- a market of 8.90/15.09
+    # (51.6% wide) passed every prior gate. See MAX_QUOTE_SPREAD_PCT's
+    # config.py comment for the measured threshold.
+    mid = (q.bid_price + q.ask_price) / 2
+    if mid <= 0 or (q.ask_price - q.bid_price) / mid > MAX_QUOTE_SPREAD_PCT:
         return False
     return True
 

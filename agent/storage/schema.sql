@@ -50,7 +50,11 @@ CREATE TABLE IF NOT EXISTS trades (
   max_loss_per_spread REAL NOT NULL DEFAULT 0,
   -- P1-B: set to 1 only when this row's terminal state was confirmed against
   -- the Alpaca CLI (`order get`), not merely inferred from our own walk result.
-  cli_verified    INTEGER NOT NULL DEFAULT 0
+  cli_verified    INTEGER NOT NULL DEFAULT 0,
+  -- P2 remediation (docs/audit_report_v2.md §9 item 10): ExitReason
+  -- (agent/risk/exits.py) had zero write-path consumers before this --
+  -- written by close_trade alongside closed_at, NULL until this row closes.
+  exit_reason     TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_trades_ts ON trades(ts_utc DESC);
 CREATE INDEX IF NOT EXISTS ix_trades_open ON trades(closed_at) WHERE closed_at IS NULL;

@@ -28,6 +28,7 @@ from agent.config import (
     LLM_SEMAPHORE_LIMIT,
     MACRO_TICKERS,
     MANAGEMENT_INTERVAL_S,
+    MAX_RISK_PER_TRADE_PCT,
     NEWS_LOOKBACK_H,
     RECONCILE_MAX_CHAIN_HOPS,
     RECONCILE_MAX_S,
@@ -156,6 +157,19 @@ async def _completed_scan_count(conn: aiosqlite.Connection, session_date: str) -
     cur = await conn.execute("SELECT COUNT(DISTINCT cycle_id) FROM decisions WHERE session_date = ?", (session_date,))
     row = await cur.fetchone()
     return int(row[0]) if row is not None else 0
+
+
+def _max_loss_from_fill(plan: SpreadPlan, fill_price: Decimal) -> Decimal:
+    """Post-fill truth (docs/audit_report_v2.md §6). plan.max_loss_per_spread
+    is derived from net_mid at build time and is stale the moment the walk
+    moves the fill off mid -- trade 8 (LLY) gated on $194/spread (net_mid
+    basis) while the true post-fill risk was $665/spread, a 3.43x
+    understatement that silently breached MAX_RISK_PER_TRADE_PCT."""
+    f = Decimal(str(fill_price))
+    w = Decimal(str(plan.width))
+    if STRUCTURE_IS_CREDIT[plan.structure]:
+        return (w - abs(f)) * 100
+    return f * 100
 
 
 async def _open_defined_risk(conn: aiosqlite.Connection) -> Decimal:
@@ -549,6 +563,11 @@ async def assignment_tick(
             realized_pnl = _assignment_realized_pnl(trade, event, result)
             await storage_write.close_trade(
                 conn, trade.trade_id, closed_at=datetime.now(timezone.utc).isoformat(), realized_pnl=realized_pnl,
+                # P2 remediation (docs/audit_report_v2.md §9 item 10): this
+                # close path is assignment resolution, not evaluate_exit --
+                # AssignmentReason (not ExitReason) is the true mechanism, so
+                # record that instead of leaving exit_reason NULL here too.
+                exit_reason=event.reason.value,
             )
 
     return AssignmentTickResult(acted=acted, trade_ids=frozenset(trade_ids))
@@ -605,6 +624,11 @@ async def exit_tick(
             realized_pnl = (-trade.entry_net_mid - (result.fill_price or Decimal("0"))) * 100 * result.filled_qty
             await storage_write.close_trade(
                 conn, trade.trade_id, closed_at=datetime.now(timezone.utc).isoformat(), realized_pnl=realized_pnl,
+                # P2 remediation (docs/audit_report_v2.md §9 item 10): decision.reason
+                # is the ExitReason evaluate_exit returned above -- now persisted so
+                # it's possible to determine from stored state, not price arithmetic,
+                # why a trade closed.
+                exit_reason=decision.reason.value if decision.reason is not None else None,
             )
         # PARTIAL_SUSPENDED / UNFILLED_REJECT / REJECTED: closed_at stays
         # NULL deliberately. walk_to_fill already polls a partial fill up to
@@ -1048,9 +1072,24 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
                     await storage_write.update_trade_order_id(conn, trade_id, order_id=order_id, step=step)
 
                 result = await walk_to_fill(deps.broker, plan, qty_val, clock=deps.clock, on_order_id=_sink)
-                await storage_write.update_trade_result(conn, trade_id, result)
-                if result.filled_qty:
-                    aggregate_risk += plan.max_loss_per_spread * result.filled_qty
+                if result.filled_qty and result.fill_price is not None:
+                    # docs/audit_report_v2.md §6/Task 3: recompute risk from the
+                    # ACTUAL fill, not the pre-walk plan -- plan.max_loss_per_spread
+                    # is derived from net_mid and is stale the moment the walk
+                    # moves the fill off mid (trade 8, LLY: gated on $194/spread,
+                    # true post-fill risk was $665/spread, a 3.43x understatement).
+                    realized_max_loss = _max_loss_from_fill(plan, result.fill_price)
+                    await storage_write.update_trade_result(conn, trade_id, result, max_loss_per_spread=realized_max_loss)
+                    aggregate_risk += realized_max_loss * result.filled_qty
+                    if realized_max_loss * result.filled_qty > Decimal(str(MAX_RISK_PER_TRADE_PCT)) * account.equity:
+                        logger.error(
+                            "POST-FILL RISK BREACH %s %s: %s x %d = %s exceeds %.0f%% of equity %s -- halting entries",
+                            plan.symbol, plan.structure, realized_max_loss, result.filled_qty,
+                            realized_max_loss * result.filled_qty, MAX_RISK_PER_TRADE_PCT * 100, account.equity,
+                        )
+                        await storage_write.put_state(conn, "entries_halted", True)
+                else:
+                    await storage_write.update_trade_result(conn, trade_id, result)
 
         await storage_write.put_state(conn, "account", {
             "equity": str(account.equity), "last_equity": str(account.last_equity),
@@ -1134,14 +1173,25 @@ async def _session_decisions(conn: aiosqlite.Connection, session_date: str) -> l
 def _reflection_row(result: reflector.ReflectionResult) -> storage_write.ReflectionRow:
     d = result.digest
     output = result.output
+    # P1 remediation (docs/audit_report_v2.md §9 item 9): digest() returns
+    # binding_constraint=None when every gate_reason observed this session is
+    # in REFLECTOR_DENYLIST -- the `reflections` table's column predates that
+    # possibility and is NOT NULL, so substitute an explicit sentinel rather
+    # than a schema migration for what should be a rare session shape.
+    binding_constraint = d.binding_constraint if d.binding_constraint is not None else "NONE_ELIGIBLE_ALL_DENYLISTED"
     return storage_write.ReflectionRow(
         ts_utc=datetime.now(timezone.utc).isoformat(),
         session_date=d.session_date.isoformat(),
         decisions_examined=d.decisions_examined,
-        binding_constraint=d.binding_constraint,
+        binding_constraint=binding_constraint,
         constraint_count=d.constraint_count,
         verdict=output.verdict if output is not None else "HOLD",
-        argument=output.argument if output is not None else "reflection unavailable",
+        argument=(
+            output.argument if output is not None
+            else ("every gate rejection this session was against a denylisted (liquidity/execution) "
+                  "guardrail -- no reflection candidate" if d.binding_constraint is None
+                  else "reflection unavailable")
+        ),
         proposed_change=output.proposed_change if output is not None else None,
         ok=result.ok,
     )

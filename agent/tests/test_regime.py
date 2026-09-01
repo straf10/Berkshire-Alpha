@@ -55,11 +55,13 @@ def test_regime_debit_requires_momentum() -> None:
     assert d.reason == "DEBIT_NO_MOMENTUM_CONFIRMATION"
 
 
-def test_vwm_gate_at_075() -> None:
-    assert VWM_Z_STRONG == 0.75
-    confirmed = select(replace(_BASE, vwm_z=0.80), Regime.DEBIT, _SKEW_THRESH, _VWM_BAR)
+def test_vwm_gate_at_configured_bar() -> None:
+    # P1 remediation (docs/audit_report_v2.md §9 item 8): VWM_Z_STRONG raised
+    # 0.75 -> 1.00 after both LLY entries cleared the old bar by only 0.011.
+    assert VWM_Z_STRONG == 1.00
+    confirmed = select(replace(_BASE, vwm_z=1.05), Regime.DEBIT, _SKEW_THRESH, _VWM_BAR)
     assert confirmed.regime == Regime.DEBIT
-    not_confirmed = select(replace(_BASE, vwm_z=0.70), Regime.DEBIT, _SKEW_THRESH, _VWM_BAR)
+    not_confirmed = select(replace(_BASE, vwm_z=0.95), Regime.DEBIT, _SKEW_THRESH, _VWM_BAR)
     assert not_confirmed.regime == Regime.NO_TRADE
 
 

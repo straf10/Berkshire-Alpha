@@ -247,15 +247,27 @@ async def test_positions_open_endpoint_excludes_closed_and_joins_live_legs(tmp_p
             gate_detail="APPROVED", observed_value=None, threshold_value=None, qty=6,
             equity_feed="iex", earnings_armed=False, quant_json="{}", plan_json=None,
         ))
+        # P2 remediation (docs/audit_report_v2.md §9 item 11): an "open"
+        # position must actually be filled -- status FILLED, filled_qty > 0 --
+        # not merely closed_at IS NULL (that predicate alone also matches an
+        # UNFILLED_REJECT row with no broker position at all).
         open_trade_id = await storage_write.insert_trade(conn, storage_write.TradeRow(
             decision_id=decision_id, ts_utc=datetime.now(timezone.utc).isoformat(), symbol="SPY",
             structure="BULL_PUT_SPREAD", expiry="2026-09-04", legs_json="[]", qty=6,
-            submitted_limit=Decimal("-0.9"),
+            submitted_limit=Decimal("-0.9"), status="FILLED", filled_qty=6,
         ))
         await storage_write.insert_trade(conn, storage_write.TradeRow(
             decision_id=decision_id, ts_utc=datetime.now(timezone.utc).isoformat(), symbol="SPY",
             structure="BULL_PUT_SPREAD", expiry="2026-09-04", legs_json="[]", qty=6,
             submitted_limit=Decimal("-0.9"), closed_at=datetime.now(timezone.utc).isoformat(),
+            status="FILLED", filled_qty=6,
+        ))
+        # Regression case for the bug itself: an UNFILLED_REJECT row with no
+        # broker position, closed_at still NULL -- must NOT be reported open.
+        await storage_write.insert_trade(conn, storage_write.TradeRow(
+            decision_id=decision_id, ts_utc=datetime.now(timezone.utc).isoformat(), symbol="SPY",
+            structure="BULL_PUT_SPREAD", expiry="2026-09-04", legs_json="[]", qty=6,
+            submitted_limit=Decimal("-0.9"), status="UNFILLED_REJECT", filled_qty=0,
         ))
         await storage_write.insert_greeks_snapshot(conn, storage_write.GreeksRow(
             ts_utc=datetime.now(timezone.utc).isoformat(), equity=100000.0, delta_dollars=1000.0,

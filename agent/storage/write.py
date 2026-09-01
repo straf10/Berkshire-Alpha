@@ -245,19 +245,43 @@ async def insert_trade(conn: aiosqlite.Connection, t: TradeRow) -> int:
     return cur.lastrowid
 
 
-async def update_trade_result(conn: aiosqlite.Connection, trade_id: int, r: WalkResult) -> None:
-    await conn.execute(
-        """UPDATE trades SET status=?, final_order_id=?, final_limit=?, fill_price=?,
-           filled_qty=?, walk_steps=?, reject_code=?, events_json=? WHERE id=?""",
-        (
-            r.status, r.order_id,
-            float(r.final_limit) if r.final_limit is not None else None,
-            float(r.fill_price) if r.fill_price is not None else None,
-            r.filled_qty, r.steps, r.reject_code,
-            json.dumps([e.__dict__ for e in r.events], default=str),
-            trade_id,
-        ),
-    )
+async def update_trade_result(
+    conn: aiosqlite.Connection, trade_id: int, r: WalkResult, *,
+    max_loss_per_spread: Decimal | None = None,
+) -> None:
+    """`max_loss_per_spread`, when given, overwrites the mid-based value
+    insert_trade wrote with the fill-derived truth (docs/audit_report_v2.md
+    §6: plan.max_loss_per_spread is stale the instant the walk moves off
+    mid). None (the default -- reject/no-fill paths) leaves the original
+    build-time value in place, since there is no fill to derive a truer
+    number from."""
+    if max_loss_per_spread is not None:
+        await conn.execute(
+            """UPDATE trades SET status=?, final_order_id=?, final_limit=?, fill_price=?,
+               filled_qty=?, walk_steps=?, reject_code=?, events_json=?, max_loss_per_spread=? WHERE id=?""",
+            (
+                r.status, r.order_id,
+                float(r.final_limit) if r.final_limit is not None else None,
+                float(r.fill_price) if r.fill_price is not None else None,
+                r.filled_qty, r.steps, r.reject_code,
+                json.dumps([e.__dict__ for e in r.events], default=str),
+                float(max_loss_per_spread),
+                trade_id,
+            ),
+        )
+    else:
+        await conn.execute(
+            """UPDATE trades SET status=?, final_order_id=?, final_limit=?, fill_price=?,
+               filled_qty=?, walk_steps=?, reject_code=?, events_json=? WHERE id=?""",
+            (
+                r.status, r.order_id,
+                float(r.final_limit) if r.final_limit is not None else None,
+                float(r.fill_price) if r.fill_price is not None else None,
+                r.filled_qty, r.steps, r.reject_code,
+                json.dumps([e.__dict__ for e in r.events], default=str),
+                trade_id,
+            ),
+        )
     await conn.commit()
 
 
@@ -509,13 +533,21 @@ async def insert_proposal(conn: aiosqlite.Connection, p: ProposalRow) -> int:
     return cur.lastrowid
 
 
-async def close_trade(conn: aiosqlite.Connection, trade_id: int, *, closed_at: str, realized_pnl: Decimal) -> None:
+async def close_trade(
+    conn: aiosqlite.Connection, trade_id: int, *, closed_at: str, realized_pnl: Decimal,
+    exit_reason: str | None = None,
+) -> None:
     """Day 4 exits (docs/day3_llm_plan.md's own §0.1 blocking-gap note): the
     ONLY writer of `closed_at`. Until this lands, `_open_defined_risk`'s
-    ledger only ever grows within a session -- see main.py's exit_tick."""
+    ledger only ever grows within a session -- see main.py's exit_tick.
+
+    `exit_reason` (P2 remediation, docs/audit_report_v2.md §9 item 10) is the
+    ExitReason (agent/risk/exits.py) that triggered this close, or None for a
+    non-`evaluate_exit` close path (e.g. assignment resolution) that has no
+    such reason to report."""
     await conn.execute(
-        "UPDATE trades SET closed_at = ?, realized_pnl = ? WHERE id = ?",
-        (closed_at, float(realized_pnl), trade_id),
+        "UPDATE trades SET closed_at = ?, realized_pnl = ?, exit_reason = ? WHERE id = ?",
+        (closed_at, float(realized_pnl), exit_reason, trade_id),
     )
     await conn.commit()
 
