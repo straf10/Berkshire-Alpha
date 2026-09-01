@@ -66,14 +66,31 @@ async def greeks_history(conn: aiosqlite.Connection, limit: int = 500) -> list[d
 
 
 async def open_positions(conn: aiosqlite.Connection) -> list[dict[str, Any]]:
-    """Open trades (closed_at IS NULL) with live per-leg greeks attached where
-    available, joined in Python against the latest greeks_snapshots row's
-    per_position_json (keyed on LegExposure.underlying == trades.symbol) rather
-    than in SQL -- greeks_snapshots carries no trade_id, only the underlying
-    symbol, and that symbol is not unique across concurrent positions in
-    different underlyings, so a plain per-symbol match is exactly as precise
-    as the two tables allow (docs/day6_ui_plan.md S0.2)."""
-    cur = await conn.execute("SELECT * FROM trades WHERE closed_at IS NULL ORDER BY ts_utc DESC")
+    """Open trades (closed_at IS NULL AND actually filled) with live per-leg
+    greeks attached where available, joined in Python against the latest
+    greeks_snapshots row's per_position_json (keyed on
+    LegExposure.underlying == trades.symbol) rather than in SQL --
+    greeks_snapshots carries no trade_id, only the underlying symbol, and
+    that symbol is not unique across concurrent positions in different
+    underlyings, so a plain per-symbol match is exactly as precise as the two
+    tables allow (docs/day6_ui_plan.md S0.2).
+
+    P2 remediation (docs/audit_report_v2.md §9 item 11): the original query
+    was `WHERE closed_at IS NULL` with no status filter, so UNFILLED_REJECT
+    rows -- orders that never filled and hold no broker position -- were
+    reported as open positions (6 reported vs 2 actually held on
+    2026-09-01). `status = 'FILLED'` alone (the audit's original draft
+    suggestion) is ALSO wrong: it would silently exclude PARTIAL_SUSPENDED
+    positions, which are real open risk. Use the two-status form, matching
+    the predicate already in production use at agent/main.py's
+    _open_trades. This is a reporting fix only -- MAX_CONCURRENT_POSITIONS
+    reads portfolio.position_keys from live broker exposures
+    (agent/risk/greeks.py), never this query, so trading behavior is
+    unaffected either way."""
+    cur = await conn.execute(
+        "SELECT * FROM trades WHERE closed_at IS NULL AND filled_qty > 0 "
+        "AND status IN ('FILLED', 'PARTIAL_SUSPENDED') ORDER BY ts_utc DESC"
+    )
     trades = [dict(row) for row in await cur.fetchall()]
 
     legs_by_symbol: dict[str, list[dict[str, Any]]] = {}

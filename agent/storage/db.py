@@ -108,3 +108,14 @@ async def _migrate(conn: aiosqlite.Connection) -> None:
     # every pre-existing row -- none were CLI-verified. No backfill needed.
     if "cli_verified" not in await _column_names(conn, "trades"):
         await conn.execute("ALTER TABLE trades ADD COLUMN cli_verified INTEGER NOT NULL DEFAULT 0")
+
+    # P2 remediation (docs/audit_report_v2.md §9 item 10, Task 10). ExitReason
+    # (agent/risk/exits.py) existed with zero write-path consumers -- it was
+    # impossible to tell from stored state WHY a trade closed (unwind, time
+    # stop, profit target, or stop loss), which forced the 2026-09-01 autopsy
+    # to infer exit mechanism from price arithmetic. NULL for every
+    # pre-existing row: none of them were closed with a reason recorded, and
+    # NULL is the honest "unknown, predates this column" value -- no backfill
+    # is possible since the mechanism truly wasn't persisted anywhere.
+    if "exit_reason" not in await _column_names(conn, "trades"):
+        await conn.execute("ALTER TABLE trades ADD COLUMN exit_reason TEXT")

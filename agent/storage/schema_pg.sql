@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS trades (
   closed_at       TEXT,
   realized_pnl    REAL,
   max_loss_per_spread REAL NOT NULL DEFAULT 0,
-  cli_verified    INTEGER NOT NULL DEFAULT 0
+  cli_verified    INTEGER NOT NULL DEFAULT 0,
+  exit_reason     TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_trades_ts ON trades(ts_utc DESC);
 CREATE INDEX IF NOT EXISTS ix_trades_open ON trades(closed_at) WHERE closed_at IS NULL;

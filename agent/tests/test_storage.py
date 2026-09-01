@@ -400,6 +400,105 @@ async def test_migrate_adds_cli_verified_to_legacy_trades(tmp_path) -> None:
         assert cols.count("cli_verified") == 1
 
 
+async def test_migrate_adds_exit_reason_to_legacy_trades(tmp_path) -> None:
+    """P2 remediation (docs/audit_report_v2.md §9 item 10). Same guarded
+    ALTER TABLE pattern as cli_verified above."""
+    from agent.storage.db import _migrate
+
+    db_path = str(tmp_path / "legacy.db")
+    await _seed_legacy_db(db_path)  # a pre-P1-B trades table, no exit_reason column
+
+    async with connect(db_path) as conn:
+        await _migrate(conn)
+        await conn.commit()
+        cur = await conn.execute("PRAGMA table_info(trades)")
+        cols = [row[1] for row in await cur.fetchall()]
+        assert cols.count("exit_reason") == 1
+
+        await _migrate(conn)  # idempotent
+        await conn.commit()
+        cur = await conn.execute("PRAGMA table_info(trades)")
+        cols = [row[1] for row in await cur.fetchall()]
+        assert cols.count("exit_reason") == 1
+
+
+async def test_close_trade_persists_exit_reason(tmp_path) -> None:
+    """P2 remediation (docs/audit_report_v2.md §9 item 10): exit_reason had
+    zero write-path consumers before this -- close_trade is now the sole
+    writer, alongside closed_at and realized_pnl."""
+    db_path = str(tmp_path / "agent.db")
+    await init_db(db_path)
+    async with connect(db_path) as conn:
+        decision_id = await write.insert_decision(conn, write.DecisionRow(
+            ts_utc="t", cycle_id="c", session_date="2026-08-31", symbol="SPY", mode="quant-only",
+            regime="CREDIT", structure="BULL_PUT_SPREAD", action="ENTER", gate_reason="APPROVED",
+            gate_detail="APPROVED", observed_value=None, threshold_value=None, qty=1,
+            equity_feed="iex", earnings_armed=False, quant_json="{}", plan_json=None,
+        ))
+        trade_id = await write.insert_trade(conn, write.TradeRow(
+            decision_id=decision_id, ts_utc="t", symbol="SPY", structure="BULL_PUT_SPREAD",
+            expiry="2026-09-04", legs_json="[]", qty=1, submitted_limit=Decimal("-0.90"),
+        ))
+        await write.close_trade(
+            conn, trade_id, closed_at="2026-09-02T00:00:00Z", realized_pnl=Decimal("10"),
+            exit_reason="PROFIT_TARGET",
+        )
+        cur = await conn.execute("SELECT exit_reason, closed_at FROM trades WHERE id = ?", (trade_id,))
+        row = await cur.fetchone()
+        assert row[0] == "PROFIT_TARGET"
+        assert row[1] == "2026-09-02T00:00:00Z"
+
+
+async def test_open_positions_excludes_unfilled_rejects(tmp_path) -> None:
+    """P2 remediation (docs/audit_report_v2.md §9 item 11). Regression for
+    the 2026-09-01 /positions/open bug: 6 rows reported, 2 actual broker
+    positions -- the four extras were UNFILLED_REJECT rows with filled_qty=0
+    and no broker position at all."""
+    db_path = str(tmp_path / "agent.db")
+    await init_db(db_path)
+    async with connect(db_path) as conn:
+        async def _trade(status: str, filled_qty: int) -> int:
+            decision_id = await write.insert_decision(conn, write.DecisionRow(
+                ts_utc="t", cycle_id="c", session_date="2026-08-31", symbol="SPY", mode="quant-only",
+                regime="CREDIT", structure="BULL_PUT_SPREAD", action="ENTER", gate_reason="APPROVED",
+                gate_detail="APPROVED", observed_value=None, threshold_value=None, qty=1,
+                equity_feed="iex", earnings_armed=False, quant_json="{}", plan_json=None,
+            ))
+            return await write.insert_trade(conn, write.TradeRow(
+                decision_id=decision_id, ts_utc="t", symbol="SPY", structure="BULL_PUT_SPREAD",
+                expiry="2026-09-04", legs_json="[]", qty=1, submitted_limit=Decimal("-0.90"),
+                status=status, filled_qty=filled_qty,
+            ))
+
+        filled_id = await _trade("FILLED", 1)
+        partial_id = await _trade("PARTIAL_SUSPENDED", 1)
+        await _trade("UNFILLED_REJECT", 0)
+        await _trade("REJECTED", 0)
+
+        open_rows = await read.open_positions(conn)
+        ids = {row["id"] for row in open_rows}
+        assert ids == {filled_id, partial_id}
+
+
+async def test_close_trade_exit_reason_defaults_to_null(tmp_path) -> None:
+    db_path = str(tmp_path / "agent.db")
+    await init_db(db_path)
+    async with connect(db_path) as conn:
+        decision_id = await write.insert_decision(conn, write.DecisionRow(
+            ts_utc="t", cycle_id="c", session_date="2026-08-31", symbol="SPY", mode="quant-only",
+            regime="CREDIT", structure="BULL_PUT_SPREAD", action="ENTER", gate_reason="APPROVED",
+            gate_detail="APPROVED", observed_value=None, threshold_value=None, qty=1,
+            equity_feed="iex", earnings_armed=False, quant_json="{}", plan_json=None,
+        ))
+        trade_id = await write.insert_trade(conn, write.TradeRow(
+            decision_id=decision_id, ts_utc="t", symbol="SPY", structure="BULL_PUT_SPREAD",
+            expiry="2026-09-04", legs_json="[]", qty=1, submitted_limit=Decimal("-0.90"),
+        ))
+        await write.close_trade(conn, trade_id, closed_at="2026-09-02T00:00:00Z", realized_pnl=Decimal("10"))
+        cur = await conn.execute("SELECT exit_reason FROM trades WHERE id = ?", (trade_id,))
+        assert (await cur.fetchone())[0] is None
+
+
 async def test_update_trade_order_id_sets_order_id_once(tmp_path) -> None:
     db_path = str(tmp_path / "agent.db")
     await init_db(db_path)

@@ -143,8 +143,16 @@ async def connect(dsn: str) -> AsyncIterator[PgConnection]:
 async def init_db(dsn: str) -> None:
     """Idempotent: schema_pg.sql is all CREATE TABLE/INDEX IF NOT EXISTS, and
     unlike sqlite's schema.sql there is no additive _migrate() step -- this
-    schema is created complete (see schema_pg.sql's header comment)."""
+    schema is created complete (see schema_pg.sql's header comment).
+
+    P2 remediation (docs/audit_report_v2.md §9 item 10): CREATE TABLE IF NOT
+    EXISTS cannot add a column to a table that already exists, and the
+    Railway production DB predates `trades.exit_reason` -- unlike sqlite's
+    ALTER TABLE (no IF NOT EXISTS support, guarded by _column_names in
+    db.py's _migrate), postgres supports ADD COLUMN IF NOT EXISTS natively,
+    so this one-line, unconditional statement is the whole migration."""
     pool = await _get_pool(dsn)
     schema = _SCHEMA_PATH.read_text(encoding="utf-8")
     async with pool.acquire() as raw:
         await raw.execute(schema)
+        await raw.execute("ALTER TABLE trades ADD COLUMN IF NOT EXISTS exit_reason TEXT")

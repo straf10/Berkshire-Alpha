@@ -563,6 +563,11 @@ async def assignment_tick(
             realized_pnl = _assignment_realized_pnl(trade, event, result)
             await storage_write.close_trade(
                 conn, trade.trade_id, closed_at=datetime.now(timezone.utc).isoformat(), realized_pnl=realized_pnl,
+                # P2 remediation (docs/audit_report_v2.md §9 item 10): this
+                # close path is assignment resolution, not evaluate_exit --
+                # AssignmentReason (not ExitReason) is the true mechanism, so
+                # record that instead of leaving exit_reason NULL here too.
+                exit_reason=event.reason.value,
             )
 
     return AssignmentTickResult(acted=acted, trade_ids=frozenset(trade_ids))
@@ -619,6 +624,11 @@ async def exit_tick(
             realized_pnl = (-trade.entry_net_mid - (result.fill_price or Decimal("0"))) * 100 * result.filled_qty
             await storage_write.close_trade(
                 conn, trade.trade_id, closed_at=datetime.now(timezone.utc).isoformat(), realized_pnl=realized_pnl,
+                # P2 remediation (docs/audit_report_v2.md §9 item 10): decision.reason
+                # is the ExitReason evaluate_exit returned above -- now persisted so
+                # it's possible to determine from stored state, not price arithmetic,
+                # why a trade closed.
+                exit_reason=decision.reason.value if decision.reason is not None else None,
             )
         # PARTIAL_SUSPENDED / UNFILLED_REJECT / REJECTED: closed_at stays
         # NULL deliberately. walk_to_fill already polls a partial fill up to
