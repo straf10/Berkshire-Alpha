@@ -22,6 +22,7 @@ from agent.session import SessionPlan
 from agent.storage import db as storage_db
 from agent.storage import write as storage_write
 from agent.tests.fixture_helpers import load_bar_data, load_chain_raw, make_barset
+from agent.tools.market_data import _is_usable
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SESSION_DATE = date(2026, 8, 31)
@@ -70,8 +71,19 @@ class FakeClients:
     def __init__(self) -> None:
         self._daily = make_barset(load_bar_data("bars_daily.json"))
         self._minute = make_barset(load_bar_data("bars_minute.json"))
+        # P0 remediation (Task 2, docs/audit_report_v2.md §4/§9 item 2):
+        # chain_SPY.json is 620 real contracts spanning several expiries, and
+        # 36.5% of them are wider than MAX_QUOTE_SPREAD_PCT -- correctly
+        # tripping DEGENERATE_CHAIN under the new filter (see
+        # test_spread_builder.py's test_weekend_expiry_is_next_session_anchored,
+        # which asserts exactly that). These main.py tests care about exercising
+        # the pipeline on a TRADEABLE SPY chain, not about DEGENERATE_CHAIN
+        # itself, so pre-filter to the same tight subset a real feed's
+        # usability gate would leave -- still real fixture bid/ask/delta
+        # values, just without the wide legs that would otherwise sink the
+        # whole multi-expiry batch over the 30% drop threshold.
         self._chains = {
-            "SPY": load_chain_raw("chain_SPY.json"),
+            "SPY": {occ: snap for occ, snap in load_chain_raw("chain_SPY.json").items() if _is_usable(snap)},
             "NVDA": load_chain_raw("chain_NVDA.json"),
             "AMD": load_chain_raw("chain_AMD.json"),
         }
@@ -1035,15 +1047,22 @@ async def test_aggregate_risk_accumulates_in_cycle(tmp_path, monkeypatch: pytest
     monkeypatch.setattr(ticker_screener_module, "select", forced_select)
 
     def build_stub(q, decision, chain):
+        # width 13.5 (short 100 / long 86.5) so that Task 3's fill-derived
+        # max loss -- (width - |fill|) * 100, fill_price fixed at -3.50 below
+        # -- lands on exactly 1000/spread, matching this test's pre-fill
+        # max_loss_per_spread and preserving the "SPY's 2-contract fill exactly
+        # saturates the $10000 aggregate ceiling" premise now that aggregate_risk
+        # is accumulated from the ACTUAL fill rather than the pre-walk plan
+        # (docs/audit_report_v2.md §6).
         occ_short = f"{q.symbol}260904P00100000"
-        occ_long = f"{q.symbol}260904P00097000"
+        occ_long = f"{q.symbol}260904P00086500"
         leg_short = Leg(occ_symbol=occ_short, strike=100.0, right="P", side="SELL", ratio_qty=1,
                          intent=Intent.SELL_TO_OPEN, delta=-0.275, vega=0.05, bid=1.0, ask=1.1)
-        leg_long = Leg(occ_symbol=occ_long, strike=97.0, right="P", side="BUY", ratio_qty=1,
+        leg_long = Leg(occ_symbol=occ_long, strike=86.5, right="P", side="BUY", ratio_qty=1,
                         intent=Intent.BUY_TO_OPEN, delta=-0.10, vega=0.03, bid=0.2, ask=0.3)
         return SpreadPlan(
             symbol=q.symbol, structure=Structure.BULL_PUT_SPREAD, regime=Regime.CREDIT,
-            expiry=date(2026, 9, 4), dte=4, legs=(leg_short, leg_long), width=3.0,
+            expiry=date(2026, 9, 4), dte=4, legs=(leg_short, leg_long), width=13.5,
             net_mid=Decimal("-3.50"), net_natural=Decimal("-3.30"),
             max_profit_per_spread=Decimal("500"), max_loss_per_spread=Decimal("1000"),
             p_success=0.8, spot=100.0, short_leg_delta=0.275,
@@ -1053,10 +1072,10 @@ async def test_aggregate_risk_accumulates_in_cycle(tmp_path, monkeypatch: pytest
 
     def chain_get_stub(self, symbol):
         occ_short = f"{symbol}260904P00100000"
-        occ_long = f"{symbol}260904P00097000"
+        occ_long = f"{symbol}260904P00086500"
         q = OptionQuote(occ_symbol=occ_short, underlying=symbol, expiry=date(2026, 9, 4), strike=100.0,
                          right="P", bid=1.0, ask=1.1, delta=-0.275, gamma=0.01, theta=-0.01, vega=0.05, iv=0.2)
-        q2 = OptionQuote(occ_symbol=occ_long, underlying=symbol, expiry=date(2026, 9, 4), strike=97.0,
+        q2 = OptionQuote(occ_symbol=occ_long, underlying=symbol, expiry=date(2026, 9, 4), strike=86.5,
                           right="P", bid=0.2, ask=0.3, delta=-0.10, gamma=0.01, theta=-0.01, vega=0.03, iv=0.2)
         return ChainSnapshot(underlying=symbol, fetched_at=dt_cls(2026, 8, 29, tzinfo=tz.utc), contracts=(q, q2))
 

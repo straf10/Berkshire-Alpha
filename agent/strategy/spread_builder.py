@@ -9,6 +9,7 @@ from agent.config import (
     ANNUALISATION_DAYS,
     LONG_LEG_STRIKE_OFFSET,
     LONG_LEG_STRIKE_OFFSET_FALLBACK,
+    MAX_DEBIT_FRACTION_OF_WIDTH,
     SHORT_DELTA_BAND,
     SHORT_DELTA_TARGET,
 )
@@ -42,6 +43,7 @@ class BuildFailure(StrEnum):
     SIGN_MISMATCH = "SIGN_MISMATCH"
     ZERO_OR_NEGATIVE_WIDTH = "ZERO_OR_NEGATIVE_WIDTH"
     NON_POSITIVE_MAX_LOSS = "NON_POSITIVE_MAX_LOSS"
+    DEBIT_EXCEEDS_MAX_FRACTION_OF_WIDTH = "DEBIT_EXCEEDS_MAX_FRACTION_OF_WIDTH"
 
 
 def _quantize(x: Decimal) -> Decimal:
@@ -161,6 +163,12 @@ def build(q: QuantSnapshot, d: RegimeDecision, chain: ChainSnapshot) -> SpreadPl
     else:
         max_profit = (width_dec - net_mid) * 100
         max_loss = net_mid * 100
+        # P0 remediation (docs/audit_report_v2.md §9 item 4): reject a debit
+        # vertical that is already structurally overpriced at build time,
+        # before it ever reaches the walk. Defence in depth behind Task 1's
+        # walk-cap fix, not a substitute for it.
+        if net_mid > width_dec * MAX_DEBIT_FRACTION_OF_WIDTH:
+            return BuildFailure.DEBIT_EXCEEDS_MAX_FRACTION_OF_WIDTH
 
     if max_loss <= 0:
         return BuildFailure.NON_POSITIVE_MAX_LOSS
@@ -244,6 +252,12 @@ def build_from_proposal(
     else:
         max_profit = (width_dec - net_mid) * 100
         max_loss = net_mid * 100
+        # P0 remediation (docs/audit_report_v2.md §9 item 4): reject a debit
+        # vertical that is already structurally overpriced at build time,
+        # before it ever reaches the walk. Defence in depth behind Task 1's
+        # walk-cap fix, not a substitute for it.
+        if net_mid > width_dec * MAX_DEBIT_FRACTION_OF_WIDTH:
+            return BuildFailure.DEBIT_EXCEEDS_MAX_FRACTION_OF_WIDTH
 
     if max_loss <= 0:
         return BuildFailure.NON_POSITIVE_MAX_LOSS

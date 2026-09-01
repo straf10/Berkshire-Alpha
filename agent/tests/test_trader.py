@@ -191,9 +191,14 @@ def test_proposal_structure_mismatch() -> None:
         ],
         confidence_score=0.8, reasoning="wrong side",
     )
+    # Short leg (95 strike) delta is 0.45, outside SHORT_DELTA_BAND -- but the
+    # requested d.structure is BULL_PUT_SPREAD while these legs are calls, so
+    # STRUCTURE_MISMATCH is checked (and must fire) before delta-band ever
+    # comes into play. Keep the short strike's delta in-band here so this
+    # test still isolates the structure check, not Task 5's new one.
     chain = _chain([
-        _quote(95.0, "C", delta=0.45, bid=6.00, ask=6.20),
-        _quote(100.0, "C", delta=0.275, bid=2.50, ask=2.60),
+        _quote(95.0, "C", delta=0.275, bid=6.00, ask=6.20),
+        _quote(100.0, "C", delta=0.10, bid=2.50, ask=2.60),
     ])
     assert validate_proposal(p, q, d, chain, TRADING_DAYS) == ProposalFailure.STRUCTURE_MISMATCH
 
@@ -213,8 +218,8 @@ def test_proposal_bear_call_spread_accepted() -> None:
         confidence_score=0.8, reasoning="correct side",
     )
     chain = _chain([
-        _quote(95.0, "C", delta=0.45, bid=6.00, ask=6.20),
-        _quote(100.0, "C", delta=0.275, bid=2.50, ask=2.60),
+        _quote(95.0, "C", delta=0.275, bid=6.00, ask=6.20),  # SELL leg -- in SHORT_DELTA_BAND
+        _quote(100.0, "C", delta=0.12, bid=2.50, ask=2.60),
     ])
     assert validate_proposal(p, q, d, chain, TRADING_DAYS) is None
 

@@ -76,9 +76,22 @@ _DEBIT_SNAPSHOT = _snapshot(spot=100.0, rv_20=0.30, dte=4)
 
 
 def test_build_credit_short_delta_band() -> None:
+    # P0 remediation (Task 2, docs/audit_report_v2.md §4/§9 item 2): the full
+    # multi-expiry chain_SPY.json fixture now correctly trips DEGENERATE_CHAIN
+    # under MAX_QUOTE_SPREAD_PCT (36.5% of its 620 contracts are wide markets
+    # spanning several expiries) -- that is the intended second-order effect,
+    # not a bug (see test_weekend_expiry_is_next_session_anchored below, which
+    # asserts SPY drops for exactly this reason). This test's own concern is
+    # delta-band strike selection, so it builds a ChainSnapshot from the real,
+    # tight 2026-09-04 put quotes in that same fixture directly, rather than
+    # going through the whole-chain liquidity gate.
     raw = load_chain_raw("chain_SPY.json")
-    chain = market_data._build_chain_snapshot("SPY", raw)
-    assert chain is not None
+    contracts = [
+        market_data._quote_from_snapshot(occ, snap)
+        for occ, snap in raw.items()
+        if occ.startswith("SPY260904P") and market_data._is_usable(snap)
+    ]
+    chain = ChainSnapshot(underlying="SPY", fetched_at=_TS, contracts=tuple(contracts))
 
     q = _snapshot(symbol="SPY", spot=772.0)
     result = build(q, _decision(Structure.BULL_PUT_SPREAD), chain)
@@ -193,6 +206,29 @@ def test_credit_exceeding_width_rejected() -> None:
     assert result == BuildFailure.NON_POSITIVE_MAX_LOSS
 
 
+def test_debit_exceeding_max_fraction_of_width_rejected() -> None:
+    """P0 remediation (Task 4, docs/audit_report_v2.md §9 item 4): a debit
+    vertical whose net_mid already exceeds MAX_DEBIT_FRACTION_OF_WIDTH (0.60)
+    of the strike width is rejected at build time, before it ever reaches the
+    walk. Defence in depth behind Task 1, not a substitute for it."""
+    chain = _chain([
+        _quote(90.0, "P", delta=-0.15, bid=1.00, ask=1.20),
+        _quote(95.0, "P", delta=-0.30, bid=4.20, ask=4.40),   # net_mid ~3.30 on width 5 -> 66%
+    ])
+    result = build(_DEBIT_SNAPSHOT, _decision(Structure.BEAR_PUT_SPREAD, Regime.DEBIT), chain)
+    assert result == BuildFailure.DEBIT_EXCEEDS_MAX_FRACTION_OF_WIDTH
+
+
+def test_trade8_lly_mid_would_not_have_been_blocked_by_task4() -> None:
+    """Explicit expectation check from the audit brief: LLY trade 8's net_mid
+    (1.94 on a 5.00 width = 38.8%) is comfortably inside MAX_DEBIT_FRACTION_OF_WIDTH
+    (0.60) -- Task 4 would NOT have blocked it. The damage happened entirely in
+    the walk (Task 1's job)."""
+    from agent.config import MAX_DEBIT_FRACTION_OF_WIDTH
+    from decimal import Decimal
+    assert Decimal("1.94") / Decimal("5.00") < MAX_DEBIT_FRACTION_OF_WIDTH
+
+
 def test_debit_short_strike_is_sigma_move() -> None:
     result = build(_DEBIT_SNAPSHOT, _decision(Structure.BULL_CALL_SPREAD, Regime.DEBIT), _CALL_DEBIT_CHAIN)
     assert isinstance(result, SpreadPlan)
@@ -248,7 +284,14 @@ def test_weekend_expiry_is_next_session_anchored() -> None:
     snaps = compute_all(ub, _Cache(), SESSION_DATE, trading_days)
 
     tradeable = [s for s in snaps if s.data_ok]
-    assert len(tradeable) == 3  # the three underlyings with a captured chain fixture
+    # P0 remediation (Task 2, docs/audit_report_v2.md §4/§9 item 2): chain_SPY.json
+    # is 620 contracts spanning several expiries, and 36.5% of them are wider
+    # than MAX_QUOTE_SPREAD_PCT -- SPY now correctly trips DEGENERATE_CHAIN and
+    # drops (this is the intended second-order effect the audit calls for, not
+    # a fixture regression). NVDA (13.0% dropped) and AMD (13.4% dropped) stay
+    # well under the DEGENERATE_CHAIN_MAX_DROP=0.30 threshold and remain tradeable.
+    assert len(tradeable) == 2
+    assert {s.symbol for s in tradeable} == {"NVDA", "AMD"}
 
     plans = []
     for s in tradeable:
