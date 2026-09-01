@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -15,6 +16,8 @@ from agent.schemas.execution import ALPACA_STATUS_MAP, Intent, OrderStatus, Reje
 
 # alpaca.* imports confined to this module, alpaca_client.py, and
 # tools/market_data.py -- enforced by agent/tests/test_no_blocking_sdk.py.
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -160,7 +163,22 @@ class AlpacaBroker:
         return _order_state_from_sdk(order)
 
     async def replace_order(self, order_id: str, limit: Decimal) -> OrderState:
-        order = await self._clients.replace_order(order_id, limit)
+        """On a replace failure (e.g. Alpaca rejecting the PATCH while the
+        order is still settling), the order itself is still live and resting
+        at its old price -- NOT gone. Re-fetching its current state and
+        returning that (same order_id, no new id minted) lets `_walk` keep
+        polling it instead of the caller's blanket except turning a live,
+        unfilled order into a fabricated REJECTED (see the 1 Sep DIA/ORCL
+        incident: both orders filled minutes after the walker gave up on
+        them)."""
+        try:
+            order = await self._clients.replace_order(order_id, limit)
+        except APIError:
+            logger.exception(
+                "replace_order failed for %s -- refetching current state instead of "
+                "abandoning a possibly-still-live order", order_id,
+            )
+            order = await self._clients.get_order(order_id)
         return _order_state_from_sdk(order)
 
     async def cancel_order(self, order_id: str) -> None:
