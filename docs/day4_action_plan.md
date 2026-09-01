@@ -31,7 +31,7 @@ Step 3  ── agent/strategy/macro.py (new, isolated)      │  each ships alon
 ─────────────────────────────────────────────────────── ┘  in any prefix
 Step 4  ── REQUIRES Step 3 (consumes MacroTuning)
 Step 5  ── independent of 3/4 (reads decisions only)
-Step 6  ── REQUIRES Step 2 (sweeps the new bar)
+Step 6  ── independent (chain-free VWM sensitivity)
 Step 7  ── REQUIRES Step 2 (widen universe, 4 scans)
 Step 8  ── REQUIRES Step 7 (analyst_score needs SHORTLIST_MAX > DEBATE_CANDIDATES)
 Step 9  ── independent (skew noise floor + delta band)
@@ -59,7 +59,7 @@ between groups nothing does either, so they can be reordered or dropped whole.
 | **B — Signal honesty** | 8, 9 | 2 h | `quant.py`, `regime.py`, `ticker_screener.py`, `analysts.py`, `pipeline.py`, tests | Yes |
 | **C — Macro axis** | 3, 4 | 3 h | `macro.py` (new), `config.py`, `main.py`, `regime.py`, `evidence.py`, `prompts.py`, tests | Yes |
 | **D — Reflector** | 5 | 1.5 h | `reflector.py` (new), `schema.sql`, `read.py`, `write.py`, `app.py`, `web/`, tests | Yes |
-| **E — Evidence** | 6 | 1 h | `replay.py`, `docs/one_pager.md` | Yes |
+| **E — Evidence** | 6 | 30 min | `scripts/vwm_sensitivity.py` (done), `docs/one_pager.md` | Yes |
 
 **Why these boundaries.** A and B both touch `ticker_screener.py` and `analysts.py`, so doing them
 in one sitting risks conflicting edits to the same functions with two different rationales; splitting
@@ -69,12 +69,15 @@ touches only storage/API/UI and no signal code at all. E touches an offline harn
 **Hard prerequisite for Group A:** the `EARNINGS_DATES` verification pass for the widened universe
 (§7.7). It is manual, takes ~45 minutes, and blocks nothing else — do it first or in parallel.
 
-**Recommended order:** A → B → C → E → D. A unblocks trading and broadens the cross-section; B stops
-two known-noisy quantities from driving decisions, and is worth more than C because it fixes
-something measurably broken rather than adding something new; C is the originality story; E is an
-hour and buys quant credibility; D is the best demo material but the most droppable.
+**Recommended order:** E → A → B → C → D. **E moved to the front**: its measurement already
+overturned Step 2's threshold recommendation (§6.4), and it is 30 minutes of paste-the-table work
+since the run is done. A then unblocks trading and broadens the cross-section; B stops two
+known-noisy quantities from driving decisions, and is worth more than C because it fixes something
+measurably broken rather than adding something new; C is the originality story; D is the best demo
+material but the most droppable.
 
-**If only one group ships: A.** If two: A + B.
+**If only one group ships: A.** If two: A + B. (E is 30 minutes and already measured — it is not
+competing for the same time.)
 
 ---
 
@@ -272,15 +275,28 @@ The `assert` must be placed **immediately after** the constant and **after** `UN
 acceptable here because the test in §2.2 is the real guard and CI does not run optimised.
 
 ```python
-# Day 4 (docs/day4_action_plan.md Step 2). Lowered 0.75 -> 0.45.
-# Empirical basis, not taste: across every DEBIT assignment in agent.db the bar
-# has NEVER been cleared at either setting it has held. Under 1.00 (n=18) the
-# max observed |vwm_z| was 0.800; under 0.75 (n=9) it was 0.538. Zero debit
-# structures have ever been built. 0.45 admits the observed distribution's
-# upper tail (NVDA at 0.538 becomes a BULL_CALL_SPREAD) without admitting its
-# median (0.392). Sensitivity-swept in Step 6 -- this value is reported with
-# its neighbours, never presented as an optimum.
-VWM_Z_STRONG: Final[float] = 0.45
+# Day 4 Step 2, REVISED after the Step 6 sensitivity run. UNCHANGED at 0.75.
+#
+# An earlier draft lowered this to 0.45 on the grounds that "no DEBIT candidate
+# has ever cleared the bar". That reasoning was wrong, and the correction is
+# worth recording. It is true that of the 9 snapshots ever ASSIGNED to DEBIT,
+# none cleared 0.75 (max |z| 0.538). But across all 75 data_ok snapshots in
+# agent.db, 17 DID clear it -- they simply were not the names that landed in
+# the bottom-CROSS_SECTION_N VRP slice on those days. With only 3 debit slots
+# over a handful of sessions, that is sampling luck, not an unreachable bar.
+#
+# Measured on the real tape (scripts/vwm_sensitivity.py, 50 names x 212
+# sessions = 10,600 name-days, same IEX feed the agent runs on):
+#   median |vwm_z| = 0.651,  p90 = 1.774
+#   bar 0.45 admits 63.6% of name-days   <- not a filter, most of the tape
+#   bar 0.60 admits 52.9%
+#   bar 0.75 admits 44.0%                <- selective, and still productive
+#   bar 1.00 admits 31.2%
+# At the Step-7 universe (50 names, CROSS_SECTION_N=6) the 0.75 bar yields
+# ~2.6 debit candidates per scan. The debit drought was caused by a 10-name
+# universe with 3 slots, not by this constant -- Step 7 fixes it, and lowering
+# the bar would only make a genuine momentum filter indiscriminate.
+VWM_Z_STRONG: Final[float] = 0.75
 ```
 
 **No other constant changes in this step.** In particular `MAX_RISK_PER_TRADE_PCT`,
@@ -299,12 +315,13 @@ def test_cross_section_n_cannot_partition_universe() -> None:
     assert CROSS_SECTION_N * 2 < len(UNIVERSE)
 
 
-def test_vwm_bar_admits_observed_upper_tail() -> None:
-    """Regression pin on the Step-2 retune. 0.538 is the largest |vwm_z| any
-    DEBIT candidate has produced under the 0.75 bar (agent.db, Q9); 0.392 is
-    the mean. The bar must sit between them or the debit regime is either dead
-    again (too high) or indiscriminate (too low)."""
-    assert 0.392 < VWM_Z_STRONG <= 0.538
+def test_vwm_bar_stays_selective() -> None:
+    """Pin on the Step-6 sensitivity finding. Measured over 10,600 name-days,
+    |vwm_z| has median 0.651: a bar at 0.45 admits 63.6% of the tape, which is
+    not a momentum filter. A bar above 1.00 admits under a third and starves
+    the debit book. Anything inside this band is defensible; the shipped 0.75
+    admits 44.0%."""
+    assert 0.60 <= VWM_Z_STRONG <= 1.00
 ```
 
 Imports to add at the top of the file: `CROSS_SECTION_N`, `VWM_Z_STRONG`.
@@ -317,11 +334,12 @@ Replayed against the 18:49Z snapshot values:
 | --- | --- | --- | --- | --- |
 | SPY | 1.243 | — | `NO_REGIME` (rank 4) | **CREDIT** (rank 4 now inside `ranked[:4]`) |
 | MSFT | 1.007 | — | `NO_REGIME` | `NO_REGIME` (held out) |
-| NVDA | — | +0.538 | `DEBIT_NO_MOMENTUM_CONFIRMATION` | **`BULL_CALL_SPREAD`** |
-| AMD | — | −0.287 | `DEBIT_NO_MOMENTUM_CONFIRMATION` | unchanged (below bar) |
-| GOOGL | — | +0.055 | `DEBIT_NO_MOMENTUM_CONFIRMATION` | unchanged (below bar) |
+| NVDA | — | +0.538 | `DEBIT_NO_MOMENTUM_CONFIRMATION` | unchanged — 0.538 < 0.75 |
 
-Net: **3 candidates → ~5**, and the first non-credit structure in the project's history.
+Net from this step alone: **3 candidates → ~5** on the credit side. The debit book is **not** unblocked
+by `CROSS_SECTION_N` at a 10-name universe; it is unblocked by Step 7's 50-name universe, which raises
+the expected debit candidates per scan from 1.3 to 2.6 at the unchanged 0.75 bar. If Step 7 is
+dropped, expect the debit regime to stay thin — that is a sample-size problem, not a threshold one.
 
 Note `SHORTLIST_MAX = 4` and `DEBATE_CANDIDATES = 4` now bind for the first time. That is correct and
 intentional — the shortlist truncation is the intended second filter. Do not raise them in this step;
@@ -357,10 +375,62 @@ raising them changes LLM call volume and belongs in its own change.
 # rides the existing fetch_universe_bars batch and, decisively, shares the same
 # session grid as everything else (see S3.5).
 MACRO_TICKERS: Final[tuple[str, ...]] = ("GLD", "USO", "IBIT")
-MACRO_RETURN_LOOKBACK_D: Final[int] = 5     # trading days in the return window
-MACRO_Z_WINDOW: Final[int] = 60             # trailing daily returns for the z-score
+# Day 4 Step 3, REVISED after measurement (see 3.2a). TWO horizons, not one:
+# the 1-day leg is a shock detector, the 5-day leg is the regime. A 5-day
+# window alone masks a late-window reversal (Mon-Wed +5%, Thu-Fri -4% still
+# reads positive); a 1-day window alone fires on noise.
+MACRO_RETURN_LOOKBACK_FAST_D: Final[int] = 1
+MACRO_RETURN_LOOKBACK_SLOW_D: Final[int] = 5
+MACRO_Z_WINDOW: Final[int] = 60             # trailing returns for the z-score
 MACRO_Z_STRONG: Final[float] = 1.0          # |z| above which a leg is "moving"
 ```
+
+### 3.2a Why two horizons — measured on 342 sessions of GLD/USO/IBIT
+
+A review argued `MACRO_RETURN_LOOKBACK_D` should be 1, not 5, because a 5-day return masks a two-day
+crash at the end of the window. **The arithmetic is correct; the empirical consequence is the
+opposite of what was claimed.** Measured over 342 sessions:
+
+| Lookback | Sessions non-NEUTRAL | Day-over-day regime flips | Mean run length |
+| --- | --- | --- | --- |
+| 1 day | **5.0%** | 9.3% | 10.8 sessions |
+| 5 day | **7.6%** | 9.1% | 11.1 sessions |
+
+The 1-day horizon fires *less* often, not more — daily returns are noisier, so the coordinated
+two-or-three-leg sign pattern the classifier requires is **harder** to hit at `|z| > 1.0`. Flip rates
+are effectively identical (9.3% vs 9.1%), so "sluggish" is not the failure mode.
+
+**The real problem, which that review missed: at either lookback the classifier is NEUTRAL ~93% of
+the time.** A macro overlay that never leaves NEUTRAL is inert, and §3.2's whole tuning table would
+almost never apply.
+
+Combining the horizons — take the 1-day classification when it is non-NEUTRAL, else the 5-day —
+measured over the same window:
+
+| Construction | non-NEUTRAL | Flips | Mean run |
+| --- | --- | --- | --- |
+| 1-day only | 5.0% | 26 | 10.8 |
+| 5-day only | 7.6% | 25 | 11.1 |
+| **Combined (shipped)** | **11.6%** | 43 | **6.4** |
+
+11.6% active with a 6.4-session mean run is a usable prior: rare enough to mean something, persistent
+enough not to thrash. `classify` therefore takes both z-triples:
+
+```python
+def classify(
+    macro_daily: Mapping[str, tuple[DailyBar, ...]],
+) -> MacroSnapshot:
+    """Fast leg (1-day) is a shock override on the slow leg (5-day) regime:
+    a sharp one-session cross-asset move must not wait for a 5-day window to
+    register it, and a 5-day regime must not be overwritten by one noisy
+    session. Returns the fast classification when it is non-NEUTRAL, else the
+    slow one; MacroSnapshot records which leg fired."""
+```
+
+`MacroSnapshot` gains `horizon: Literal["FAST", "SLOW", "NONE"]` so a decision row records which leg
+produced the regime. **Lowering `MACRO_Z_STRONG` to 0.75 is the alternative** (15.5% non-NEUTRAL at
+the 5-day horizon) but it fires on weaker moves; the combined construction is preferred because it
+keeps the `|z| > 1.0` bar and buys its extra coverage from a second horizon rather than a lower bar.
 
 ## 3.2 `agent/strategy/macro.py` — new module
 
@@ -379,7 +449,8 @@ from typing import Mapping, Sequence
 
 from agent.config import (
     CROSS_SECTION_N,
-    MACRO_RETURN_LOOKBACK_D,
+    MACRO_RETURN_LOOKBACK_FAST_D,
+    MACRO_RETURN_LOOKBACK_SLOW_D,
     MACRO_TICKERS,
     MACRO_Z_STRONG,
     MACRO_Z_WINDOW,
@@ -450,7 +521,7 @@ def tuning(snapshot: MacroSnapshot) -> MacroTuning:
 | `INFLATIONARY` | + | + | · | Both real assets bid |
 | `DEFENSIVE_ROTATION` | + | · | − | Gold bid, speculative sold |
 | `NEUTRAL` | — | — | — | No leg exceeds `MACRO_Z_STRONG` |
-| `UNAVAILABLE` | — | — | — | Any leg has `< MACRO_Z_WINDOW + MACRO_RETURN_LOOKBACK_D` bars |
+| `UNAVAILABLE` | — | — | — | Any leg has `< MACRO_Z_WINDOW + MACRO_RETURN_LOOKBACK_SLOW_D` bars |
 
 Evaluation order is `RISK_ON → RISK_OFF → INFLATIONARY → DEFENSIVE_ROTATION → NEUTRAL`, first match
 wins. `INFLATIONARY` and `DEFENSIVE_ROTATION` overlap on `g=+`; the stricter two-leg patterns are
@@ -1040,118 +1111,153 @@ ones.
 
 ---
 
-# Step 6 — Sensitivity sweep, not an optimiser (1 h)
+# Step 6 — Sensitivity analysis, chain-free (30 min)
 
-**Files touched:** `agent/backtest/replay.py` (edit — **it already exists, 212 lines**),
-`docs/one_pager.md`.
+**Group E. Revised 2026-08-31 after running the harness.** The original step proposed three
+`replay.py` runs at `VWM_Z_STRONG` ∈ {0.35, 0.45, 0.60}, reporting modelled P&L. **That would have
+produced three bit-identical rows.** Evidence and replacement below.
 
-**Depends on Step 2** (sweeps the retuned bar); benefits from Step 4's parameterised `select`.
+## 6.1 Why the replay sweep measures nothing — proven, not argued
 
-## 6.1 Correction to the brief
-
-The brief says "Implement `agent/backtest/replay.py`." It is already implemented: `run_replay`,
-`_ChainMap`, `_pick_expiry`, argparse, `payoff` integration and a `__main__` entry all exist and
-work. Per edit-don't-rewrite this step is a **parameterisation plus a driver**, roughly 40 lines of
-diff. Nothing is rewritten.
-
-## 6.2 `run_replay` — add two parameters
+`VWM_Z_STRONG` is read in exactly three places, all inside one branch
+(`regime.py:75, 79, 83`):
 
 ```python
-async def run_replay(
-    clients: AlpacaClients, universe: tuple[str, ...], start: date, end: date,
-    *, vwm_bar: float = VWM_Z_STRONG, cross_section_n: int = CROSS_SECTION_N,
-) -> list[payoff.TradeResult]:
+    if assigned == Regime.DEBIT:
+        if abs(q.vwm_z) >= VWM_Z_STRONG:
 ```
 
-Defaulted here — unlike `select`'s required parameter — because `run_replay` is an offline
-entry point whose default must remain "replay exactly what the live agent would do". The two internal
-call sites (lines 147, 153) forward them.
+So if the harness never assigns `Regime.DEBIT`, the constant is dead code in the backtest. It never
+does, for a structural reason:
 
-`run_replay` also gains a returned candidate count. Rather than widen the return type and break
-`_amain`, add a sibling dataclass:
+1. `replay.py:141` sets `iv_atm = rv20 * BACKTEST_IV_RV_MULTIPLIER` (1.15) and passes it to
+   `generate_chain`.
+2. `synthetic_chain._iv_at_strike` returns `iv_atm - BACKTEST_SKEW_SLOPE * moneyness`, and both the
+   call and the put at a given strike get the **same** IV.
+3. `quant.atm_iv` averages call and put at the strike nearest spot — identical values, so the average
+   is exactly that strike's IV, and moneyness there is ~0.
+4. Therefore **`vrp_ratio = iv_atm / rv_20 ≈ 1.15 for every symbol on every session**, varying only
+   by where the $1.00 strike grid lands relative to spot.
+5. `assign_regimes` awards DEBIT only when `vrp_ratio < VRP_DEBIT_MAX` (1.00). 1.15 is never < 1.00.
+   **Every bottom-ranked name resolves to `NO_TRADE` instead.**
 
-```python
-@dataclass(frozen=True)
-class ReplayRun:
-    vwm_bar: float
-    cross_section_n: int
-    candidates: int          # regime != NO_TRADE
-    entered: int             # spreads actually built
-    build_failures: int
-    settled: int
-    total_pnl: Decimal
-    win_rate: float
-```
-
-`run_replay` keeps returning `list[TradeResult]`; a thin `run_sweep` assembles `ReplayRun` rows.
-
-## 6.3 Sweep driver
-
-```python
-async def run_sweep(
-    clients: AlpacaClients, universe: tuple[str, ...], start: date, end: date,
-    bars: Sequence[float] = (0.35, 0.45, 0.60),
-) -> list[ReplayRun]:
-    """Three sequential run_replay calls over the SAME window. Not a search:
-    the bars are fixed in the signature, there is no objective function, and
-    nothing selects a winner. The output is a table showing how sensitive the
-    candidate count and modelled P&L are to the bar."""
-```
-
-New flag in `_parse_args`: `--sweep` (`action="store_true"`). When set, `_amain` calls `run_sweep`
-and prints the table instead of the single-run summary.
+Confirmed by running it:
 
 ```
-python -m agent.backtest.replay --sweep --start 2026-03-01 --end 2026-08-29
+$ python -m agent.backtest.replay --days 30
+63 spreads entered, 0 build failures, 48 settled
+  CREDIT: 48 trades, win_rate=79.17%, avg_pnl=$-1.61, total_pnl=$-77.50
+  DEBIT:  0 trades, win_rate=0.00%,  avg_pnl=$0.00,  total_pnl=$0.00
 ```
 
-**Data-reuse caveat to note in the code:** the three runs each re-fetch bars. For a 6-month window
-that is 3× the API traffic for identical data. Acceptable at this timeline; hoisting the fetch out of
-`run_replay` would be a real refactor of a working function and is explicitly out of scope.
+**`DEBIT: 0 trades`** over 63 entered spreads. The sweep would have swept a constant nothing reads.
 
-## 6.4 Output table for `docs/one_pager.md`
+## 6.2 Two further reasons not to publish replay P&L
+
+Even for the credit side, the harness's P&L is not the strategy's P&L:
+
+- **The chain is model-generated.** `synthetic_chain` prices Black-Scholes at `r = q = 0` with a fixed
+  3% bid/ask and IV pinned at `RV × 1.15`. Publishing a P&L number from it invites exactly the
+  question you cannot answer: *"what IV did you assume?"* Answer: the one that makes VRP constant.
+- **Exits are not modelled at all.** `payoff.settle` is payoff-at-expiry — its own docstring says
+  *"No exit slippage — expiry settlement"*. It does not implement `PROFIT_TARGET_PCT_OF_MAX = 0.50`,
+  `CREDIT_STOP_LOSS_PCT = 1.00`, or `DTE_FORCE_CLOSE = 2`. The live agent takes profit at half of max;
+  the backtest holds to expiry. They are different strategies.
+
+The `79% win rate, −$77.50 total` line is still worth reading internally — it is the classic
+short-premium shape, winning often and losing large — but it is a statement about a hold-to-expiry
+variant priced on a synthetic chain, and it must not be presented as the agent's backtested return.
+
+## 6.3 What to do instead — a distributional sensitivity, no chain required
+
+`vwm_z` comes from `vwm_zscore(closes, volumes)`, which reads **daily bars only**. No chain, no IV, no
+payoff model, no synthetic assumption. So the honest question — *is this bar admitting a sensible
+fraction of the distribution?* — is answerable on real historical data alone.
+
+**Already run.** `scripts/vwm_sensitivity.py`, 50 names × 212 sessions = **10,600 name-days**, over
+`fetch_daily_bars_range` on the IEX feed — the same feed the live agent resolves to, so the volumes
+feeding `log(v)` are the production ones:
+
+| Statistic | Value |
+| --- | --- |
+| median \|vwm_z\| | **0.651** |
+| mean | 0.828 |
+| p90 | 1.774 |
+| max | 5.307 |
+
+| `VWM_Z_STRONG` | Name-days admitted | % of tape | Debit candidates/scan at N=50, `CROSS_SECTION_N=6` |
+| --- | --- | --- | --- |
+| 0.25 | 8,393 | 79.2% | 4.8 |
+| 0.35 | 7,542 | 71.2% | 4.3 |
+| 0.45 | 6,738 | 63.6% | 3.8 |
+| 0.60 | 5,610 | 52.9% | 3.2 |
+| **0.75 (shipped)** | **4,661** | **44.0%** | **2.6** |
+| 1.00 | 3,302 | 31.2% | 1.9 |
+
+## 6.4 The finding that changed Step 2
+
+This run **overturned the plan's own earlier recommendation**, which is the point of running it.
+
+The earlier draft lowered `VWM_Z_STRONG` to 0.45 because *"across every DEBIT assignment the bar has
+never been cleared — max \|z\| 0.538."* That statement is true and misleading. Of the 9 snapshots ever
+**assigned** to DEBIT, none cleared 0.75. But of all 75 `data_ok` snapshots in `agent.db`, **17 did.**
+They simply were not the names that landed in the bottom-3 VRP slice on those particular days.
+
+With 3 debit slots over a handful of sessions, observing zero is unremarkable sampling variance, not
+evidence of an unreachable threshold. **The debit drought was a universe-size problem, not a
+threshold problem** — and Step 7 fixes it, raising expected debit candidates per scan from 1.3 to 2.6
+at the unchanged bar.
+
+Lowering to 0.45 would admit **63.6% of the tape**, which is not a momentum filter. **Step 2 is
+revised: `VWM_Z_STRONG` stays 0.75.**
+
+## 6.5 Deliverable
+
+`scripts/vwm_sensitivity.py` is committed and re-runnable. For `docs/one_pager.md`:
 
 ```markdown
 ### Momentum-bar sensitivity
 
-`VWM_Z_STRONG` gates the debit regime: a debit candidate trades only when
-|volume-weighted momentum z| clears the bar. We swept it rather than fitting it.
+`VWM_Z_STRONG` gates the debit regime: a debit candidate trades only when its
+volume-weighted-momentum z-score clears the bar. We swept it rather than fitting it.
 
-| `VWM_Z_STRONG` | Debit candidates | Spreads entered | Settled | Win rate | Modelled P&L |
-| --- | --- | --- | --- | --- | --- |
-| 0.35 | — | — | — | — | — |
-| **0.45 (shipped)** | — | — | — | — | — |
-| 0.60 | — | — | — | — | — |
+| `VWM_Z_STRONG` | % of name-days admitted | Debit candidates per scan |
+| --- | --- | --- |
+| 0.45 | 63.6% | 3.8 |
+| 0.60 | 52.9% | 3.2 |
+| **0.75 (shipped)** | **44.0%** | **2.6** |
+| 1.00 | 31.2% | 1.9 |
 
-Replay window: 2026-03-01 → 2026-08-29. Chain is model-generated
-(`synthetic_chain.py`, Black-Scholes at RV × 1.15) because Alpaca exposes no
-historical options-chain-with-greeks endpoint; entries take a 10% slippage
-haircut; no risk or sizing gate runs, so every ENTER trades exactly one spread.
+Measured over 10,600 name-days (50 names x 212 sessions, IEX daily bars -- the same
+feed the agent runs on). No options chain, no pricing model, and no P&L claim is
+involved: `vwm_z` is computed from daily closes and volumes alone, so this figure
+rests on observed data rather than a modelled one.
 
-**This is a sensitivity analysis, not an optimisation.** We report how the
-strategy responds across a range; we did not search the range for a maximum.
-With four live sessions and zero closed trades there is no out-of-sample set
-and no walk-forward, so any "optimal" value would be a transcription of noise.
-We shipped 0.45 because it admits the observed upper tail of the momentum
-distribution (max |z| = 0.538) without admitting its median (0.392) — a
-distributional argument, not a fitted one.
+**This is sensitivity analysis, not optimisation.** We report how selective the bar
+is across a range; we did not search the range for a maximum. With four live
+sessions and no closed trades there is no out-of-sample set, so any "optimal" value
+would be a transcription of noise. We shipped 0.75 because it admits 44% of the
+distribution -- selective enough to mean something, loose enough to fill a book --
+and because the run showed our earlier instinct to lower it was based on nine
+observations rather than ten thousand.
 ```
 
-## 6.5 Framing rules
+That last clause is worth keeping. A judge who sees a team overturn its own parameter choice with a
+measurement will trust the rest of the numbers more, not less.
 
-- Never write "best", "optimal", "tuned" or "selected" about the swept value.
-- Always print all three rows including the two not shipped.
-- Always state the window and the synthetic-chain caveat adjacent to the numbers.
-- If one bar produces a dramatically better modelled P&L, **report it and do not adopt it** — a
-  four-session live sample cannot justify chasing a backtest maximum, and saying so is a stronger
-  quant sentence than the number.
+## 6.6 What is NOT worth doing this week
 
-## 6.6 Definition of done
+**Fixing the harness so DEBIT can activate.** It would need `synthetic_chain` to take a per-symbol IV
+that disperses `vrp_ratio` across the cross-section — which means inventing an IV surface, then
+reporting P&L generated from invented data. That is strictly worse than reporting no P&L. Record it
+as post-hackathon; the fix is to persist live chain snapshots now so a *real* replay is possible
+later.
 
-- `python -m agent.backtest.replay --sweep --days 60` prints three rows.
-- `run_replay()` with no keyword arguments produces byte-identical output to the pre-change version
-  (the defaults-preserve-behaviour check).
-- Table populated in `docs/one_pager.md`.
+## 6.7 Definition of done
+
+- `scripts/vwm_sensitivity.py` committed and runs clean.
+- Table pasted into `docs/one_pager.md` with the no-P&L-claim framing intact.
+- `VWM_Z_STRONG` confirmed at 0.75 in `config.py` and `test_vwm_bar_stays_selective` green.
 
 ---
 
@@ -1267,6 +1373,22 @@ Alpaca cost of breadth — measured live at `SEMAPHORE_LIMIT = 4`, and the respo
 All 30 large caps probed returned 64–100 contracts in the 3–7 DTE window, so weekly expiries are
 not a constraint at this cap tier.
 
+**Concurrency is already bounded — no change needed.** `ChainCache.load` (`market_data.py:193-212`)
+wraps its fan-out in `asyncio.Semaphore(SEMAPHORE_LIMIT)` with `SEMAPHORE_LIMIT = 4`, so widening the
+universe raises the number of requests but never the number in flight. A review flagged a burst-limit
+risk here; it was tested directly — the full 50-symbol fan-out was fired at concurrency 4, 10, 25 and
+50 in sequence (200 requests total):
+
+| Concurrency | Wall-clock | HTTP codes | `x-ratelimit-remaining` floor |
+| --- | --- | --- | --- |
+| 4 (shipped) | 2.15 s | `{200: 50}` | 155 |
+| 10 | 1.08 s | `{200: 50}` | 136 |
+| 25 | 1.10 s | `{200: 50}` | 117 |
+| 50 (unthrottled) | 0.69 s | `{200: 50}` | 96 |
+
+Zero 429s, zero 502s, and the counter drained monotonically — consistent with one sustained
+200/min bucket and no separate burst bucket. The existing semaphore is tighter than needed; leave it.
+
 **Golden ratio: spend on breadth, not frequency.** Going 10 → 50 names costs 2.2 s of wall-clock and
 zero tokens. Going 2 → 57 scans costs 28× the tokens to re-read signals that cannot move.
 
@@ -1323,11 +1445,73 @@ expiry is ~11 Sep. **Early September is the quietest earnings period of the year
 (Jul–Aug) and Q3 (late Oct). For large caps with weekly options the expected number reporting before
 15 Sep is near zero. So this is one batch verification pass, not 50 individual lookups.
 
-**Procedure:** pick the ~50 names from S&P 100 constituents with liquid weeklies (the 30 probed in
-§7.4 all qualify), verify in one pass that none reports before 15 Sep, set every value to `None`,
-and re-stamp `EARNINGS_VERIFIED_ON`. Budget 45 minutes. **Do not automate this** — the human-verified
-gate is a deliberate safety property, and an options agent holding a short strike through an
-unexpected earnings print is the single worst outcome available to it.
+**Procedure:** pick the 50 names from §7.12, verify in one pass that none reports before 15 Sep,
+record each explicitly, and re-stamp `EARNINGS_VERIFIED_ON`. Budget 45 minutes. **Do not automate the
+verification** — the human-verified gate is a deliberate safety property, and an options agent
+holding a short strike through an unexpected earnings print is the single worst outcome available to
+it.
+
+### 7.7a The gate currently fails OPEN — fix this before widening the universe
+
+Raised by external review, and confirmed by reading `agent/risk/gates.py:148-150`:
+
+```python
+earnings_date = EARNINGS_DATES.get(plan.symbol)
+if ctx.earnings_armed and earnings_date is not None and ctx.session_date <= earnings_date <= plan.expiry:
+    return _reject(GateReason.EARNINGS_BLACKOUT)
+```
+
+`.get()` returns `None` for a **missing** key, and `earnings_date is not None` is then `False`, so the
+blackout never fires. **A ticker absent from `EARNINGS_DATES` trades with no earnings protection at
+all.** Two further failure modes on top:
+
+- **`None` is overloaded.** It means both *"verified: this name has no report in the window"* and
+  *"nobody filled this in"*. The two are indistinguishable at runtime.
+- **A past-dated typo also fails open.** `2026-08-05` instead of `2026-09-05` →
+  `ctx.session_date <= earnings_date` is `False` → no blackout, silently.
+
+The only existing guard is `test_config_universe_earnings_keys`, which runs at **test time**. Nothing
+checks at runtime. At 10 hand-entered names that was tolerable; at 50 it is not.
+
+**Fix — make the unknown state explicit and fail closed:**
+
+```python
+# agent/config.py
+class EarningsStatus(StrEnum):
+    NONE_IN_WINDOW = "NONE_IN_WINDOW"     # human-verified: no report before EARNINGS_HORIZON
+    # any date value = a verified, dated report
+
+EARNINGS_DATES: Final[dict[str, date | EarningsStatus]] = {
+    "IWM": EarningsStatus.NONE_IN_WINDOW,   # explicit, not None
+    ...
+}
+# Every earnings date must be in the future relative to the verification pass,
+# or it is a typo. Catches 2026-08-05-for-2026-09-05 at import time.
+assert all(
+    v > EARNINGS_VERIFIED_ON for v in EARNINGS_DATES.values() if isinstance(v, date)
+), "an EARNINGS_DATES value predates EARNINGS_VERIFIED_ON -- almost certainly a typo"
+```
+
+```python
+# agent/risk/gates.py -- Phase C, replacing the .get() above
+if ctx.earnings_armed:
+    earnings = EARNINGS_DATES.get(plan.symbol, _MISSING)
+    if earnings is _MISSING:
+        # Fail CLOSED. An unverified symbol is not tradeable, ever.
+        return _reject(GateReason.EARNINGS_UNVERIFIED)
+    if isinstance(earnings, date) and ctx.session_date <= earnings <= plan.expiry:
+        return _reject(GateReason.EARNINGS_BLACKOUT)
+```
+
+New `GateReason.EARNINGS_UNVERIFIED` — distinct from `EARNINGS_BLACKOUT` so the decision log
+distinguishes *"we know it reports"* from *"we never checked"*.
+
+**Tests:** `test_missing_earnings_key_rejects` (symbol absent → `EARNINGS_UNVERIFIED`, **not**
+approved); `test_none_in_window_is_tradeable`; `test_past_dated_earnings_fails_import`;
+`test_earnings_unverified_distinct_from_blackout`.
+
+This is ~30 minutes and belongs in Group A alongside the universe widening — the widening is what
+makes it load-bearing.
 
 **Do not scan "the whole American exchange."** ~6,000 listed names is infeasible and undesirable:
 6,000 requests/cycle against a 200/min limit is 30 minutes per cycle; most names have no weekly
@@ -1511,21 +1695,58 @@ Add an early reject *before* the debate, so a rejected candidate costs 2 analyst
 ANALYST_SCORE_FLOOR: Final[float] = 0.40
 ```
 
-Reachable scores and their disposition at the floor:
+**Corrected 2026-09-01 (external review).** An earlier draft of this section claimed nine reachable
+scores by treating `quant_component` as `{0, 0.5, 1}`. It is
+`(momentum_agree + iv_agree) / 2` with each term in `{0, 0.5, 1}`, so it takes **five** values and the
+score takes **fifteen**:
 
-| `quant` | `news` | score | |
-| --- | --- | --- | --- |
-| 0.0 | 0.0 | 0.000 | rejected |
-| 0.0 | 0.5 | 0.188 | rejected |
-| 0.5 | 0.0 | 0.313 | rejected |
-| 0.0 | 1.0 | 0.375 | rejected |
-| 0.5 | 0.5 | 0.500 | passes |
-| 1.0 | 0.0 | 0.625 | passes |
-| 0.5 | 1.0 | 0.688 | passes |
-| 1.0 | 0.5 | 0.813 | passes |
-| 1.0 | 1.0 | 1.000 | passes |
+| `quant` | `news` | score | floor 0.40 | floor 0.60 |
+| --- | --- | --- | --- | --- |
+| 0.00 | 0.0 | 0.0000 | rejected | rejected |
+| 0.25 | 0.0 | 0.1562 | rejected | rejected |
+| 0.00 | 0.5 | 0.1875 | rejected | rejected |
+| 0.50 | 0.0 | 0.3125 | rejected | rejected |
+| 0.25 | 0.5 | 0.3438 | rejected | rejected |
+| 0.00 | 1.0 | 0.3750 | rejected | rejected |
+| 0.75 | 0.0 | 0.4688 | passes | rejected |
+| **0.50** | **0.5** | **0.5000** | **passes** | **rejected** |
+| 0.25 | 1.0 | 0.5312 | passes | rejected |
+| 1.00 | 0.0 | 0.6250 | passes | passes |
+| 0.75 | 0.5 | 0.6562 | passes | passes |
+| 0.50 | 1.0 | 0.6875 | passes | passes |
+| 1.00 | 0.5 | 0.8125 | passes | passes |
+| 0.75 | 1.0 | 0.8438 | passes | passes |
+| 1.00 | 1.0 | 1.0000 | passes | passes |
 
-Four of nine combinations rejected — exactly the ones where the quant analyst has no positive read.
+Six of fifteen rejected at 0.40, including all three rows where `quant_component == 0`.
+
+### Why the floor stays at 0.40 and not 0.60
+
+A review argued for 0.60 on the grounds that 0.40 admits the "no directional conviction" case
+(`quant 0.5, news 0.5` → exactly 0.50). The arithmetic is right. The conclusion is not, for one
+decisive reason:
+
+**`analyst_score` returns exactly 0.50 when both analysts are MISSING.** `analyst_score` sets
+`quant_component = 0.5` when `r.bundle.quant_analyst is None`, and `news_component = 0.5` when
+`news_analyst is None` — and `news_analyst` returns `None` whenever the symbol had no headlines in
+`NEWS_LOOKBACK_H`, which on a 50-name universe is the common case for non-mega-caps.
+
+So a 0.60 floor would mean:
+
+| LLM state | Behaviour |
+| --- | --- |
+| LLM entirely off | `run_llm_this_cycle = False` → quant-only path → **trades normally** |
+| LLM on, both analysts fail | score 0.50 → below floor → **no trade** |
+
+A *partially degraded* LLM would become strictly more blocking than an *absent* one. That inverts the
+degradation semantics the whole pipeline is built on, and it hands the LLM layer an implicit
+authorisation power — the exact thing §8.2b is written to prevent.
+
+**The correct division of labour: the floor is a veto, the ranking is the selector.** 0.40 rejects
+candidates carrying *contrary* evidence. Candidates carrying *no* evidence score 0.50 and are then
+handled by `select_top` — with `SHORTLIST_MAX = 8` and `DEBATE_CANDIDATES = 4`, a 0.50 candidate
+loses its slot to anything above it automatically. That achieves the review's goal (don't spend
+debate tokens on zero-conviction names) without making an LLM outage block trading.
 
 Implementation in `pipeline.run_llm_pipeline`, at the existing `select_top` line:
 
