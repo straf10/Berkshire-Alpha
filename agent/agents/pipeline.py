@@ -20,6 +20,7 @@ from agent.agents.risk_team import AccountView, PortfolioView, RiskTeamResult, r
 from agent.agents.trader import ProposalFailure, ProposalOutcome, propose
 from agent.config import ANALYST_SCORE_FLOOR
 from agent.schemas.execution import SpreadPlan
+from agent.strategy.macro import MacroSnapshot
 from agent.strategy.ticker_screener import ScreenedCandidate
 from agent.tools.llm import LlmPort
 from agent.tools.market_data import ChainCache
@@ -189,7 +190,7 @@ async def run_llm_pipeline(
     llm: LlmPort, candidates: Sequence[ScreenedCandidate], chains: ChainCache,
     news: Mapping[str, tuple[Headline, ...]], mentions: Mapping[str, MentionSignal],
     account: AccountView, portfolio: PortfolioView, trading_days: frozenset[date],
-    *, sem: asyncio.Semaphore, sinks: Mapping[str, list[int]],
+    *, sem: asyncio.Semaphore, sinks: Mapping[str, list[int]], macro: MacroSnapshot,
 ) -> list[PipelineOutcome]:
     """1. run_analysts over all shortlisted candidates (<=12 calls, one gather)
        2. rank by analyst_score, take DEBATE_CANDIDATES, then veto anything
@@ -211,7 +212,7 @@ async def run_llm_pipeline(
           top 2) so every name still gets a decisions row.
        Raises LlmUnavailable / LlmBudgetExceeded only; every other failure is
        already isolated to its node by the layers below."""
-    analyst_results = await run_analysts(llm, candidates, news, mentions, sem=sem, sinks=sinks)
+    analyst_results = await run_analysts(llm, candidates, news, mentions, sem=sem, sinks=sinks, macro=macro)
     ranked = select_top(analyst_results, candidates)
     ranked_symbols = {r.symbol for r in ranked}
     debated_symbols = {r.symbol for r in ranked if analyst_score(r) >= ANALYST_SCORE_FLOOR}

@@ -17,11 +17,17 @@ from agent.config import CONSENSUS_HIGH_THRESHOLD, CONVICTION_UNANIMOUS_DISAGREE
 from agent.schemas.execution import Regime, Structure
 from agent.schemas.llm import DebateNodeOutput
 from agent.schemas.market import QuantSnapshot
+from agent.strategy.macro import MacroRegime, MacroSnapshot
 from agent.strategy.regime import RegimeDecision
 from agent.tools.llm import LlmUnavailable
 
 SESSION_DATE = date(2026, 8, 31)
 EXPIRY = date(2026, 9, 4)
+
+_MACRO = MacroSnapshot(
+    regime=MacroRegime.NEUTRAL, gold_z=0.0, oil_z=0.0, btc_z=0.0,
+    bars_used=65, horizon="SLOW", detail="test fixture",
+)
 
 
 def _snapshot() -> QuantSnapshot:
@@ -32,13 +38,33 @@ def _snapshot() -> QuantSnapshot:
     )
 
 
-def _bundle() -> EvidenceBundle:
+def _bundle(*, macro: MacroSnapshot = _MACRO) -> EvidenceBundle:
     decision = RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "test", "TEST", None, None)
     return EvidenceBundle(
-        symbol="SPY", quant=_snapshot(), regime=decision,
+        symbol="SPY", quant=_snapshot(), regime=decision, macro=macro,
         quant_analyst=None, news_analyst=None, sentiment_analyst=None,
         headlines=(), mentions=None,
     )
+
+
+def test_evidence_keys_include_macro() -> None:
+    assert "macro.regime" in _bundle().keys()
+
+
+def test_prompt_json_contains_macro() -> None:
+    """The invariant that citations are checkable: 'macro.regime' must be a
+    literal substring of to_prompt_json(), the same way every other citation
+    key is."""
+    assert '"macro.regime"' in _bundle().to_prompt_json()
+
+
+def test_macro_citation_counts_as_grounded() -> None:
+    """A debate node citing only macro.regime must not be treated as
+    ungrounded by valid_citations/conviction -- macro.regime is a first-class
+    citable key like any quant.* key."""
+    bundle = _bundle()
+    node = _node("BULL", "COMMIT", ["macro.regime"])
+    assert valid_citations(node, bundle.keys()) == 1
 
 
 def _node(persona: str, action: str, cites: list[str]) -> DebateNodeOutput:

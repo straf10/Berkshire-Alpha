@@ -50,11 +50,13 @@ from agent.agents.pipeline import run_llm_pipeline
 from agent.config import (
     ACCOUNT_START_EQUITY,
     BACKTEST_IV_RV_MULTIPLIER,
+    CROSS_SECTION_N,
     EARNINGS_VERIFIED_ON,
     LLM_SEMAPHORE_LIMIT,
     NEWS_LOOKBACK_H,
     RV_WINDOW,
     UNIVERSE,
+    VWM_Z_STRONG,
     load_settings,
 )
 from agent.execution.alpaca_client import AlpacaClients
@@ -65,6 +67,7 @@ from agent.schemas.execution import Regime, SpreadPlan
 from agent.schemas.market import ChainSnapshot
 from agent.storage import db as storage_db
 from agent.storage import write as storage_write
+from agent.strategy.macro import MacroRegime, MacroSnapshot
 from agent.strategy.regime import select
 from agent.strategy.ticker_screener import assign_regimes, shortlist, skew_threshold
 from agent.tools import quant
@@ -79,6 +82,15 @@ logger = logging.getLogger(__name__)
 
 _DAILY_LOOKBACK_BUFFER_DAYS = 100  # covers RV_WINDOW / VWM lookback, same as replay.py
 _DAILY_FORWARD_BUFFER_DAYS = 12    # settlement price for the last few trades' expiries
+
+# docs/day4_action_plan.md Step 3/4: this harness fetches no GLD/USO/IBIT
+# bars, so it never has a real macro reading -- UNAVAILABLE is the honest
+# state (never a trading signal) and resolves selection to exactly the same
+# CROSS_SECTION_N/VWM_Z_STRONG baseline replay.py uses.
+_MACRO = MacroSnapshot(
+    regime=MacroRegime.UNAVAILABLE, gold_z=None, oil_z=None, btc_z=None,
+    bars_used=0, horizon="NONE", detail="llm_replay.py fetches no macro tickers",
+)
 
 
 @dataclass(frozen=True)
@@ -214,9 +226,9 @@ async def run_llm_backtest(
             chain_map = _ChainMap(chains)
 
             snapshots = quant.compute_all(bars, chain_map, session_date, trading_days)
-            assigned_regimes = assign_regimes(snapshots)
+            assigned_regimes = assign_regimes(snapshots, CROSS_SECTION_N)
             skew_thresh = skew_threshold(snapshots)
-            candidates = shortlist(snapshots, assigned_regimes, skew_thresh)
+            candidates = shortlist(snapshots, assigned_regimes, skew_thresh, VWM_Z_STRONG)
             shortlisted_symbols = {c.snapshot.symbol for c in candidates}
 
             print(f"\n=== {session_date} ===  equity ${float(equity):,.2f}  open positions {len(open_trades)}")
@@ -245,7 +257,7 @@ async def run_llm_backtest(
                 try:
                     outcomes = await run_llm_pipeline(
                         llm_client, candidates, chain_map, news_by_symbol, {}, account, portfolio, trading_days,
-                        sem=sem, sinks=sinks,
+                        sem=sem, sinks=sinks, macro=_MACRO,
                     )
                     outcomes_by_symbol = {o.symbol: o for o in outcomes}
                 except LlmUnavailable as e:
@@ -255,7 +267,7 @@ async def run_llm_backtest(
                 cycle_id = f"backtest-{session_date.isoformat()}"
                 ts_utc = datetime.now(timezone.utc).isoformat()
                 for q in snapshots:
-                    regime_decision = select(q, assigned_regimes.get(q.symbol, Regime.NO_TRADE), skew_thresh)
+                    regime_decision = select(q, assigned_regimes.get(q.symbol, Regime.NO_TRADE), skew_thresh, VWM_Z_STRONG)
                     if regime_decision.regime == Regime.NO_TRADE or q.symbol not in shortlisted_symbols:
                         continue
 

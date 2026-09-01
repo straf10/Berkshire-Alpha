@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from agent.schemas.llm import NewsAnalystOutput, QuantAnalystOutput, SentimentAnalystOutput
 from agent.schemas.market import QuantSnapshot
+from agent.strategy.macro import MacroSnapshot
 from agent.strategy.regime import RegimeDecision
 from agent.tools.news import Headline
 from agent.tools.reddit import MentionSignal
@@ -19,6 +20,7 @@ class EvidenceBundle:
     symbol: str
     quant: QuantSnapshot                       # deterministic, ALWAYS present
     regime: RegimeDecision                     # deterministic, ALWAYS present
+    macro: MacroSnapshot                       # deterministic, ALWAYS present (UNAVAILABLE is a valid reading, not None)
     quant_analyst: QuantAnalystOutput | None
     news_analyst: NewsAnalystOutput | None
     sentiment_analyst: SentimentAnalystOutput | None
@@ -31,6 +33,7 @@ class EvidenceBundle:
         ks = {
             "quant.vrp_ratio", "quant.skew_abs", "quant.rsi", "quant.vwm_z",
             "quant.vwap_dev_pct", "regime.structure",
+            "macro.regime", "macro.detail",
         }
         if self.quant_analyst is not None:
             ks |= {
@@ -55,6 +58,8 @@ class EvidenceBundle:
             "quant.vwm_z": round(self.quant.vwm_z, 3),
             "quant.vwap_dev_pct": round(self.quant.vwap_dev_pct, 3),
             "regime.structure": self.regime.structure.value if self.regime.structure else None,
+            "macro.regime": self.macro.regime.value,
+            "macro.detail": self.macro.detail,
         }
         if self.quant_analyst is not None:
             d["quant_analyst.iv_rv_interpretation"] = self.quant_analyst.iv_rv_interpretation

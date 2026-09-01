@@ -230,6 +230,24 @@ assert CROSS_SECTION_N * 2 <= len(UNIVERSE), (
 CONVICTION_GROUNDING_FLOOR: Final[float] = 0.75
 CONVICTION_DEGRADED_FLOOR: Final[float] = 0.5
 
+# Day 4 (docs/day4_action_plan.md Step 3). Intermarket indicators, NOT trade
+# targets. Deliberately a SEPARATE constant from UNIVERSE: every consumer that
+# defines what the agent may trade -- quant.compute_all, ChainCache.load, the
+# `spots` map, fetch_headlines, mention_signals, EARNINGS_DATES -- keys off
+# UNIVERSE, so appending here can never make the agent quote, screen or trade
+# an option on a bitcoin ETF. IBIT rather than BTC/USD: it is an equity, so it
+# rides the existing fetch_universe_bars batch and, decisively, shares the same
+# session grid as everything else (see docs/day4_action_plan.md §3.5).
+MACRO_TICKERS: Final[tuple[str, ...]] = ("GLD", "USO", "IBIT")
+# Day 4 Step 3, REVISED after measurement (§3.2a). TWO horizons, not one:
+# the 1-day leg is a shock detector, the 5-day leg is the regime. A 5-day
+# window alone masks a late-window reversal (Mon-Wed +5%, Thu-Fri -4% still
+# reads positive); a 1-day window alone fires on noise.
+MACRO_RETURN_LOOKBACK_FAST_D: Final[int] = 1
+MACRO_RETURN_LOOKBACK_SLOW_D: Final[int] = 5
+MACRO_Z_WINDOW: Final[int] = 60             # trailing returns for the z-score
+MACRO_Z_STRONG: Final[float] = 1.0          # |z| above which a leg is "moving"
+
 # Day 4 (docs/day4_action_plan.md Step 9). Measured over all 75 data_ok
 # snapshots in agent.db: median skew_abs = +0.06 IV points, and 35/75 (47%)
 # readings are NEGATIVE -- a persistent equity put skew should be positive

@@ -21,6 +21,7 @@ from agent.schemas.llm import (
     SpreadProposal,
 )
 from agent.schemas.market import ChainSnapshot, OptionQuote, QuantSnapshot
+from agent.strategy.macro import MacroRegime, MacroSnapshot
 from agent.strategy.regime import RegimeDecision
 from agent.strategy.ticker_screener import ScreenedCandidate
 from agent.tools.llm import LlmBudgetExceeded
@@ -31,6 +32,11 @@ SESSION_DATE = date(2026, 8, 31)
 EXPIRY = date(2026, 9, 4)
 TRADING_DAYS = frozenset({date(2026, 8, 31), date(2026, 9, 2), date(2026, 9, 3), date(2026, 9, 4)})
 _TS = datetime(2026, 8, 28, tzinfo=timezone.utc)
+
+_MACRO = MacroSnapshot(
+    regime=MacroRegime.NEUTRAL, gold_z=0.0, oil_z=0.0, btc_z=0.0,
+    bars_used=65, horizon="SLOW", detail="test fixture",
+)
 
 
 def _snapshot(symbol: str) -> QuantSnapshot:
@@ -180,7 +186,7 @@ async def test_not_top_candidates_get_not_top_debate_outcome() -> None:
 
     outcomes = await run_llm_pipeline(
         llm, candidates, chains, {}, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
-        sem=asyncio.Semaphore(6), sinks=sinks,
+        sem=asyncio.Semaphore(6), sinks=sinks, macro=_MACRO,
     )
     assert len(outcomes) == 6
     not_top = [o for o in outcomes if o.reason == "NOT_TOP_DEBATE_CANDIDATE"]
@@ -214,7 +220,7 @@ async def test_floor_reject_costs_no_debate_calls() -> None:
 
     outcomes = await run_llm_pipeline(
         llm, candidates, chains, news, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
-        sem=asyncio.Semaphore(6), sinks=sinks,
+        sem=asyncio.Semaphore(6), sinks=sinks, macro=_MACRO,
     )
     assert outcomes[0].reason == "ANALYST_SCORE_BELOW_FLOOR"
     assert outcomes[0].analyst_score < ANALYST_SCORE_FLOOR
@@ -234,7 +240,7 @@ async def test_floor_reject_still_writes_decision() -> None:
 
     outcomes = await run_llm_pipeline(
         llm, candidates, chains, {}, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
-        sem=asyncio.Semaphore(6), sinks=sinks,
+        sem=asyncio.Semaphore(6), sinks=sinks, macro=_MACRO,
     )
     assert len(outcomes) == 1
     outcome = outcomes[0]
@@ -258,7 +264,7 @@ async def test_debate_unanimous_disagree_floors_conviction_but_still_trades() ->
 
     outcomes = await run_llm_pipeline(
         llm, candidates, chains, {}, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
-        sem=asyncio.Semaphore(6), sinks=sinks,
+        sem=asyncio.Semaphore(6), sinks=sinks, macro=_MACRO,
     )
     assert len(outcomes) == 1
     assert outcomes[0].reason == "OK"
@@ -282,7 +288,7 @@ async def test_pipeline_no_unresolved_drop() -> None:
 
     outcomes = await run_llm_pipeline(
         llm, candidates, chains, {}, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
-        sem=asyncio.Semaphore(6), sinks=sinks,
+        sem=asyncio.Semaphore(6), sinks=sinks, macro=_MACRO,
     )
     outcome = outcomes[0]
     assert outcome.artifacts.debate_summary.verdict == "UNRESOLVED"
@@ -301,7 +307,7 @@ async def test_risk_veto_stops_before_gate() -> None:
 
     outcomes = await run_llm_pipeline(
         llm, candidates, chains, {}, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
-        sem=asyncio.Semaphore(6), sinks=sinks,
+        sem=asyncio.Semaphore(6), sinks=sinks, macro=_MACRO,
     )
     assert outcomes[0].reason == "RISK_TEAM_VETO"
     assert outcomes[0].plan is None
@@ -317,7 +323,7 @@ async def test_full_happy_path_produces_plan() -> None:
 
     outcomes = await run_llm_pipeline(
         llm, candidates, chains, {}, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
-        sem=asyncio.Semaphore(6), sinks=sinks,
+        sem=asyncio.Semaphore(6), sinks=sinks, macro=_MACRO,
     )
     outcome = outcomes[0]
     assert outcome.reason == "OK"
@@ -346,7 +352,7 @@ async def test_trader_failure_falls_back_to_deterministic_strikes() -> None:
 
     outcomes = await run_llm_pipeline(
         llm, candidates, chains, {}, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
-        sem=asyncio.Semaphore(6), sinks=sinks,
+        sem=asyncio.Semaphore(6), sinks=sinks, macro=_MACRO,
     )
     outcome = outcomes[0]
     assert outcome.reason == "OK"
@@ -378,7 +384,7 @@ async def test_mode_degraded_when_analyst_dropped() -> None:
 
     outcomes = await run_llm_pipeline(
         llm, candidates, chains, news, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
-        sem=asyncio.Semaphore(6), sinks=sinks,
+        sem=asyncio.Semaphore(6), sinks=sinks, macro=_MACRO,
     )
     assert outcomes[0].mode == "llm-degraded"
 
@@ -396,7 +402,7 @@ async def test_budget_exceeded_propagates_out_of_pipeline() -> None:
     with pytest.raises(LlmBudgetExceeded):
         await run_llm_pipeline(
             llm, candidates, chains, {}, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
-            sem=asyncio.Semaphore(6), sinks=sinks,
+            sem=asyncio.Semaphore(6), sinks=sinks, macro=_MACRO,
         )
 
 
@@ -422,7 +428,7 @@ async def test_full_cycle_call_count() -> None:
 
     outcomes = await run_llm_pipeline(
         llm, candidates, chains, news, mentions, FakeAccount(), FakePortfolio(), TRADING_DAYS,
-        sem=asyncio.Semaphore(6), sinks=sinks,
+        sem=asyncio.Semaphore(6), sinks=sinks, macro=_MACRO,
     )
     assert len(outcomes) == 4
     assert sum(1 for o in outcomes if o.reason == "OK") == 4

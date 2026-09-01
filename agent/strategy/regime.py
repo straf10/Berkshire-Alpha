@@ -8,7 +8,6 @@ from agent.config import (
     SKEW_SIDE_MIN_POINTS,
     VRP_CREDIT_MIN,
     VWAP_DEV_THRESHOLD_PCT,
-    VWM_Z_STRONG,
 )
 from agent.schemas.execution import Regime, Structure
 from agent.schemas.market import QuantSnapshot
@@ -24,7 +23,7 @@ class RegimeDecision:
     threshold: float | None
 
 
-def select(q: QuantSnapshot, assigned: Regime, skew_threshold: float) -> RegimeDecision:
+def select(q: QuantSnapshot, assigned: Regime, skew_threshold: float, vwm_bar: float) -> RegimeDecision:
     """Exact decision order, transcribed from plan.md's two-regime table
     (docs/day2_spine_plan.md, Group 4), extended by docs/day4_track_ab_plan.md
     §1.3: `assigned` is the CROSS-SECTIONAL regime already decided by
@@ -37,7 +36,14 @@ def select(q: QuantSnapshot, assigned: Regime, skew_threshold: float) -> RegimeD
     ticker_screener.skew_threshold and threaded in here -- select() cannot
     compute it itself since it is cross-sectional and select() is per-symbol.
     Replaces the fixed SKEW_PUT_BIAS_POINTS=5.0 constant, which no observed
-    skew_abs (max ~1.4) had ever exceeded, making the branch structurally dead."""
+    skew_abs (max ~1.4) had ever exceeded, making the branch structurally dead.
+
+    `vwm_bar` (docs/day4_action_plan.md Step 4) is the effective VWM_Z_STRONG
+    bar for this cycle -- VWM_Z_STRONG at the macro-baseline NEUTRAL/UNAVAILABLE
+    regime, otherwise a value resolved by agent.strategy.macro.tuning() from
+    the cycle's MacroSnapshot. Required, not defaulted, the same convention
+    `skew_threshold` set: a stale default must never silently hide a threading
+    bug."""
     if not q.data_ok:
         return RegimeDecision(
             Regime.NO_TRADE, None, q.drop_reason or "DATA_NOT_OK", "DATA", None, None
@@ -88,15 +94,15 @@ def select(q: QuantSnapshot, assigned: Regime, skew_threshold: float) -> RegimeD
         )
 
     if assigned == Regime.DEBIT:
-        if abs(q.vwm_z) >= VWM_Z_STRONG:
+        if abs(q.vwm_z) >= vwm_bar:
             structure = Structure.BULL_CALL_SPREAD if q.vwm_z > 0 else Structure.BEAR_PUT_SPREAD
             return RegimeDecision(
                 Regime.DEBIT, structure, "VWM_MOMENTUM_CONFIRMED",
-                "VWM", q.vwm_z, VWM_Z_STRONG,
+                "VWM", q.vwm_z, vwm_bar,
             )
         return RegimeDecision(
             Regime.NO_TRADE, None, "DEBIT_NO_MOMENTUM_CONFIRMATION",
-            "VWM", q.vwm_z, VWM_Z_STRONG,
+            "VWM", q.vwm_z, vwm_bar,
         )
 
     return RegimeDecision(Regime.NO_TRADE, None, "NO_REGIME", "VRP", q.vrp_ratio, VRP_CREDIT_MIN)

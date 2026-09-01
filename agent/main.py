@@ -25,6 +25,7 @@ from agent.config import (
     DTE_FORCE_CLOSE,
     EARNINGS_VERIFIED_ON,
     LLM_SEMAPHORE_LIMIT,
+    MACRO_TICKERS,
     MANAGEMENT_INTERVAL_S,
     NEWS_LOOKBACK_H,
     RECONCILE_MAX_CHAIN_HOPS,
@@ -65,6 +66,7 @@ from agent.session import (
 )
 from agent.storage import db as storage_db
 from agent.storage import write as storage_write
+from agent.strategy.macro import classify, tuning
 from agent.strategy.regime import select
 from agent.strategy.spread_builder import BuildFailure, build
 from agent.strategy.ticker_screener import assign_regimes, shortlist, skew_threshold
@@ -667,6 +669,13 @@ async def _persist_pipeline_artifacts(conn: aiosqlite.Connection, decision_id: i
         await storage_write.update_llm_calls_decision_id(conn, artifacts.llm_call_ids, decision_id)
 
 
+def _format_macro_line(macro_snapshot, macro_tuning) -> str:
+    return (
+        f"Macro: {macro_snapshot.regime.value} ({macro_snapshot.horizon}, {macro_snapshot.detail}) "
+        f"-> vwm_bar={macro_tuning.vwm_bar:.2f} cross_section_n={macro_tuning.cross_section_n}"
+    )
+
+
 def _format_metrics_line(q) -> str:
     return (
         f"[{q.symbol:<4}] VRP {q.vrp_ratio:.2f}  RV20 {q.rv_20:.3f}  IV_ATM {q.iv_atm:.3f}  "
@@ -798,7 +807,7 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
 
         bar_window = minute_bar_window(session, deps.clock.now())
         bars = await _tracked(conn, "ALPACA_MARKET_DATA", "fetch_universe_bars", fetch_universe_bars(
-            deps.clients, UNIVERSE, session.session_date, bar_window, deps.feed
+            deps.clients, UNIVERSE + MACRO_TICKERS, session.session_date, bar_window, deps.feed
         ))
         spots = {sym: bars.minute[sym][-1].close for sym in UNIVERSE if bars.minute.get(sym)}
         await storage_write.put_state(conn, "spots", spots)
@@ -807,18 +816,26 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
         await chain_cache.load(UNIVERSE, session.session_date, spots)
 
         snapshots = compute_all(bars, chain_cache, session.session_date, session.trading_days)
+        # docs/day4_action_plan.md Step 3. Same one-computation-per-cycle rule as
+        # assign_regimes and skew_thresh below (F6): classified ONCE here, threaded
+        # into shortlist() and this loop's own select() calls. Never recomputed
+        # mid-cycle -- two calls could straddle a bar update and let the decisions
+        # table disagree with what shortlist() actually screened.
+        macro_snapshot = classify({t: bars.daily.get(t, ()) for t in MACRO_TICKERS})
+        macro_tuning = tuning(macro_snapshot)
         # docs/day4_track_ab_plan.md §1.3/F6: assign_regimes is cross-sectional
         # (whole-universe) and must be computed exactly ONCE per cycle, then
         # threaded into both shortlist() and this loop's own select() calls --
         # two independent calls would let the decisions table disagree with
         # what shortlist() actually screened.
-        assigned_regimes = assign_regimes(snapshots)
+        assigned_regimes = assign_regimes(snapshots, macro_tuning.cross_section_n)
         # docs/IMMEDIATE_IMPROVEMENT.md #1: same one-computation-per-cycle rule as
         # assign_regimes above -- threaded into both shortlist() and this loop's
         # own select() calls below.
         skew_thresh = skew_threshold(snapshots)
-        candidates = shortlist(snapshots, assigned_regimes, skew_thresh)
+        candidates = shortlist(snapshots, assigned_regimes, skew_thresh, macro_tuning.vwm_bar)
         shortlisted_symbols = {c.snapshot.symbol for c in candidates}
+        print(_format_macro_line(macro_snapshot, macro_tuning))
 
         positions = await _tracked(conn, "ALPACA_CLI", "list_positions", cli_bridge.list_positions())
         exposures = await build_exposures(positions, deps.clients, spots)
@@ -890,7 +907,7 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
             try:
                 outcomes = await run_llm_pipeline(
                     llm_client, candidates, chain_cache, news_by_symbol, mentions_by_symbol,
-                    account, portfolio, session.trading_days, sem=sem, sinks=sinks,
+                    account, portfolio, session.trading_days, sem=sem, sinks=sinks, macro=macro_snapshot,
                 )
                 outcomes_by_symbol = {o.symbol: o for o in outcomes}
             except LlmUnavailable as e:
@@ -901,7 +918,7 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
                 logger.warning("LLM pipeline degraded to quant-only for this cycle: %s", e)
 
         for q in snapshots:
-            regime_decision = select(q, assigned_regimes.get(q.symbol, Regime.NO_TRADE), skew_thresh)
+            regime_decision = select(q, assigned_regimes.get(q.symbol, Regime.NO_TRADE), skew_thresh, macro_tuning.vwm_bar)
             plan: SpreadPlan | None = None
             gate_decision: GateDecision | None = None
             plan_json: str | None = None
@@ -976,8 +993,24 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
                 # whether the analyst layer is worth its tokens. Zero-migration
                 # merge into the existing TEXT column, same mechanism Step 3
                 # uses for macro fields.
+                #
+                # docs/day4_action_plan.md Step 3: macro_regime/vwm_bar etc. are
+                # persisted alongside the analyst_score merge -- decisions.quant_json
+                # is already an arbitrary-object TEXT column, so no schema migration
+                # is needed. vwm_bar is recorded because decisions.threshold_value
+                # alone (1.00, 0.75, or a macro-adjusted value) cannot be
+                # reconstructed after the fact without correlating commit timestamps.
                 quant_json=json.dumps(
-                    dataclasses.asdict(q) | ({"analyst_score": outcome.analyst_score} if outcome is not None else {}),
+                    dataclasses.asdict(q)
+                    | ({"analyst_score": outcome.analyst_score} if outcome is not None else {})
+                    | {
+                        "macro_regime": macro_snapshot.regime.value,
+                        "macro_gold_z": macro_snapshot.gold_z,
+                        "macro_oil_z": macro_snapshot.oil_z,
+                        "macro_btc_z": macro_snapshot.btc_z,
+                        "vwm_bar": macro_tuning.vwm_bar,
+                        "cross_section_n": macro_tuning.cross_section_n,
+                    },
                     default=str,
                 ),
                 plan_json=plan_json,

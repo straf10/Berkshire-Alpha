@@ -11,6 +11,7 @@ from agent.config import DEBATE_CANDIDATES, NEWS_MAX_HEADLINES, SENTIMENT_MAX_PO
 from agent.schemas.execution import STRUCTURE_IS_CREDIT, Structure
 from agent.schemas.llm import NewsAnalystOutput, QuantAnalystOutput, SentimentAnalystOutput
 from agent.schemas.market import QuantSnapshot
+from agent.strategy.macro import MacroSnapshot
 from agent.strategy.regime import RegimeDecision
 from agent.strategy.ticker_screener import ScreenedCandidate
 from agent.tools.llm import LlmBudgetExceeded, LlmPort, LlmUnavailable, LlmValidationDropped
@@ -83,7 +84,7 @@ class AnalystResult:
 async def run_analysts(
     llm: LlmPort, candidates: Sequence[ScreenedCandidate],
     news: Mapping[str, tuple[Headline, ...]], mentions: Mapping[str, MentionSignal],
-    *, sem: asyncio.Semaphore, sinks: Mapping[str, list[int]],
+    *, sem: asyncio.Semaphore, sinks: Mapping[str, list[int]], macro: MacroSnapshot,
 ) -> list[AnalystResult]:
     """2 x len(candidates) calls, ONE asyncio.gather, bounded by `sem`. Never
     raises except LlmBudgetExceeded (propagates immediately) or LlmUnavailable
@@ -142,7 +143,7 @@ async def run_analysts(
     for c in candidates:
         symbol = c.snapshot.symbol
         bundle = EvidenceBundle(
-            symbol=symbol, quant=c.snapshot, regime=c.decision,
+            symbol=symbol, quant=c.snapshot, regime=c.decision, macro=macro,
             quant_analyst=by_symbol[symbol].get("QUANT"),  # type: ignore[arg-type]
             news_analyst=by_symbol[symbol].get("NEWS"),  # type: ignore[arg-type]
             sentiment_analyst=by_symbol[symbol].get("SENTIMENT"),  # type: ignore[arg-type]

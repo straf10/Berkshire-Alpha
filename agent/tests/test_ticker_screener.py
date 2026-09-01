@@ -6,7 +6,7 @@ from datetime import date
 
 import pytest
 
-from agent.config import CROSS_SECTION_N, SHORTLIST_MAX, UNIVERSE
+from agent.config import CROSS_SECTION_N, EARNINGS_DATES, MACRO_TICKERS, SHORTLIST_MAX, UNIVERSE, VWM_Z_STRONG
 from agent.schemas.execution import Regime, Structure
 from agent.schemas.market import QuantSnapshot
 from agent.strategy.regime import RegimeDecision
@@ -39,7 +39,7 @@ def _snap(symbol: str, **overrides) -> QuantSnapshot:
 def test_shortlist_caps_at_shortlist_max() -> None:
     snaps = [_snap(sym, skew_abs=6.0 + i) for i, sym in enumerate(UNIVERSE)]
     assigned = {s.symbol: Regime.CREDIT for s in snaps}
-    result = shortlist(snaps, assigned, 0.0)
+    result = shortlist(snaps, assigned, 0.0, VWM_Z_STRONG)
     assert len(result) == SHORTLIST_MAX
 
 
@@ -51,7 +51,7 @@ def test_shortlist_is_deterministic() -> None:
     for _ in range(100):
         shuffled = snaps[:]
         random.shuffle(shuffled)
-        result = shortlist(shuffled, assigned, 0.0)
+        result = shortlist(shuffled, assigned, 0.0, VWM_Z_STRONG)
         assert [c.snapshot.symbol for c in result] == expected_order
 
 
@@ -63,7 +63,7 @@ def test_shortlist_excludes_no_trade() -> None:
     unassigned = _snap("SPY")
     tradeable = _snap("QQQ", skew_abs=6.0)
     assigned = {"QQQ": Regime.CREDIT}
-    result = shortlist([unassigned, tradeable], assigned, 0.0)
+    result = shortlist([unassigned, tradeable], assigned, 0.0, VWM_Z_STRONG)
     symbols = [c.snapshot.symbol for c in result]
     assert "SPY" not in symbols
     assert "QQQ" in symbols
@@ -84,7 +84,7 @@ def test_assign_regimes_ranks_cross_sectionally() -> None:
         "NVDA": 0.769, "AMD": 0.804, "QQQ": 0.875,
     }
     snaps = [_snap(sym, vrp_ratio=v) for sym, v in vrps.items()]
-    assigned = assign_regimes(snaps)
+    assigned = assign_regimes(snaps, CROSS_SECTION_N)
     credit = {s for s, r in assigned.items() if r == Regime.CREDIT}
     debit = {s for s, r in assigned.items() if r == Regime.DEBIT}
     assert credit == {"AAPL", "TSLA", "SPY"}
@@ -94,7 +94,7 @@ def test_assign_regimes_ranks_cross_sectionally() -> None:
 def test_assign_regimes_respects_sign_guards() -> None:
     # All 10 VRP >= 1.0 -- the bottom 3 by VRP must be NO_TRADE, not DEBIT.
     snaps = [_snap(sym, vrp_ratio=1.0 + 0.01 * i) for i, sym in enumerate(UNIVERSE)]
-    assigned = assign_regimes(snaps)
+    assigned = assign_regimes(snaps, CROSS_SECTION_N)
     bottom_three = sorted(snaps, key=lambda q: q.vrp_ratio)[:3]
     for q in bottom_three:
         assert assigned[q.symbol] == Regime.NO_TRADE
@@ -106,7 +106,7 @@ def test_assign_regimes_excludes_not_ok() -> None:
     dropped = replace(snaps[0], data_ok=False, drop_reason="NO_CHAIN")
     snaps = [dropped, *snaps[1:]]
 
-    assigned = assign_regimes(snaps)
+    assigned = assign_regimes(snaps, CROSS_SECTION_N)
 
     assert dropped.symbol not in assigned
     # len(UNIVERSE)-1 data_ok names, comfortably >= 2*CROSS_SECTION_N -> both
@@ -117,7 +117,7 @@ def test_assign_regimes_excludes_not_ok() -> None:
 def test_assign_regimes_shrinks_symmetrically_when_thin() -> None:
     # Only 4 data_ok names (< 2*CROSS_SECTION_N) -> both buckets shrink to 4//2 = 2.
     snaps = [_snap(sym, vrp_ratio=1.0 + 0.1 * i) for i, sym in enumerate(UNIVERSE[:4])]
-    assigned = assign_regimes(snaps)
+    assigned = assign_regimes(snaps, CROSS_SECTION_N)
     assert len(assigned) == 4  # 2 credit-side + 2 debit-side, no middle excluded
 
 
@@ -188,3 +188,49 @@ def test_composite_score_skew_uses_magnitude() -> None:
     assert composite_score(positive, d, vrp_lo=1.00, vrp_hi=1.20) == pytest.approx(
         composite_score(negative, d, vrp_lo=1.00, vrp_hi=1.20)
     )
+
+
+# Day 4 Step 3 contamination regression (docs/day4_action_plan.md §3.7):
+# MACRO_TICKERS must never enter the trading path.
+
+
+def test_macro_tickers_are_not_tradeable() -> None:
+    """MACRO_TICKERS are indicators. They must never enter the trading path."""
+    assert not set(MACRO_TICKERS) & set(UNIVERSE)
+    assert not set(MACRO_TICKERS) & set(EARNINGS_DATES)
+
+
+def test_compute_all_ignores_extra_bar_keys() -> None:
+    """fetch_universe_bars is called with UNIVERSE + MACRO_TICKERS, so bars
+    carries extra keys beyond UNIVERSE. compute_all must still emit exactly
+    len(UNIVERSE) snapshots, in UNIVERSE order, with no macro ticker among
+    them."""
+    from datetime import date, datetime, timedelta, timezone
+
+    from agent.tools.market_data import UniverseBars
+    from agent.tools.quant import compute_all
+
+    session_date = date(2026, 8, 31)
+    ts = datetime(2026, 8, 28, tzinfo=timezone.utc)
+
+    def _daily(symbol: str) -> tuple:
+        from agent.schemas.market import DailyBar
+
+        return tuple(
+            DailyBar(ts=ts + timedelta(days=i), open=100.0, high=101.0, low=99.0, close=100.0 + i, volume=1000.0)
+            for i in range(65)
+        )
+
+    class _EmptyChains:
+        def get(self, symbol: str):
+            return None
+
+    bars = UniverseBars(
+        daily={sym: _daily(sym) for sym in (*UNIVERSE, *MACRO_TICKERS)},
+        minute={},
+        session_date=session_date,
+        feed="iex",
+    )
+    snaps = compute_all(bars, _EmptyChains(), session_date, frozenset())
+    assert [s.symbol for s in snaps] == list(UNIVERSE)
+    assert not set(s.symbol for s in snaps) & set(MACRO_TICKERS)
