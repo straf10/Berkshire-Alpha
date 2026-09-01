@@ -230,48 +230,22 @@ const edges: Edge[] = [...mainEdges, ...branchEdges];
 // pan, zoom, and minimap instead of hand-computed SVG coordinates.
 export function SystemFlow() {
   return (
-    <div>
-      <Card className="mb-6">
-        <CardContent className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-          <span className="flex items-center gap-1.5">
-            <span className="inline-block h-2 w-3 rounded-sm bg-muted-foreground/50" />
-            Deterministic -- code only, no model call
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="inline-block h-2 w-3 rounded-sm bg-primary" />
-            LLM -- one or more model calls
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="inline-block h-2 w-3 rounded-sm bg-amber-500" />
-            LLM with a deterministic fallback
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="inline-block h-px w-4 border-t border-dashed border-destructive/70" />
-            Reject path -- ends the candidate, logged as a decision row
-          </span>
-          <span className="text-muted-foreground/60">
-            Animated line = active data flow. Drag nodes, scroll to zoom, drag the canvas to pan.
-          </span>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardContent className="h-[560px] w-full p-0 [&_.react-flow]:bg-transparent">
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            nodeTypes={nodeTypes}
-            fitView
-            fitViewOptions={{ padding: 0.15 }}
-            minZoom={0.4}
-            maxZoom={1.5}
-            proOptions={{ hideAttribution: true }}
-          >
-            <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="var(--border)" />
-            <Controls showInteractive={false} />
-          </ReactFlow>
-        </CardContent>
-      </Card>
-    </div>
+    <Card>
+      <CardContent className="h-[560px] w-full p-0 [&_.react-flow]:bg-transparent">
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          nodeTypes={nodeTypes}
+          fitView
+          fitViewOptions={{ padding: 0.15 }}
+          minZoom={0.4}
+          maxZoom={1.5}
+          proOptions={{ hideAttribution: true }}
+        >
+          <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="var(--border)" />
+          <Controls showInteractive={false} />
+        </ReactFlow>
+      </CardContent>
+    </Card>
   );
 }
