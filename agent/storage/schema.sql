@@ -203,3 +203,27 @@ CREATE TABLE IF NOT EXISTS health_samples (
   ok     INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_health_samples_ts ON health_samples(ts_utc DESC);
+
+-- Day 4 (docs/day4_action_plan.md Step 5). One row per completed session: the
+-- agent's own post-market critique of the constraint that bound it that day.
+-- NOT tied to a decision_id -- a reflection is session-scoped, spanning every
+-- decision in the session, so it scopes on session_date the way tool_calls
+-- scopes on ts_utc's date prefix.
+--
+-- session_date is UNIQUE: the reflector runs from trading_loop's closed
+-- branch, which re-enters every <= CLOSED_SLEEP_CEILING_S seconds all
+-- evening. The uniqueness constraint is the idempotency guarantee, not the
+-- application-level guard in front of it (which is an optimisation).
+CREATE TABLE IF NOT EXISTS reflections (
+  id                 INTEGER PRIMARY KEY,
+  ts_utc             TEXT    NOT NULL,
+  session_date       TEXT    NOT NULL UNIQUE,
+  decisions_examined INTEGER NOT NULL,
+  binding_constraint TEXT    NOT NULL,   -- the gate_reason that dominated the session
+  constraint_count   INTEGER NOT NULL,   -- how many decisions it accounted for
+  verdict            TEXT    NOT NULL,   -- LOOSEN | HOLD | TIGHTEN
+  argument           TEXT    NOT NULL,   -- the model's reasoning, prose
+  proposed_change    TEXT,               -- e.g. 'VWM_Z_STRONG 0.45 -> 0.40', NULL when HOLD
+  ok                 INTEGER NOT NULL    -- 0 when the LLM call failed; row still written
+);
+CREATE INDEX IF NOT EXISTS ix_reflections_session ON reflections(session_date DESC);

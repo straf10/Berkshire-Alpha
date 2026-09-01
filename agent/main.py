@@ -16,6 +16,7 @@ from typing import Any, Final
 import aiosqlite
 import httpx
 
+from agent.agents import reflector
 from agent.agents.pipeline import PipelineArtifacts, PipelineOutcome, run_llm_pipeline
 from agent.config import (
     ACCOUNT_START_EQUITY,
@@ -1112,6 +1113,66 @@ async def management_tick(deps: Deps, session: SessionPlan) -> None:
         )
 
 
+async def _reflection_exists(conn: aiosqlite.Connection, session_date: str) -> bool:
+    cur = await conn.execute("SELECT 1 FROM reflections WHERE session_date = ?", (session_date,))
+    return (await cur.fetchone()) is not None
+
+
+async def _session_decisions(conn: aiosqlite.Connection, session_date: str) -> list[dict[str, Any]]:
+    """Raw query, deliberately bypassing storage.read -- that module is
+    imported ONLY by api/ (docs/day2_spine_plan.md Group 3), same reasoning
+    as _read_state_value above. ts_utc-ordered so reflector.digest's
+    first-appearance tiebreak matches the order decisions actually happened."""
+    cur = await conn.execute(
+        "SELECT gate_reason, observed_value, threshold_value, action, session_date "
+        "FROM decisions WHERE session_date = ? ORDER BY ts_utc ASC",
+        (session_date,),
+    )
+    return [dict(row) for row in await cur.fetchall()]
+
+
+def _reflection_row(result: reflector.ReflectionResult) -> storage_write.ReflectionRow:
+    d = result.digest
+    output = result.output
+    return storage_write.ReflectionRow(
+        ts_utc=datetime.now(timezone.utc).isoformat(),
+        session_date=d.session_date.isoformat(),
+        decisions_examined=d.decisions_examined,
+        binding_constraint=d.binding_constraint,
+        constraint_count=d.constraint_count,
+        verdict=output.verdict if output is not None else "HOLD",
+        argument=output.argument if output is not None else "reflection unavailable",
+        proposed_change=output.proposed_change if output is not None else None,
+        ok=result.ok,
+    )
+
+
+async def _maybe_reflect(deps: Deps, session: SessionPlan) -> None:
+    """Runs at most once per completed session.
+
+    CRITICAL: session.session_date is the NEXT session when the market is
+    closed -- current_or_next_session sets session_date = open_utc.date() in
+    its `else` branch. Reflecting on session.session_date would summarise a
+    session that has not happened yet and would find zero decisions. The
+    completed session is session.last_session_utc[1].date().
+    """
+    reflect_date = session.last_session_utc[1].date().isoformat()
+    async with storage_db.connect(deps.settings.db_path) as conn:
+        if await _reflection_exists(conn, reflect_date):   # cheap guard in front of the UNIQUE
+            return
+        rows = await _session_decisions(conn, reflect_date)
+        if not rows:
+            return
+        d = reflector.digest(rows)
+        budget = await load_budget(conn, reflect_date)
+        if not deps.llm_enabled or budget.exhausted or deps.http is None:
+            result = reflector.ReflectionResult(digest=d, output=None, ok=False)
+        else:
+            llm = _build_llm_client(deps.http, conn, budget, deps.settings)
+            result = await reflector.reflect(llm, d, sink=[])
+        await storage_write.insert_reflection(conn, _reflection_row(result))
+
+
 def _next_action(session: SessionPlan, now_utc: datetime, completed: int) -> tuple[str, datetime]:
     """Pure -- what the loop will do next and when, for the dashboard's
     live/next-action indicator. Mirrors trading_loop's own branch order
@@ -1168,6 +1229,10 @@ async def trading_loop(deps: Deps) -> None:
             await _publish_status(conn, deps, session, now, completed)
 
         if not session.is_open:
+            # docs/day4_action_plan.md Step 5. BEFORE the sleep: the closed
+            # branch sleeps up to CLOSED_SLEEP_CEILING_S (900s) and `continue`s,
+            # so a hook placed after it would not run until the next wake.
+            await _maybe_reflect(deps, session)
             await deps.clock.sleep(seconds_until_next_boundary(session, now))
             continue
 

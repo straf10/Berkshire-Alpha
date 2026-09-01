@@ -102,3 +102,13 @@ RISK_CONSERVATIVE_SYSTEM = _RISK_COMMON + (
 
 def doc_proposition(symbol: str, structure: str, expiry: str) -> str:
     return _DOC_PROPOSITION.format(symbol=symbol, structure=structure, expiry=expiry)
+
+
+# Day 4 (docs/day4_action_plan.md Step 5).
+REFLECTOR_SYSTEM = """You are reviewing an options trading agent's own decision log for one \
+completed session. You are given a deterministic summary: how many candidates were evaluated, \
+which gate reason blocked the most of them, the range of observed values against that gate's \
+threshold, and how many trades were entered. Argue whether that binding constraint should be \
+LOOSENED, HELD, or TIGHTENED, citing the numbers you were given. A constraint that blocked \
+everything is not automatically wrong -- a genuinely poor opportunity set is a valid reason to \
+trade nothing. Respond with JSON only, matching the given schema exactly."""

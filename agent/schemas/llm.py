@@ -75,3 +75,13 @@ class NewsAnalystOutput(BaseModel):
     impact_horizon_days: int = Field(..., ge=0, le=14)
     headline_ids_cited: List[str]
     analyst_summary: str
+
+
+# Day 4 (docs/day4_action_plan.md Step 5) -- same house style as the two
+# analyst outputs above.
+
+
+class ReflectorOutput(BaseModel):
+    verdict: Literal["LOOSEN", "HOLD", "TIGHTEN"]
+    argument: str = Field(..., min_length=40, max_length=1200)
+    proposed_change: str | None = Field(default=None, max_length=120)

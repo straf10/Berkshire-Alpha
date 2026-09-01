@@ -374,3 +374,17 @@ export interface HealthBucket {
   ok_count: number;
   total_count: number;
 }
+
+// docs/day4_action_plan.md Step 5 -- the Reflector's post-market critique.
+export interface Reflection {
+  id: number;
+  ts_utc: string;
+  session_date: string;
+  decisions_examined: number;
+  binding_constraint: string;
+  constraint_count: number;
+  verdict: string; // LOOSEN | HOLD | TIGHTEN
+  argument: string;
+  proposed_change: string | null;
+  ok: number;
+}

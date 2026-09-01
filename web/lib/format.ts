@@ -96,6 +96,14 @@ export function riskDecisionVariant(decision: string): "default" | "destructive"
   return "secondary";
 }
 
+// Reflector verdict pill (docs/day4_action_plan.md Step 5): LOOSEN reads as
+// an accent call-out, TIGHTEN as a warning, HOLD as the neutral default.
+export function verdictVariant(verdict: string): "default" | "destructive" | "secondary" {
+  if (verdict === "LOOSEN") return "default";
+  if (verdict === "TIGHTEN") return "destructive";
+  return "secondary";
+}
+
 export function safeJsonParse<T>(raw: string | null | undefined): T | null {
   if (!raw) return null;
   try {

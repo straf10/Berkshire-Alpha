@@ -128,6 +128,13 @@ async def health_history(hours: int = 90, conn: aiosqlite.Connection = Depends(g
     return await read.health_history(conn, hours)
 
 
+@app.get("/reflections")
+async def reflections(limit: int = 30, conn: aiosqlite.Connection = Depends(get_conn)) -> list[dict[str, Any]]:
+    """Day 4 (docs/day4_action_plan.md Step 5): the Reflector's post-market
+    critique of each completed session, newest first."""
+    return await read.latest_reflections(conn, min(limit, 200))
+
+
 def _jsonable(value: Any) -> Any:
     if isinstance(value, (Decimal, date)):
         return str(value)
