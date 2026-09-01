@@ -879,14 +879,19 @@ async def test_aggregate_risk_accumulates_in_cycle(tmp_path, monkeypatch: pytest
     import agent.strategy.ticker_screener as ticker_screener_module
     from agent.schemas.execution import Intent, Leg, Regime, SpreadPlan, Structure
     from agent.strategy.regime import RegimeDecision
-    from agent.strategy.regime import select as real_select
     from agent.schemas.market import ChainSnapshot, OptionQuote
     from datetime import datetime as dt_cls, timezone as tz
 
     def forced_select(q, assigned, skew_threshold):
+        # Force exactly SPY and NVDA as the only candidates -- everything else
+        # is NO_TRADE regardless of assign_regimes' real cross-sectional
+        # output, so this test's two-candidate scenario stays independent of
+        # CROSS_SECTION_N (docs/day4_action_plan.md Step 2 raised it 3 -> 4,
+        # which otherwise pulls extra real candidates into the shortlist and
+        # crowds NVDA out of SHORTLIST_MAX before the gate ever sees it).
         if q.symbol in ("SPY", "NVDA") and q.data_ok:
             return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
-        return real_select(q, assigned, skew_threshold)
+        return RegimeDecision(Regime.NO_TRADE, None, "forced-no-trade", "TEST", None, None)
 
     monkeypatch.setattr(main_module, "select", forced_select)
     monkeypatch.setattr(ticker_screener_module, "select", forced_select)
@@ -923,11 +928,17 @@ async def test_aggregate_risk_accumulates_in_cycle(tmp_path, monkeypatch: pytest
     from agent.schemas.execution import OrderStatus as _OrderStatus
 
     clients = FakeClients()
+    # filled_qty=2 on the terminal state (not 1): with forced_select now
+    # isolating SPY/NVDA as the only two candidates, SPY's own fill must
+    # saturate the $10000 aggregate ceiling on its own (8000 seeded + 2000
+    # from a genuine 2-contract fill) so NVDA's cap lands at exactly 0 --
+    # this no longer relies on an incidental third real-select candidate
+    # (e.g. QQQ) picking up the remaining 1000 of headroom.
     broker = MockBroker([
         OrderState(order_id="o1", status=_OrderStatus.NEW, limit_price=Decimal("-3.50"),
-                   filled_qty=0, total_qty=1, fill_avg_price=None, reject_code=None, reject_message=None),
+                   filled_qty=0, total_qty=2, fill_avg_price=None, reject_code=None, reject_message=None),
         OrderState(order_id="o1", status=_OrderStatus.FILLED, limit_price=Decimal("-3.50"),
-                   filled_qty=1, total_qty=1, fill_avg_price=Decimal("-3.50"), reject_code=None, reject_message=None),
+                   filled_qty=2, total_qty=2, fill_avg_price=Decimal("-3.50"), reject_code=None, reject_message=None),
     ])
     clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
     deps = _deps(db_path, clients, broker, clock)

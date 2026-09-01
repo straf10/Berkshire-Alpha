@@ -71,7 +71,11 @@ def test_shortlist_excludes_no_trade() -> None:
 
 def test_assign_regimes_ranks_cross_sectionally() -> None:
     """The persisted 29-Aug cross-section (docs/day4_track_ab_plan.md §1.3
-    sanity check) -> CREDIT {AAPL, TSLA, SPY}, DEBIT {NVDA, AMD, QQQ}."""
+    sanity check), updated for docs/day4_action_plan.md Step 2's
+    CROSS_SECTION_N 3 -> 4: top 4 by VRP are AAPL/TSLA/SPY/MSFT, but MSFT
+    sits at exactly VRP_CREDIT_MIN (1.00), so its sign guard demotes it to
+    NO_TRADE rather than CREDIT -> CREDIT {AAPL, TSLA, SPY}. Bottom 4 by VRP
+    are NVDA/AMD/QQQ/GOOGL, all < 1.00 -> DEBIT {NVDA, AMD, QQQ, GOOGL}."""
     vrps = {
         "AAPL": 1.258, "TSLA": 1.040, "SPY": 1.021,
         "MSFT": 1.00, "META": 0.98, "AMZN": 0.95, "GOOGL": 0.90,
@@ -82,7 +86,7 @@ def test_assign_regimes_ranks_cross_sectionally() -> None:
     credit = {s for s, r in assigned.items() if r == Regime.CREDIT}
     debit = {s for s, r in assigned.items() if r == Regime.DEBIT}
     assert credit == {"AAPL", "TSLA", "SPY"}
-    assert debit == {"NVDA", "AMD", "QQQ"}
+    assert debit == {"NVDA", "AMD", "QQQ", "GOOGL"}
 
 
 def test_assign_regimes_respects_sign_guards() -> None:
@@ -103,8 +107,8 @@ def test_assign_regimes_excludes_not_ok() -> None:
     assigned = assign_regimes(snaps)
 
     assert dropped.symbol not in assigned
-    # 9 data_ok names >= 2*CROSS_SECTION_N(3) -> buckets stay at 3+3, not shrunk.
-    assert len(assigned) == 6
+    # 9 data_ok names >= 2*CROSS_SECTION_N(4) -> buckets stay at 4+4, not shrunk.
+    assert len(assigned) == 8
 
 
 def test_assign_regimes_shrinks_symmetrically_when_thin() -> None:

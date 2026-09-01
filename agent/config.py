@@ -82,6 +82,27 @@ RSI_OVERSOLD: Final[float] = 30.0
 VWAP_DEV_THRESHOLD_PCT: Final[float] = 0.30
 VWM_LOOKBACK_N: Final[int] = 3
 VWM_Z_WINDOW: Final[int] = 60
+# Day 4 Step 2, REVISED after the Step 6 sensitivity run. UNCHANGED at 0.75.
+#
+# An earlier draft lowered this to 0.45 on the grounds that "no DEBIT candidate
+# has ever cleared the bar". That reasoning was wrong, and the correction is
+# worth recording. It is true that of the 9 snapshots ever ASSIGNED to DEBIT,
+# none cleared 0.75 (max |z| 0.538). But across all 75 data_ok snapshots in
+# agent.db, 17 DID clear it -- they simply were not the names that landed in
+# the bottom-CROSS_SECTION_N VRP slice on those days. With only 3 debit slots
+# over a handful of sessions, that is sampling luck, not an unreachable bar.
+#
+# Measured on the real tape (scripts/vwm_sensitivity.py, 50 names x 212
+# sessions = 10,600 name-days, same IEX feed the agent runs on):
+#   median |vwm_z| = 0.651,  p90 = 1.774
+#   bar 0.45 admits 63.6% of name-days   <- not a filter, most of the tape
+#   bar 0.60 admits 52.9%
+#   bar 0.75 admits 44.0%                <- selective, and still productive
+#   bar 1.00 admits 31.2%
+# At the Step-7 universe (50 names, CROSS_SECTION_N=6) the 0.75 bar yields
+# ~2.6 debit candidates per scan. The debit drought was caused by a 10-name
+# universe with 3 slots, not by this constant -- Step 7 fixes it, and lowering
+# the bar would only make a genuine momentum filter indiscriminate.
 VWM_Z_STRONG: Final[float] = 0.75
 SHORT_DELTA_TARGET: Final[float] = 0.275
 SHORT_DELTA_BAND: Final[tuple[float, float]] = (0.22, 0.33)
@@ -96,7 +117,26 @@ CLOSED_SLEEP_CEILING_S: Final[float] = 900.0
 
 # Day 4 (docs/day4_track_ab_plan.md §0.4).
 RV_WINSOR_Z: Final[float] = 3.0
-CROSS_SECTION_N: Final[int] = 3
+
+# Day 4 (docs/day4_action_plan.md Step 2). Raised 3 -> 4.
+#
+# PARTITION ARGUMENT. assign_regimes assigns ranked[:n] -> CREDIT and
+# ranked[-n:] -> DEBIT. On a universe of size U:
+#   2n <  U  ->  the two slices are disjoint and U - 2n names are held out.
+#                The ranking discriminates. This is the intended regime.
+#   2n == U  ->  the slices exactly partition the universe. Every name gets a
+#                regime, the cross-sectional rank selects nothing, and the
+#                "we trade the cross-section" claim becomes false.
+#   2n >  U  ->  the slices OVERLAP. A name in both loops is written twice and
+#                the second write silently wins, so its regime depends on dict
+#                insertion order. Non-deterministic, and silent.
+# With UNIVERSE at 10 names the ceiling is therefore n = 4 (8 assigned, 2 held
+# out). The assert below is the enforcement, not this comment.
+CROSS_SECTION_N: Final[int] = 4
+assert CROSS_SECTION_N * 2 <= len(UNIVERSE), (
+    f"CROSS_SECTION_N={CROSS_SECTION_N} over a {len(UNIVERSE)}-name universe makes "
+    "assign_regimes' CREDIT/DEBIT slices overlap -- see the partition argument above"
+)
 CONVICTION_GROUNDING_FLOOR: Final[float] = 0.75
 CONVICTION_DEGRADED_FLOOR: Final[float] = 0.5
 

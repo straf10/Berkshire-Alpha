@@ -80,9 +80,14 @@ async def run_analysts(
     news: Mapping[str, tuple[Headline, ...]], mentions: Mapping[str, MentionSignal],
     *, sem: asyncio.Semaphore, sinks: Mapping[str, list[int]],
 ) -> list[AnalystResult]:
-    """3 x len(candidates) calls, ONE asyncio.gather, bounded by `sem`. Never
+    """2 x len(candidates) calls, ONE asyncio.gather, bounded by `sem`. Never
     raises except LlmBudgetExceeded (propagates immediately) or LlmUnavailable
-    when >= half the wave failed (docs/day3_llm_plan.md Group 3)."""
+    when >= half the wave failed (docs/day3_llm_plan.md Group 3).
+
+    `sentiment_analyst` is never invoked here (docs/day4_action_plan.md Step
+    1): Reddit's API is closed to us, so `mentions` is always empty and the
+    call would be a guaranteed no-op. `sentiment_analyst()` itself stays,
+    unused, in case the API ever reopens."""
 
     async def _bounded(coro):
         async with sem:
@@ -97,8 +102,6 @@ async def run_analysts(
         meta.append((symbol, "QUANT"))
         tasks.append(_bounded(news_analyst(llm, symbol, news.get(symbol, ()), sink=sink)))
         meta.append((symbol, "NEWS"))
-        tasks.append(_bounded(sentiment_analyst(llm, symbol, mentions.get(symbol), sink=sink)))
-        meta.append((symbol, "SENTIMENT"))
 
     results = await asyncio.gather(*tasks, return_exceptions=True) if tasks else []
 
@@ -145,10 +148,15 @@ async def run_analysts(
 
 
 def analyst_score(r: AnalystResult) -> float:
-    """[NEW] docs/day3_llm_plan.md Group 3: 0.50*quant + 0.30*news + 0.20*sentiment,
-    each in [0,1], measuring AGREEMENT WITH THE DETERMINISTIC STRUCTURE'S
-    DIRECTION. A missing analyst scores 0.5 (neutral) and its weight is NOT
-    redistributed, so a candidate is never advantaged by having fewer opinions."""
+    """docs/day4_action_plan.md Step 1.4: 0.625*quant + 0.375*news, each in
+    [0,1], measuring AGREEMENT WITH THE DETERMINISTIC STRUCTURE'S DIRECTION.
+    Renormalised from the original 0.50/0.30/0.20 quant/news/sentiment split
+    (5:3:2) after sentiment_analyst was retired -- 0.625/0.375 preserves the
+    5:3 quant:news ratio exactly (both are 1.25x the old weights), so removing
+    the constant 0.5 sentiment term changes no candidate's relative ranking.
+    A missing analyst scores 0.5 (neutral) and its weight is NOT redistributed
+    a second time, so a candidate is never advantaged by having fewer opinions
+    among the two that remain."""
     structure = r.bundle.regime.structure
     direction = DIRECTION.get(structure, 0) if structure is not None else 0
 
@@ -177,13 +185,7 @@ def analyst_score(r: AnalystResult) -> float:
         impact_sign = _IMPACT_SIGN[news.expected_impact]
         news_component = 0.5 if impact_sign == 0 else (1.0 if impact_sign == direction else 0.0)
 
-    sentiment = r.bundle.sentiment_analyst
-    if sentiment is None or direction == 0:
-        sentiment_component = 0.5
-    else:
-        sentiment_component = 0.5 + 0.5 * sentiment.sentiment_score * direction * sentiment.confidence
-
-    return 0.50 * quant_component + 0.30 * news_component + 0.20 * sentiment_component
+    return 0.625 * quant_component + 0.375 * news_component
 
 
 def select_top(

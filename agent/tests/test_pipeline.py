@@ -348,11 +348,13 @@ async def test_budget_exceeded_propagates_out_of_pipeline() -> None:
 
 
 async def test_full_cycle_call_count() -> None:
-    """docs/day3_llm_plan.md Group 5, DEBATE_CANDIDATES=4: 4 shortlisted, all
-    4 debated, all terminating at R1 -> exactly 12 (analysts) + 8 (R1 debate)
-    + 4 (trader) + 12 (risk) = 36 FakeLlm calls. Every candidate needs a real
-    headline and mention signal so all 12 analyst calls actually fire
-    (news_analyst and sentiment_analyst skip the call entirely with no input)."""
+    """docs/day3_llm_plan.md Group 5, DEBATE_CANDIDATES=4, updated for
+    docs/day4_action_plan.md Step 1 (sentiment_analyst retired from
+    run_analysts): 4 shortlisted, all 4 debated, all terminating at R1 ->
+    exactly 8 (QUANT+NEWS analysts) + 8 (R1 debate) + 4 (trader) + 12 (risk)
+    = 32 FakeLlm calls. Every candidate needs a real headline so all 8
+    analyst calls actually fire (news_analyst skips the call entirely with
+    no input); `mentions` is passed through but no longer drives any call."""
     llm = ScriptedLlm()
     candidates = [_candidate(UNIVERSE[i], score=float(i)) for i in range(4)]
     symbols = [c.snapshot.symbol for c in candidates]
@@ -371,4 +373,4 @@ async def test_full_cycle_call_count() -> None:
     )
     assert len(outcomes) == 4
     assert sum(1 for o in outcomes if o.reason == "OK") == 4
-    assert len(llm.calls) == 36
+    assert len(llm.calls) == 32

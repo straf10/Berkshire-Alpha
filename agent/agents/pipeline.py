@@ -109,7 +109,7 @@ class PipelineOutcome:
 
 
 _ANALYST_FIELDS: tuple[tuple[str, str], ...] = (
-    ("QUANT", "quant_analyst"), ("NEWS", "news_analyst"), ("SENTIMENT", "sentiment_analyst"),
+    ("QUANT", "quant_analyst"), ("NEWS", "news_analyst"),
 )
 
 
