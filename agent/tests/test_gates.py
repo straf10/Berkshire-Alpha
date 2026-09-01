@@ -174,6 +174,43 @@ def test_earnings_gate_disarmed_when_unverified(monkeypatch: pytest.MonkeyPatch)
     assert decision.reason != GateReason.EARNINGS_BLACKOUT
 
 
+def test_missing_earnings_key_rejects(monkeypatch: pytest.MonkeyPatch) -> None:
+    """docs/day4_action_plan.md §7.7a: a ticker absent from EARNINGS_DATES
+    must fail CLOSED -- it must never trade with no earnings protection."""
+    import agent.risk.gates as gates_module
+
+    monkeypatch.setattr(gates_module, "EARNINGS_DATES", {})
+    plan = _plan()
+    decision = evaluate(plan, _ctx(earnings_armed=True, session_date=SESSION_DATE))
+    assert decision.reason == GateReason.EARNINGS_UNVERIFIED
+    assert not decision.approved
+
+
+def test_none_in_window_is_tradeable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A human-verified NONE_IN_WINDOW is a real answer, not a missing one --
+    it must never be treated as unverified or as a blackout."""
+    import agent.risk.gates as gates_module
+    from agent.config import EarningsStatus
+
+    monkeypatch.setattr(gates_module, "EARNINGS_DATES", {"TST": EarningsStatus.NONE_IN_WINDOW})
+    plan = _plan()
+    decision = evaluate(plan, _ctx(earnings_armed=True, session_date=SESSION_DATE))
+    assert decision.reason != GateReason.EARNINGS_BLACKOUT
+    assert decision.reason != GateReason.EARNINGS_UNVERIFIED
+
+
+def test_earnings_unverified_distinct_from_blackout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The decision log must be able to tell 'we know it reports' apart from
+    'we never checked' -- two different operational failures."""
+    import agent.risk.gates as gates_module
+
+    monkeypatch.setattr(gates_module, "EARNINGS_DATES", {})
+    plan = _plan()
+    decision = evaluate(plan, _ctx(earnings_armed=True, session_date=SESSION_DATE))
+    assert decision.reason == GateReason.EARNINGS_UNVERIFIED
+    assert decision.reason != GateReason.EARNINGS_BLACKOUT
+
+
 def test_max_concurrent_positions() -> None:
     keys = frozenset((f"SYM{i}", EXPIRY) for i in range(6))
     plan = _plan()

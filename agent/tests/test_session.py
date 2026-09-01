@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from agent.session import minute_bar_window, SessionPlan, current_or_next_session, seconds_until_next_boundary
 
@@ -50,12 +50,38 @@ async def test_session_boundaries_from_clock() -> None:
     )
     plan = await current_or_next_session(_FakeClients(clock, _calendar_entries()))
     assert plan.session_date == date(2026, 8, 31)
-    assert plan.scan_1_utc == datetime(2026, 8, 31, 14, 15, tzinfo=timezone.utc)
-    assert plan.scan_2_utc == datetime(2026, 8, 31, 18, 0, tzinfo=timezone.utc)
+    # SCAN_OFFSETS_MIN = (45, 135, 225, 315) minutes from open (13:30 UTC).
+    assert plan.scan_utcs == (
+        datetime(2026, 8, 31, 14, 15, tzinfo=timezone.utc),
+        datetime(2026, 8, 31, 15, 45, tzinfo=timezone.utc),
+        datetime(2026, 8, 31, 17, 15, tzinfo=timezone.utc),
+        datetime(2026, 8, 31, 18, 45, tzinfo=timezone.utc),
+    )
     assert plan.cutoff_utc == datetime(2026, 8, 31, 19, 0, tzinfo=timezone.utc)
 
 
-async def test_half_day_pulls_scans_earlier() -> None:
+async def test_scan_offsets_inside_entry_window() -> None:
+    """docs/day4_action_plan.md §7.9: every SCAN_OFFSETS_MIN slot must land
+    in [open+45, cutoff) on an ordinary (non-half) session -- the schedule is
+    evenly spaced across the entry window by construction, not by accident."""
+    clock = _FakeClock(
+        timestamp=datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc),
+        is_open=False,
+        next_open=datetime(2026, 8, 31, 13, 30, tzinfo=timezone.utc),
+        next_close=datetime(2026, 8, 31, 20, 0, tzinfo=timezone.utc),
+    )
+    plan = await current_or_next_session(_FakeClients(clock, _calendar_entries()))
+    assert plan.scan_utcs[0] == plan.open_utc + timedelta(minutes=45)
+    for t in plan.scan_utcs:
+        assert plan.open_utc + timedelta(minutes=45) <= t < plan.cutoff_utc
+
+
+async def test_half_day_pulls_cutoff_earlier() -> None:
+    """Docs/day4_action_plan.md Step 7: scan_utcs is open-relative only now
+    (SCAN_OFFSETS_MIN), so a half day no longer pulls the scan slots
+    themselves earlier -- it pulls cutoff_utc earlier (close-relative,
+    unchanged), which is what makes trading_loop skip any slot that falls
+    after cutoff on a shortened session."""
     clock = _FakeClock(
         timestamp=datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc),
         is_open=False,
@@ -63,10 +89,12 @@ async def test_half_day_pulls_scans_earlier() -> None:
         next_close=datetime(2026, 8, 31, 17, 0, tzinfo=timezone.utc),
     )
     plan = await current_or_next_session(_FakeClients(clock, _calendar_entries()))
-    assert plan.scan_2_utc == datetime(2026, 8, 31, 15, 0, tzinfo=timezone.utc)
     assert plan.cutoff_utc == datetime(2026, 8, 31, 16, 0, tzinfo=timezone.utc)
-    assert plan.open_utc <= plan.scan_2_utc <= plan.close_utc
     assert plan.open_utc <= plan.cutoff_utc <= plan.close_utc
+    # The last two scan slots (17:15, 18:45) now fall AFTER cutoff (16:00) on
+    # this shortened session -- trading_loop's own cutoff check is what must
+    # skip them, not the schedule construction itself.
+    assert sum(1 for t in plan.scan_utcs if t < plan.cutoff_utc) == 2
 
 
 async def test_last_session_is_previous_completed() -> None:
@@ -100,8 +128,12 @@ def _plan(*, is_open: bool) -> SessionPlan:
         session_date=date(2026, 8, 31),
         open_utc=datetime(2026, 8, 31, 13, 30, tzinfo=timezone.utc),
         close_utc=datetime(2026, 8, 31, 20, 0, tzinfo=timezone.utc),
-        scan_1_utc=datetime(2026, 8, 31, 14, 15, tzinfo=timezone.utc),
-        scan_2_utc=datetime(2026, 8, 31, 18, 0, tzinfo=timezone.utc),
+        scan_utcs=(
+            datetime(2026, 8, 31, 14, 15, tzinfo=timezone.utc),
+            datetime(2026, 8, 31, 15, 45, tzinfo=timezone.utc),
+            datetime(2026, 8, 31, 17, 15, tzinfo=timezone.utc),
+            datetime(2026, 8, 31, 18, 45, tzinfo=timezone.utc),
+        ),
         cutoff_utc=datetime(2026, 8, 31, 19, 0, tzinfo=timezone.utc),
         last_session_utc=(
             datetime(2026, 8, 28, 13, 30, tzinfo=timezone.utc),

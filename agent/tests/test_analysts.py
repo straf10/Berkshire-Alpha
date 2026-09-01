@@ -119,9 +119,9 @@ async def test_analysts_run_concurrently() -> None:
     t0 = time.monotonic()
     results = await run_analysts(llm, candidates, news, mentions, sem=sem, sinks=sinks)
     elapsed = time.monotonic() - t0
-    assert llm.calls == 12
+    assert llm.calls == 8  # QUANT + NEWS only (docs/day4_action_plan.md Step 1) x 4 candidates
     assert llm.max_concurrent == 6
-    assert elapsed < 0.05  # 2 waves of ~0.01s, not 12 serial waves
+    assert elapsed < 0.05  # 2 waves of ~0.01s, not 8 serial waves
     assert len(results) == 4
 
 
@@ -136,13 +136,13 @@ async def test_one_analyst_validation_drop_isolated() -> None:
     bundle = results[0].bundle
     assert bundle.news_analyst is None
     assert bundle.quant_analyst is not None
-    assert bundle.sentiment_analyst is not None
+    assert bundle.sentiment_analyst is None  # never invoked (docs/day4_action_plan.md Step 1)
     assert results[0].failures == (("NEWS", "LlmValidationDropped"),)
 
 
 async def test_all_analysts_fail_candidate_survives() -> None:
     llm = FakeLlm()
-    for node in ("QUANT", "NEWS", "SENTIMENT"):
+    for node in ("QUANT", "NEWS"):
         llm.script(node, [LlmValidationDropped("x")])
     candidates = [_candidate("SPY")]
     sinks = {"SPY": []}
@@ -156,13 +156,13 @@ async def test_all_analysts_fail_candidate_survives() -> None:
 async def test_partial_outage_degrades_cycle() -> None:
     llm = FakeLlm()
     candidates = [_candidate(f"SYM{i}") for i in range(4)]
-    # 7 of the 12 calls unavailable: fail QUANT and NEWS for all 4 (8), too many -- trim to 7.
-    # NEWS must actually be called for the scripted failures to fire, so
+    # 4 of the 8 calls unavailable (QUANT + NEWS only, docs/day4_action_plan.md
+    # Step 1): fail QUANT for all 4 -- exactly half, meets the >= half guard.
+    # NEWS must actually be called for a scripted failure to fire there, so
     # every candidate needs a real headline (news_analyst skips the call
-    # entirely with no headlines).
+    # entirely with no headlines) -- unused here since only QUANT fails.
     news = {c.snapshot.symbol: _headlines(c.snapshot.symbol) for c in candidates}
     llm.script("QUANT", [LlmUnavailable("x")] * 4)
-    llm.script("NEWS", [LlmUnavailable("x")] * 3)
     sinks = {c.snapshot.symbol: [] for c in candidates}
     with pytest.raises(LlmUnavailable):
         await run_analysts(llm, candidates, news, {}, sem=asyncio.Semaphore(6), sinks=sinks)
@@ -253,6 +253,41 @@ def test_analyst_score_missing_is_neutral() -> None:
         failures=(),
     )
     assert analyst_score(result) == pytest.approx(0.5)
+
+
+def test_analyst_score_ignores_sentiment() -> None:
+    """docs/day4_action_plan.md Step 1.8: sentiment_analyst is never invoked
+    any more, but the field still exists on EvidenceBundle -- pin that a
+    populated sentiment field (however it got there) cannot move the score."""
+    candidate = _candidate("SPY", structure=Structure.BULL_CALL_SPREAD, regime=Regime.DEBIT)
+
+    def _score(sentiment: SentimentAnalystOutput | None) -> float:
+        result = AnalystResult(
+            symbol="SPY",
+            bundle=EvidenceBundle(
+                symbol="SPY", quant=candidate.snapshot, regime=candidate.decision,
+                quant_analyst=_quant_out("SPY", iv_rv_interpretation="CHEAP", directional_momentum="STRONG_UP"),
+                news_analyst=_news_out("SPY", expected_impact="BULLISH"),
+                sentiment_analyst=sentiment, headlines=(), mentions=None,
+            ),
+            failures=(),
+        )
+        return analyst_score(result)
+
+    baseline = _score(None)
+    assert baseline == _score(_sentiment_out("SPY", sentiment_score=0.9, confidence=0.9))
+    assert baseline == _score(_sentiment_out("SPY", sentiment_score=-0.9, confidence=0.9))
+
+
+def test_select_top_universe_index_lookup_is_constant_time() -> None:
+    """docs/day4_action_plan.md §7.8/§7.9: select_top's UNIVERSE tiebreak
+    must use a precomputed dict, not a fresh UNIVERSE.index() scan per
+    comparison."""
+    import agent.agents.analysts as analysts_module
+    from agent.config import UNIVERSE
+
+    assert isinstance(analysts_module._UNIVERSE_INDEX, dict)
+    assert analysts_module._UNIVERSE_INDEX == {sym: i for i, sym in enumerate(UNIVERSE)}
 
 
 def test_top_two_selection_deterministic() -> None:

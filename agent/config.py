@@ -4,29 +4,103 @@ import os
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+from enum import StrEnum
 from typing import Final
 
 from dotenv import load_dotenv
 
+# Day 4 Step 7 (docs/day4_action_plan.md §7.12). Selected on MEASURED 3-7 DTE
+# chain liquidity (probe: scripts/probe_universe.py), not on market cap.
+# Ordered by median bid/ask spread, tightest first -- the ordering is also the
+# UNIVERSE.index() tiebreak used by shortlist() and select_top(), so ties now
+# break toward the more fillable name rather than toward an arbitrary
+# alphabetical position.
 UNIVERSE: Final[tuple[str, ...]] = (
-    "SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMD", "TSLA", "META", "AMZN", "GOOGL",
+    "IWM", "PLTR", "DIA", "AVGO", "TSLA", "AMD", "QQQ", "AMZN", "SPY", "SMCI",
+    "META", "BAC", "CRM", "GS", "MSFT", "NVDA", "NFLX", "ARM", "UBER", "AAPL",
+    "C", "QCOM", "ORCL", "GOOGL", "NKE", "PFE", "CVX", "V", "LLY", "KO",
+    "BA", "UNH", "WFC", "JPM", "XOM", "WMT", "CAT", "INTC", "SCHW", "ADBE",
+    "DIS", "MS", "MCD", "MRK", "MA", "COST", "TMO", "GE", "AXP", "CSCO",
 )
 
-# Verified 2026-08-29 per plan.md ("Alpaca provides no earnings calendar").
-# None == verified as having no scheduled report inside the hackathon window.
-# SPY/QQQ are ETFs, no earnings. AMD (reported Aug 4) and NVDA (reported
-# Aug 26) already reported before this window; their next reports are
-# ~Nov 3 and ~Nov 25 respectively. AAPL (Oct 29), AMZN (Oct 31), META
-# (Oct 28), MSFT (~Oct 28, estimated), TSLA (~Oct 28, estimated), and GOOGL
-# (~Oct 27, estimated) all report in late October -- well outside any 3-7
-# DTE expiry this window can produce (latest possible expiry ~11 Sep).
-# EARNINGS_VERIFIED_ON must be set by a human; main.py refuses to arm the
-# earnings gate while it is None.
-EARNINGS_VERIFIED_ON: Final[date | None] = date(2026, 8, 29)
-EARNINGS_DATES: Final[dict[str, date | None]] = {
-    "SPY": None, "QQQ": None, "AAPL": None, "MSFT": None, "NVDA": None,
-    "AMD": None, "TSLA": None, "META": None, "AMZN": None, "GOOGL": None,
+
+class EarningsStatus(StrEnum):
+    # Human-verified: no report expected before the reachable expiry horizon.
+    # Distinct from a missing key, which means "nobody checked" and must fail
+    # closed (docs/day4_action_plan.md §7.7a) -- any date value below is
+    # likewise a verified, dated report, never a placeholder.
+    NONE_IN_WINDOW = "NONE_IN_WINDOW"
+
+
+# Human-verified 2026-09-01 against Yahoo Finance / Nasdaq earnings calendars
+# (Alpaca provides no earnings calendar of its own). IWM/DIA/QQQ/SPY are
+# index ETFs -- they never report earnings. CRM's vendor-listed date (26 Aug)
+# is already in the past as of this verification pass with no next date
+# published yet, so it is recorded NONE_IN_WINDOW pending a re-check closer
+# to its next quarter. Every other value is that name's next confirmed
+# report date. AVGO (2 Sep) and ORCL/ADBE (10 Sep) fall inside the reachable
+# 3-7 DTE expiry horizon (~11 Sep) -- expected to bind the blackout gate for
+# those names in the days immediately following this pass, not a data error.
+EARNINGS_VERIFIED_ON: Final[date | None] = date(2026, 9, 1)
+EARNINGS_DATES: Final[dict[str, date | EarningsStatus]] = {
+    "IWM": EarningsStatus.NONE_IN_WINDOW,
+    "PLTR": date(2026, 11, 2),
+    "DIA": EarningsStatus.NONE_IN_WINDOW,
+    "AVGO": date(2026, 9, 2),
+    "TSLA": date(2026, 10, 21),
+    "AMD": date(2026, 11, 3),
+    "QQQ": EarningsStatus.NONE_IN_WINDOW,
+    "AMZN": date(2026, 10, 29),
+    "SPY": EarningsStatus.NONE_IN_WINDOW,
+    "SMCI": date(2026, 11, 3),
+    "META": date(2026, 10, 28),
+    "BAC": date(2026, 10, 14),
+    "CRM": EarningsStatus.NONE_IN_WINDOW,
+    "GS": date(2026, 10, 13),
+    "MSFT": date(2026, 10, 28),
+    "NVDA": date(2026, 11, 17),
+    "NFLX": date(2026, 10, 20),
+    "ARM": date(2026, 11, 4),
+    "UBER": date(2026, 11, 3),
+    "AAPL": date(2026, 10, 29),
+    "C": date(2026, 10, 13),
+    "QCOM": date(2026, 10, 29),
+    "ORCL": date(2026, 9, 10),
+    "GOOGL": date(2026, 10, 28),
+    "NKE": date(2026, 10, 1),
+    "PFE": date(2026, 11, 3),
+    "CVX": date(2026, 10, 30),
+    "V": date(2026, 10, 27),
+    "LLY": date(2026, 10, 29),
+    "KO": date(2026, 10, 20),
+    "BA": date(2026, 10, 28),
+    "UNH": date(2026, 10, 27),
+    "WFC": date(2026, 10, 13),
+    "JPM": date(2026, 10, 13),
+    "XOM": date(2026, 10, 30),
+    "WMT": date(2026, 11, 19),
+    "CAT": date(2026, 10, 29),
+    "INTC": date(2026, 10, 22),
+    "SCHW": date(2026, 10, 15),
+    "ADBE": date(2026, 9, 10),
+    "DIS": date(2026, 11, 12),
+    "MS": date(2026, 10, 14),
+    "MCD": date(2026, 11, 5),
+    "MRK": date(2026, 10, 29),
+    "MA": date(2026, 10, 29),
+    "COST": date(2026, 9, 24),
+    "TMO": date(2026, 10, 21),
+    "GE": date(2026, 10, 20),
+    "AXP": date(2026, 10, 23),
+    "CSCO": date(2026, 11, 12),
 }
+# Every earnings date must be in the future relative to the verification
+# pass, or it is a typo. Catches e.g. 2026-08-05-for-2026-09-05 at import
+# time (docs/day4_action_plan.md §7.7a).
+assert all(
+    v > EARNINGS_VERIFIED_ON for v in EARNINGS_DATES.values() if isinstance(v, date)
+), "an EARNINGS_DATES value predates EARNINGS_VERIFIED_ON -- almost certainly a typo"
+assert set(EARNINGS_DATES) == set(UNIVERSE), "EARNINGS_DATES must carry exactly one key per UNIVERSE symbol"
 
 # Judged paper account, created Day 1 (README.md). Not a secret — an account
 # number, not a credential. cli_bridge.health() refuses to report healthy
@@ -67,9 +141,15 @@ WALK_STEP: Final[Decimal] = Decimal("0.05")
 WALK_REST_S: Final[float] = 15.0
 WALK_CAP_FRACTION: Final[Decimal] = Decimal("0.70")
 MAX_LEGS: Final[int] = 4
-SHORTLIST_MAX: Final[int] = 4
-SCAN_1_OFFSET_MIN: Final[int] = 45      # from session open
-SCAN_2_OFFSET_MIN: Final[int] = -120    # from session close
+# Day 4 Step 7. Raised 4 -> 8: > DEBATE_CANDIDATES(4) so select_top's
+# analyst-score ranking finally discards the worse half instead of selecting
+# 4 from at most 4 (docs/day4_action_plan.md §7.5).
+SHORTLIST_MAX: Final[int] = 8
+# Day 4 Step 7. Evenly spaced across the entry window (open+45 -> cutoff).
+# Minutes from session open. Replaces SCAN_1_OFFSET_MIN / SCAN_2_OFFSET_MIN --
+# the two-slot schedule generalises to N slots rather than being replaced.
+SCAN_OFFSETS_MIN: Final[tuple[int, ...]] = (45, 135, 225, 315)
+assert len(SCAN_OFFSETS_MIN) * 2 <= 20, "scan slots feed _completed_scan_count's guard"
 ENTRY_CUTOFF_OFFSET_MIN: Final[int] = -60
 MANAGEMENT_INTERVAL_S: Final[float] = 300.0
 
@@ -82,6 +162,27 @@ RSI_OVERSOLD: Final[float] = 30.0
 VWAP_DEV_THRESHOLD_PCT: Final[float] = 0.30
 VWM_LOOKBACK_N: Final[int] = 3
 VWM_Z_WINDOW: Final[int] = 60
+# Day 4 Step 2, REVISED after the Step 6 sensitivity run. UNCHANGED at 0.75.
+#
+# An earlier draft lowered this to 0.45 on the grounds that "no DEBIT candidate
+# has ever cleared the bar". That reasoning was wrong, and the correction is
+# worth recording. It is true that of the 9 snapshots ever ASSIGNED to DEBIT,
+# none cleared 0.75 (max |z| 0.538). But across all 75 data_ok snapshots in
+# agent.db, 17 DID clear it -- they simply were not the names that landed in
+# the bottom-CROSS_SECTION_N VRP slice on those days. With only 3 debit slots
+# over a handful of sessions, that is sampling luck, not an unreachable bar.
+#
+# Measured on the real tape (scripts/vwm_sensitivity.py, 50 names x 212
+# sessions = 10,600 name-days, same IEX feed the agent runs on):
+#   median |vwm_z| = 0.651,  p90 = 1.774
+#   bar 0.45 admits 63.6% of name-days   <- not a filter, most of the tape
+#   bar 0.60 admits 52.9%
+#   bar 0.75 admits 44.0%                <- selective, and still productive
+#   bar 1.00 admits 31.2%
+# At the Step-7 universe (50 names, CROSS_SECTION_N=6) the 0.75 bar yields
+# ~2.6 debit candidates per scan. The debit drought was caused by a 10-name
+# universe with 3 slots, not by this constant -- Step 7 fixes it, and lowering
+# the bar would only make a genuine momentum filter indiscriminate.
 VWM_Z_STRONG: Final[float] = 0.75
 SHORT_DELTA_TARGET: Final[float] = 0.275
 SHORT_DELTA_BAND: Final[tuple[float, float]] = (0.22, 0.33)
@@ -96,7 +197,28 @@ CLOSED_SLEEP_CEILING_S: Final[float] = 900.0
 
 # Day 4 (docs/day4_track_ab_plan.md §0.4).
 RV_WINSOR_Z: Final[float] = 3.0
-CROSS_SECTION_N: Final[int] = 3
+
+# Day 4 (docs/day4_action_plan.md Step 2). Raised 3 -> 4.
+#
+# PARTITION ARGUMENT. assign_regimes assigns ranked[:n] -> CREDIT and
+# ranked[-n:] -> DEBIT. On a universe of size U:
+#   2n <  U  ->  the two slices are disjoint and U - 2n names are held out.
+#                The ranking discriminates. This is the intended regime.
+#   2n == U  ->  the slices exactly partition the universe. Every name gets a
+#                regime, the cross-sectional rank selects nothing, and the
+#                "we trade the cross-section" claim becomes false.
+#   2n >  U  ->  the slices OVERLAP. A name in both loops is written twice and
+#                the second write silently wins, so its regime depends on dict
+#                insertion order. Non-deterministic, and silent.
+# With UNIVERSE at 10 names the ceiling was n = 4 (8 assigned, 2 held out).
+# Day 4 Step 7 widened UNIVERSE to 50 and raised this 4 -> 6 (12% of 50,
+# still comfortably inside the ceiling) -- see docs/day4_action_plan.md §7.5.
+# The assert below is the enforcement, not this comment.
+CROSS_SECTION_N: Final[int] = 6
+assert CROSS_SECTION_N * 2 <= len(UNIVERSE), (
+    f"CROSS_SECTION_N={CROSS_SECTION_N} over a {len(UNIVERSE)}-name universe makes "
+    "assign_regimes' CREDIT/DEBIT slices overlap -- see the partition argument above"
+)
 CONVICTION_GROUNDING_FLOOR: Final[float] = 0.75
 CONVICTION_DEGRADED_FLOOR: Final[float] = 0.5
 
@@ -114,7 +236,10 @@ LLM_VALIDATION_RETRIES: Final[int] = 1
 LLM_COST_IN_PER_MTOK: Final[Decimal] = Decimal("0.20")
 LLM_COST_OUT_PER_MTOK: Final[Decimal] = Decimal("0.60")
 LLM_DAILY_SPEND_CEILING_USD: Final[Decimal] = Decimal("4.00")
-LLM_MAX_CALLS_PER_SESSION: Final[int] = 80
+# Day 4 Step 7. Raised 80 -> 400: 4 scans x ~45 calls/scan (S=8, D=4) = ~181
+# calls/session at the widened 50-name universe. 400 is a runaway guard, not
+# a budget -- the real ceiling is LLM_DAILY_SPEND_CEILING_USD.
+LLM_MAX_CALLS_PER_SESSION: Final[int] = 400
 CONSENSUS_HIGH_THRESHOLD: Final[float] = 0.85
 DEBATE_MAX_ROUNDS: Final[int] = 2
 DEBATE_CANDIDATES: Final[int] = 4

@@ -9,6 +9,12 @@ from agent.schemas.execution import Regime
 from agent.schemas.market import QuantSnapshot
 from agent.strategy.regime import RegimeDecision, select
 
+# Day 4 Step 7. UNIVERSE.index(...) as a sort tiebreak is an O(N) scan inside
+# an O(N log N) sort -- negligible at N=50 (~15k ops/cycle) but the kind of
+# quadratic term that stops being negligible if the universe is widened
+# again, and a precomputed dict costs nothing to maintain.
+_UNIVERSE_INDEX: dict[str, int] = {sym: i for i, sym in enumerate(UNIVERSE)}
+
 
 def _clip(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
@@ -128,5 +134,5 @@ def shortlist(
             continue
         candidates.append(ScreenedCandidate(snapshot=q, decision=d, score=composite_score(q, d, vrp_lo, vrp_hi)))
 
-    candidates.sort(key=lambda c: (-c.score, UNIVERSE.index(c.snapshot.symbol)))
+    candidates.sort(key=lambda c: (-c.score, _UNIVERSE_INDEX[c.snapshot.symbol]))
     return candidates[:limit]
