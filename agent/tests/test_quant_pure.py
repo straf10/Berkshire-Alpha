@@ -88,6 +88,45 @@ def test_skew_units_are_points() -> None:
     assert result != pytest.approx(0.07, abs=1e-9)
 
 
+def test_skew_requires_delta_band() -> None:
+    """docs/day4_action_plan.md Step 9: a chain whose only puts sit way
+    outside SKEW_DELTA_BAND (0.18-0.32) must not silently hand back the
+    nearest available quote -- skew_abs returns None, which routes to
+    compute_snapshot's NO_SKEW_QUOTE drop."""
+    expiry = date(2026, 9, 4)
+    chain = ChainSnapshot(
+        underlying="TST",
+        fetched_at=_TS,
+        contracts=(
+            _quote(100.0, "C", iv=0.20, delta=0.50, expiry=expiry),
+            _quote(100.0, "P", iv=0.20, delta=-0.50, expiry=expiry),
+            _quote(80.0, "P", iv=0.40, delta=-0.05, expiry=expiry),
+        ),
+    )
+    assert quant.skew_abs(chain, expiry, spot=100.0) is None
+
+
+def test_skew_picks_nearest_in_band() -> None:
+    """Puts at 0.19/0.26/0.31 delta -- the in-band one nearest 0.25 (0.26) is
+    chosen over the just-outside 0.19/0.31 alternatives that a plain
+    nearest-to-0.25 min() would also have picked correctly here, so this pins
+    the band filter is applied without excluding the true nearest match."""
+    expiry = date(2026, 9, 4)
+    chain = ChainSnapshot(
+        underlying="TST",
+        fetched_at=_TS,
+        contracts=(
+            _quote(100.0, "C", iv=0.20, delta=0.50, expiry=expiry),
+            _quote(100.0, "P", iv=0.20, delta=-0.50, expiry=expiry),
+            _quote(103.0, "P", iv=0.24, delta=-0.19, expiry=expiry),
+            _quote(97.0, "P", iv=0.30, delta=-0.26, expiry=expiry),
+            _quote(92.0, "P", iv=0.35, delta=-0.31, expiry=expiry),
+        ),
+    )
+    result = quant.skew_abs(chain, expiry, spot=100.0)
+    assert result == pytest.approx((0.30 - 0.20) * 100.0, abs=1e-9)
+
+
 def test_atm_iv_picks_nearest_strike() -> None:
     expiry = date(2026, 9, 4)
     chain = ChainSnapshot(

@@ -186,6 +186,14 @@ VWM_Z_WINDOW: Final[int] = 60
 VWM_Z_STRONG: Final[float] = 0.75
 SHORT_DELTA_TARGET: Final[float] = 0.275
 SHORT_DELTA_BAND: Final[tuple[float, float]] = (0.22, 0.33)
+# Day 4 (docs/day4_action_plan.md Step 9). skew_abs's 25-delta put lookup had
+# no delta band -- min() always returns SOMETHING, so a chain with no put near
+# 0.25 delta silently returned the nearest available, which could be a
+# 0.02-delta or a 0.55-delta quote. Mirrors spread_builder's SHORT_DELTA_BAND
+# pattern above. Wider than SHORT_DELTA_BAND (which targets a tradeable
+# strike) since this only needs "close enough to call it the 25-delta point"
+# for a skew READING, not a strike to trade.
+SKEW_DELTA_BAND: Final[tuple[float, float]] = (0.18, 0.32)
 LONG_LEG_STRIKE_OFFSET: Final[int] = 1
 LONG_LEG_STRIKE_OFFSET_FALLBACK: Final[int] = 2
 WALK_POLL_INTERVAL_S: Final[float] = 2.0
@@ -222,6 +230,14 @@ assert CROSS_SECTION_N * 2 <= len(UNIVERSE), (
 CONVICTION_GROUNDING_FLOOR: Final[float] = 0.75
 CONVICTION_DEGRADED_FLOOR: Final[float] = 0.5
 
+# Day 4 (docs/day4_action_plan.md Step 9). Measured over all 75 data_ok
+# snapshots in agent.db: median skew_abs = +0.06 IV points, and 35/75 (47%)
+# readings are NEGATIVE -- a persistent equity put skew should be positive
+# and several points wide, not symmetric about zero. Below this floor the
+# sign carries no information, so regime.select's SKEW_SIDED_NO_DIRECTION
+# branch falls back to the VWAP-based read instead of trusting the sign.
+SKEW_SIDE_MIN_POINTS: Final[float] = 1.5
+
 # Values introduced by the Day-3 LLM plan (docs/day3_llm_plan.md S0.3).
 # plan.md is silent on each of these; they are reviewable here rather than
 # buried at their call sites.
@@ -251,6 +267,20 @@ EVIDENCE_CITES_EXPECTED: Final[int] = 3
 # (agent/risk/gates.py) still sizes down to LOW_CONVICTION rejection if this
 # floor is too thin to clear a cap.
 CONVICTION_UNANIMOUS_DISAGREE_FLOOR: Final[float] = 0.34
+# Day 4 (docs/day4_action_plan.md Step 8). analyst_score components are each
+# in {0.0, 0.25, 0.5, 0.75, 1.0} for quant and {0.0, 0.5, 1.0} for news, so the
+# 0.625*quant + 0.375*news score takes fifteen discrete values. 0.40 is the
+# smallest floor that rejects every combination in which quant_component == 0
+# -- the QUANT analyst, reading the same numbers the deterministic layer used,
+# contradicts the chosen structure on BOTH momentum and IV -- plus the one
+# extra case where quant is neutral and news actively disagrees (score 0.3125).
+# A candidate with NO analyst opinion at all scores exactly 0.50 (both
+# components default neutral), which must clear this floor: an absent LLM
+# read is not the same claim as a contradicting one, and select_top's ranking
+# -- not this floor -- is what should cost a zero-conviction name its debate
+# slot. This is a VETO on contrary evidence, never an authoriser: it can only
+# shrink the debated set, never enlarge it or raise a score.
+ANALYST_SCORE_FLOOR: Final[float] = 0.40
 REDDIT_SUBS: Final[tuple[str, ...]] = ("wallstreetbets", "stocks", "options")
 REDDIT_POST_LIMIT: Final[int] = 250
 REDDIT_MENTION_BASELINE_N: Final[int] = 6

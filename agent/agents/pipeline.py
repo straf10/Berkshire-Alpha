@@ -18,6 +18,7 @@ from agent.agents.analysts import AnalystResult, analyst_score, run_analysts, se
 from agent.agents.researchers import DebateResult, is_missing_node, run_debate
 from agent.agents.risk_team import AccountView, PortfolioView, RiskTeamResult, run_risk_team
 from agent.agents.trader import ProposalFailure, ProposalOutcome, propose
+from agent.config import ANALYST_SCORE_FLOOR
 from agent.schemas.execution import SpreadPlan
 from agent.strategy.ticker_screener import ScreenedCandidate
 from agent.tools.llm import LlmPort
@@ -92,7 +93,7 @@ class PipelineOutcome:
     symbol: str
     plan: SpreadPlan | None            # None => this candidate is a no-trade
     mode: str                          # 'llm' | 'llm-degraded' | 'llm-fallback'
-    reason: str                        # RISK_TEAM_VETO | ProposalFailure member | NOT_TOP_DEBATE_CANDIDATE | 'OK'
+    reason: str                        # RISK_TEAM_VETO | ProposalFailure member | NOT_TOP_DEBATE_CANDIDATE | ANALYST_SCORE_BELOW_FLOOR | 'OK'
     artifacts: PipelineArtifacts
     # main.py's DoD print line ('Analysts: ... score N.NN') reads this
     # directly rather than recomputing it from artifacts.analyst_rows, which
@@ -191,7 +192,13 @@ async def run_llm_pipeline(
     *, sem: asyncio.Semaphore, sinks: Mapping[str, list[int]],
 ) -> list[PipelineOutcome]:
     """1. run_analysts over all shortlisted candidates (<=12 calls, one gather)
-       2. rank by analyst_score, take DEBATE_CANDIDATES
+       2. rank by analyst_score, take DEBATE_CANDIDATES, then veto anything
+          below ANALYST_SCORE_FLOOR before it costs a single debate call
+          (docs/day4_action_plan.md Step 8) -- a floor reject costs 2 analyst
+          calls instead of 9.3. This is a VETO, never an authoriser: it can
+          only shrink the debated set, so a candidate scoring exactly 0.5
+          (both analysts missing/neutral) still clears it and is left to
+          select_top's ranking to decide.
        3. per surviving candidate, concurrently with the others:
             run_debate -> conviction floored, never a veto (agent/config.py
               CONVICTION_UNANIMOUS_DISAGREE_FLOOR); the deterministic gate is
@@ -205,7 +212,9 @@ async def run_llm_pipeline(
        Raises LlmUnavailable / LlmBudgetExceeded only; every other failure is
        already isolated to its node by the layers below."""
     analyst_results = await run_analysts(llm, candidates, news, mentions, sem=sem, sinks=sinks)
-    debated_symbols = {r.symbol for r in select_top(analyst_results, candidates)}
+    ranked = select_top(analyst_results, candidates)
+    ranked_symbols = {r.symbol for r in ranked}
+    debated_symbols = {r.symbol for r in ranked if analyst_score(r) >= ANALYST_SCORE_FLOOR}
 
     async def _survivor(r: AnalystResult) -> PipelineOutcome:
         symbol = r.symbol
@@ -283,12 +292,17 @@ async def run_llm_pipeline(
 
     other_outcomes = [
         PipelineOutcome(
-            # NOT_TOP_DEBATE_CANDIDATE never reaches the debate stage, so the
-            # spec's "both debate rounds produced valid output" clause for
-            # mode='llm' does not apply here by construction -- 'llm' means
-            # only that this candidate's own analysts all succeeded.
+            # Neither NOT_TOP_DEBATE_CANDIDATE nor ANALYST_SCORE_BELOW_FLOOR
+            # reaches the debate stage, so the spec's "both debate rounds
+            # produced valid output" clause for mode='llm' does not apply
+            # here by construction -- 'llm' means only that this candidate's
+            # own analysts all succeeded. The two reasons distinguish "ranked
+            # too low" (never made select_top's cut) from "analysts actively
+            # disagreed with the deterministic structure" (made the cut, but
+            # the floor vetoed it) -- docs/day4_action_plan.md Step 8.
             symbol=r.symbol, plan=None, mode="llm-degraded" if r.failures else "llm",
-            reason="NOT_TOP_DEBATE_CANDIDATE", analyst_score=analyst_score(r), conviction=1.0,
+            reason="ANALYST_SCORE_BELOW_FLOOR" if r.symbol in ranked_symbols else "NOT_TOP_DEBATE_CANDIDATE",
+            analyst_score=analyst_score(r), conviction=1.0,
             artifacts=PipelineArtifacts(analyst_rows=_analyst_artifacts(r), llm_call_ids=tuple(sinks[r.symbol])),
         )
         for r in others

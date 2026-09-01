@@ -12,6 +12,7 @@ from agent.config import (
     RSI_PERIOD,
     RV_WINDOW,
     RV_WINSOR_Z,
+    SKEW_DELTA_BAND,
     UNIVERSE,
     VWM_LOOKBACK_N,
     VWM_Z_WINDOW,
@@ -128,14 +129,21 @@ def vrp_ratio(iv_atm: float, rv_20: float) -> float:
 
 def skew_abs(chain: ChainSnapshot, expiry: date, spot: float) -> float | None:
     """(IV(25-delta put) - IV(ATM)) * 100, in IV POINTS.
-    25-delta put = the put in `expiry` whose |delta| is nearest 0.25."""
+    25-delta put = the put in `expiry` whose |delta| is nearest 0.25, among
+    puts within SKEW_DELTA_BAND (docs/day4_action_plan.md Step 9). Without
+    the band, min() always returns something -- a chain with no put near 0.25
+    delta would silently hand back the nearest available quote, which could
+    be a 0.02-delta or a 0.55-delta put and not a skew reading at all. No
+    in-band put -> None, which routes to compute_snapshot's NO_SKEW_QUOTE
+    drop rather than a fabricated reading."""
     atm = atm_iv(chain, expiry, spot)
     if atm is None:
         return None
-    puts = chain.for_expiry(expiry, "P")
-    if not puts:
+    lo, hi = SKEW_DELTA_BAND
+    in_band = [q for q in chain.for_expiry(expiry, "P") if lo <= abs(q.delta) <= hi]
+    if not in_band:
         return None
-    put_25d = min(puts, key=lambda q: (abs(abs(q.delta) - 0.25), q.strike))
+    put_25d = min(in_band, key=lambda q: (abs(abs(q.delta) - 0.25), q.strike))
     return (put_25d.iv - atm) * 100.0
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import date
 
-from agent.config import VWM_Z_STRONG
+from agent.config import SKEW_SIDE_MIN_POINTS, VWM_Z_STRONG
 from agent.schemas.execution import Regime, Structure
 from agent.schemas.market import QuantSnapshot
 from agent.strategy.regime import select
@@ -95,6 +95,36 @@ def test_credit_skew_sided_fallback() -> None:
     assert bearish.regime == Regime.CREDIT
     assert bearish.structure == Structure.BEAR_CALL_SPREAD
     assert bearish.reason == "SKEW_SIDED_NO_DIRECTION"
+
+
+def test_skew_below_floor_uses_vwap() -> None:
+    """docs/day4_action_plan.md Step 9: skew_abs=+0.06 (the measured median)
+    is well below SKEW_SIDE_MIN_POINTS, so the sign is untrusted and the
+    branch falls back to VWAP price location instead."""
+    assert 0.06 < SKEW_SIDE_MIN_POINTS
+    snap = replace(_BASE, skew_abs=0.06, vwap_dev_pct=0.5, rsi=52.0)
+    d = select(snap, Regime.CREDIT, _SKEW_THRESH)
+    assert d.structure == Structure.BEAR_CALL_SPREAD
+    assert d.reason == "VWAP_SIDED_NO_DIRECTION"
+    assert d.driver == "VWAP"
+
+
+def test_skew_above_floor_uses_skew() -> None:
+    snap = replace(_BASE, skew_abs=2.5, vwap_dev_pct=-0.5, rsi=52.0)
+    d = select(snap, Regime.CREDIT, _SKEW_THRESH)
+    assert d.structure == Structure.BULL_PUT_SPREAD
+    assert d.reason == "SKEW_SIDED_NO_DIRECTION"
+    assert d.driver == "SKEW"
+
+
+def test_skew_sign_flip_does_not_flip_structure_below_floor() -> None:
+    """The regression this step exists to prevent: a skew reading of +0.06 vs
+    -0.06 is noise-level and must not change the chosen structure -- only
+    vwap_dev_pct, held fixed here, should decide the side."""
+    positive = select(replace(_BASE, skew_abs=0.06, vwap_dev_pct=0.5, rsi=52.0), Regime.CREDIT, _SKEW_THRESH)
+    negative = select(replace(_BASE, skew_abs=-0.06, vwap_dev_pct=0.5, rsi=52.0), Regime.CREDIT, _SKEW_THRESH)
+    assert positive.structure == negative.structure == Structure.BEAR_CALL_SPREAD
+    assert positive.reason == negative.reason == "VWAP_SIDED_NO_DIRECTION"
 
 
 def test_data_not_ok_short_circuits() -> None:

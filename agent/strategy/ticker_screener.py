@@ -95,11 +95,18 @@ def composite_score(q: QuantSnapshot, d: RegimeDecision, vrp_lo: float, vrp_hi: 
     retired by §1.3, renormalising against the observed cross-section keeps
     every credit/debit candidate from collapsing onto a 0.0 term."""
     if d.regime == Regime.CREDIT:
+        # Day 4 (docs/day4_action_plan.md Step 9): skew_abs's SIGN is noise
+        # (median +0.06 across agent.db, negative 47% of the time), but its
+        # MAGNITUDE still says something about how skewed the chain is --
+        # so this term uses abs() and carries less weight (0.30 -> 0.10),
+        # with the VRP term (the one that works) picking up the difference.
+        # Divisor tightened 10.0 -> 5.0 -- no observed reading ever reached
+        # 10, so the old divisor made this term almost always near-zero.
         credit_term = _clip((q.vrp_ratio - vrp_lo) / max(vrp_hi - vrp_lo, 1e-9), 0.0, 1.0)
         return (
-            0.50 * credit_term
-            + 0.30 * _clip(q.skew_abs / 10.0, 0.0, 1.0)
+            0.70 * credit_term
             + 0.20 * _clip(abs(q.rsi - 50.0) / 50.0, 0.0, 1.0)
+            + 0.10 * _clip(abs(q.skew_abs) / 5.0, 0.0, 1.0)
         )
     if d.regime == Regime.DEBIT:
         credit_term = _clip((q.vrp_ratio - vrp_lo) / max(vrp_hi - vrp_lo, 1e-9), 0.0, 1.0)

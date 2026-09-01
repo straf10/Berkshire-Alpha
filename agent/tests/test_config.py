@@ -5,11 +5,13 @@ from datetime import date
 import pytest
 
 from agent.config import (
+    ANALYST_SCORE_FLOOR,
     CROSS_SECTION_N,
     DEBATE_CANDIDATES,
     EARNINGS_DATES,
     EARNINGS_VERIFIED_ON,
     SHORTLIST_MAX,
+    SKEW_SIDE_MIN_POINTS,
     UNIVERSE,
     VWM_Z_STRONG,
 )
@@ -67,3 +69,19 @@ def test_vwm_bar_stays_selective() -> None:
     the debit book. Anything inside this band is defensible; the shipped 0.75
     admits 44.0%."""
     assert 0.60 <= VWM_Z_STRONG <= 1.00
+
+
+def test_analyst_score_floor_rejects_only_quant_disagreement() -> None:
+    """docs/day4_action_plan.md §8.2b: 0.40 must reject every score reachable
+    when quant_component == 0 (0.0, 0.1562, 0.1875, 0.3125, 0.3438, 0.375) and
+    pass every score at or above the neutral 0.50 a fully-missing pair of
+    analysts produces -- an absent LLM read must never be more blocking than
+    a contradicting one."""
+    assert 0.375 < ANALYST_SCORE_FLOOR <= 0.50
+
+
+def test_skew_side_min_points_is_above_the_measured_median() -> None:
+    """Pin on the Step-9 measurement: skew_abs has median +0.06 IV points
+    across agent.db's data_ok snapshots, with 47% of readings negative. The
+    floor must sit well clear of that noise band before the sign is trusted."""
+    assert SKEW_SIDE_MIN_POINTS >= 1.0

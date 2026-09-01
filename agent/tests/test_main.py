@@ -323,6 +323,14 @@ async def test_dry_run_prints_llm_line(tmp_path, monkeypatch: pytest.MonkeyPatch
     assert "conviction 1.00" in out
     assert "mode=llm" in out
 
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT quant_json FROM decisions WHERE symbol = 'SPY'")
+        (quant_json,) = await cur.fetchone()
+    # docs/day4_action_plan.md §8.2c: analyst_score must reach the persisted
+    # row -- it is computed every cycle but was never queryable before this,
+    # so it could never be correlated against realised P&L.
+    assert json.loads(quant_json)["analyst_score"] == pytest.approx(0.81)
+
 
 async def test_conviction_reaches_gate(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """docs/day4_track_ab_plan.md §2.4: outcome.conviction arrives in
