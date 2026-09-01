@@ -51,6 +51,38 @@ To redeploy manually instead: `railway up --detach` from a linked checkout, or `
 
 - Railway's CLI `volume add` command panics on this CLI version (5.45.7) — the volume was created through the Railway dashboard instead. If it ever needs recreating, use the dashboard, not the CLI.
 - Railway's CLI has no project/service rename command (only `list`/`link`/`delete` at the project level) — a name change there is delete + recreate, not a rename. Vercel's CLI does support `vercel project rename`.
+- `stanimeros-dev` is a Hobby-tier Vercel team, which blocks adding members entirely (not a seat-count limit — the invite UI/API refuses outright with "Hobby teams do not support collaboration"). straf10 cannot be added to the team as-is; would need a Pro upgrade, or a GitHub-integration deploy path (see incident below) so he doesn't need team membership at all.
+
+## Known issue: manual `vercel deploy --prod` can silently block or fail (found 1 Sep)
+
+Three separate problems stacked up when deploying manually from the repo after pulling straf10's commits — worth knowing about since none of them surface a useful error on the first try:
+
+1. **Unverified commit author blocks the deploy outright.** Vercel CLI attaches the local
+   HEAD commit's git author to the deployment and checks it against a verified GitHub
+   identity. When HEAD was straf10's commit (email `strafiotis10@gmail.com`, not verified
+   on his GitHub account / not tied to his GitHub login), every deploy silently sat at
+   `status: UNKNOWN` with a `0ms` build forever — no error, no build log, `vercel logs`
+   and `vercel inspect --logs` both come back empty. The dashboard UI is the only place
+   that surfaces the real reason: **"Deployment Blocked — commit email could not be
+   matched to a GitHub account."** Fix: `git commit --allow-empty` on top with a verified
+   author (or have the commit's actual author verify that email on GitHub), then push and
+   redeploy.
+2. **Repo isn't Git-connected, so pulling ≠ auto-deploy.** `stanimeros-dev/autonomous-debate-trading-agent`
+   has no GitHub integration linked (`vercel project inspect` shows no Git Repository).
+   All deploys are manual CLI pushes from a local checkout — merging to `main` on GitHub
+   does nothing by itself. (An earlier attempt to `vercel git connect` the private
+   `straf10/Autonomous-Debate-Trading-Agent` repo failed too: the Vercel GitHub App isn't
+   installed/granted access on that repo, and only straf10, as owner, can install it.)
+3. **Root Directory mismatch breaks the actual build.** The linked Vercel project's Root
+   Directory is `.`, but the Next.js app lives in `web/`. Deploying from the repo root
+   fails during `next build` with `Couldn't find any 'pages' or 'app' directory`. Deploying
+   from inside `web/` (`cd web && vercel deploy --prod`) works. Better permanent fix: set
+   Root Directory to `web` in the dashboard (Project Settings → General) so a plain
+   `vercel deploy --prod` from the repo root works without the `cd web` workaround — not
+   yet done.
+
+**Net effect:** manual redeploys after pulling collaborator commits need, in order: (a) HEAD
+authored/committed by a verified identity, (b) run from `web/`, not the repo root.
 
 ## Incident: stale `ALPACA_API_KEY` silently halted live trading (found + fixed 31 Aug)
 
