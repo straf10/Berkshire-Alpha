@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from agent.config import (
     RSI_OVERBOUGHT,
     RSI_OVERSOLD,
+    SKEW_SIDE_MIN_POINTS,
     VRP_CREDIT_MIN,
     VWAP_DEV_THRESHOLD_PCT,
     VWM_Z_STRONG,
@@ -66,9 +67,24 @@ def select(q: QuantSnapshot, assigned: Regime, skew_threshold: float) -> RegimeD
         # premium sale on the side the market is over-bidding rather than
         # passing on the trade entirely (replaces the old
         # CREDIT_NO_DIRECTIONAL_CONFIRMATION dead-end).
-        structure = Structure.BULL_PUT_SPREAD if q.skew_abs >= 0 else Structure.BEAR_CALL_SPREAD
+        #
+        # docs/day4_action_plan.md Step 9: skew_abs is only trusted as a
+        # DIRECTIONAL signal above SKEW_SIDE_MIN_POINTS. Measured over all
+        # data_ok snapshots in agent.db, skew_abs has median +0.06 and is
+        # negative 47% of the time -- below the floor the sign is noise, so
+        # fall back to the VWAP price location instead, which is computed
+        # from real traded minute bars rather than modelled greeks: above
+        # VWAP -> sell calls into it, below -> sell puts. Same mean-reversion
+        # logic as the VWAP_RSI branch above, without requiring RSI
+        # confirmation.
+        if abs(q.skew_abs) >= SKEW_SIDE_MIN_POINTS:
+            structure = Structure.BULL_PUT_SPREAD if q.skew_abs > 0 else Structure.BEAR_CALL_SPREAD
+            return RegimeDecision(
+                Regime.CREDIT, structure, "SKEW_SIDED_NO_DIRECTION", "SKEW", q.skew_abs, SKEW_SIDE_MIN_POINTS,
+            )
+        structure = Structure.BEAR_CALL_SPREAD if q.vwap_dev_pct > 0 else Structure.BULL_PUT_SPREAD
         return RegimeDecision(
-            Regime.CREDIT, structure, "SKEW_SIDED_NO_DIRECTION", "SKEW", q.skew_abs, 0.0,
+            Regime.CREDIT, structure, "VWAP_SIDED_NO_DIRECTION", "VWAP", q.vwap_dev_pct, 0.0,
         )
 
     if assigned == Regime.DEBIT:

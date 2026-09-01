@@ -65,6 +65,34 @@ def test_no_chain_guard() -> None:
     assert snap.drop_reason == "NO_CHAIN"
 
 
+def test_no_skew_quote_drops_snapshot() -> None:
+    """docs/day4_action_plan.md Step 9: a chain with an ATM quote but no put
+    within SKEW_DELTA_BAND of the 25-delta point must drop the snapshot as
+    NO_SKEW_QUOTE rather than fabricate a skew reading from an off-band put."""
+    expiry = date(2026, 9, 4)
+
+    def _leg(strike: float, right, iv: float, delta: float) -> OptionQuote:
+        return OptionQuote(
+            occ_symbol=f"XYZ{expiry:%y%m%d}{right}{int(strike * 1000):08d}", underlying="XYZ",
+            expiry=expiry, strike=strike, right=right, bid=1.0, ask=1.1, delta=delta,
+            gamma=0.01, theta=-0.01, vega=0.05, iv=iv,
+        )
+
+    chain = ChainSnapshot(underlying="XYZ", fetched_at=_TS, contracts=(
+        _leg(100.0, "C", iv=0.20, delta=0.50), _leg(100.0, "P", iv=0.20, delta=-0.50),
+        _leg(108.0, "C", iv=0.30, delta=0.10), _leg(108.0, "P", iv=0.30, delta=-0.05),
+    ))
+    daily = _reasonable_daily()
+    minute = (MinuteBar(ts=_TS, high=101.0, low=99.0, close=100.0, volume=500_000.0),)
+
+    snap = compute_snapshot(
+        "XYZ", _bars_for("XYZ", daily, minute), chain=chain,
+        session_date=SESSION_DATE, trading_days=frozenset({expiry}),
+    )
+    assert snap.data_ok is False
+    assert snap.drop_reason == "NO_SKEW_QUOTE"
+
+
 def test_degenerate_chain_dropped() -> None:
     raw = load_chain_raw("chain_NVDA_degenerate.json")
     chain = market_data._build_chain_snapshot("NVDA", raw)

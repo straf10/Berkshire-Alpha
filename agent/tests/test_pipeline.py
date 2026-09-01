@@ -9,7 +9,7 @@ from decimal import Decimal
 import pytest
 
 from agent.agents.pipeline import run_llm_pipeline
-from agent.config import CONVICTION_UNANIMOUS_DISAGREE_FLOOR, UNIVERSE
+from agent.config import ANALYST_SCORE_FLOOR, CONVICTION_UNANIMOUS_DISAGREE_FLOOR, UNIVERSE
 from agent.schemas.execution import Regime, Structure
 from agent.schemas.llm import (
     DebateNodeOutput,
@@ -188,6 +188,59 @@ async def test_not_top_candidates_get_not_top_debate_outcome() -> None:
     for o in not_top:
         assert o.plan is None
         assert o.artifacts.debate_nodes == ()
+
+
+def _contrary_quant_out(symbol: str) -> QuantAnalystOutput:
+    """quant_component == 0 against the default _candidate's BULL_PUT_SPREAD/
+    CREDIT structure (direction=+1): STRONG_DOWN contradicts on momentum,
+    CHEAP contradicts on IV for a credit structure."""
+    return QuantAnalystOutput(ticker=symbol, iv_rv_interpretation="CHEAP", skew_bias="BEARISH",
+                               directional_momentum="STRONG_DOWN", key_levels=[100.0], analyst_summary="s")
+
+
+async def test_floor_reject_costs_no_debate_calls() -> None:
+    """docs/day4_action_plan.md §8.2b/§8.4: a candidate whose analysts
+    contradict the deterministic structure on both momentum and IV scores
+    below ANALYST_SCORE_FLOOR and must be vetoed before the debate -- exactly
+    the 2 analyst calls run, no DEBATE_*/TRADER/RISK_* node ever fires."""
+    llm = ScriptedLlm()
+    llm.script("QUANT", [_contrary_quant_out(UNIVERSE[0])])
+    llm.script("NEWS", [_news_out(UNIVERSE[0])])
+    candidates = [_candidate(UNIVERSE[0])]
+    chains = FakeChains({UNIVERSE[0]: _put_credit_chain(UNIVERSE[0])})
+    sinks = {UNIVERSE[0]: []}
+    headline = Headline.build(id="n1", symbol=UNIVERSE[0], headline="h", source="s", created_at=_TS, summary="s")
+    news = {UNIVERSE[0]: (headline,)}
+
+    outcomes = await run_llm_pipeline(
+        llm, candidates, chains, news, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
+        sem=asyncio.Semaphore(6), sinks=sinks,
+    )
+    assert outcomes[0].reason == "ANALYST_SCORE_BELOW_FLOOR"
+    assert outcomes[0].analyst_score < ANALYST_SCORE_FLOOR
+    assert set(llm.calls) == {"QUANT", "NEWS"}
+    assert len(llm.calls) == 2
+
+
+async def test_floor_reject_still_writes_decision() -> None:
+    """A floor-rejected candidate still produces a PipelineOutcome (the
+    precursor to a decisions row, per Day 2's 'no_trade is a first-class
+    decision') rather than being silently dropped from the returned list."""
+    llm = ScriptedLlm()
+    llm.script("QUANT", [_contrary_quant_out(UNIVERSE[0])])
+    candidates = [_candidate(UNIVERSE[0])]
+    chains = FakeChains({UNIVERSE[0]: _put_credit_chain(UNIVERSE[0])})
+    sinks = {UNIVERSE[0]: []}
+
+    outcomes = await run_llm_pipeline(
+        llm, candidates, chains, {}, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
+        sem=asyncio.Semaphore(6), sinks=sinks,
+    )
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    assert outcome.reason == "ANALYST_SCORE_BELOW_FLOOR"
+    assert outcome.plan is None
+    assert outcome.artifacts.analyst_rows
 
 
 async def test_debate_unanimous_disagree_floors_conviction_but_still_trades() -> None:

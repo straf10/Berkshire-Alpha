@@ -969,7 +969,17 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
                 structure=plan.structure.value if plan is not None else None, action=action,
                 gate_reason=gate_reason, gate_detail=gate_detail, observed_value=observed_value,
                 threshold_value=threshold_value, qty=qty_val, equity_feed=_feed_str(deps.feed),
-                earnings_armed=earnings_armed, quant_json=json.dumps(dataclasses.asdict(q), default=str),
+                earnings_armed=earnings_armed,
+                # docs/day4_action_plan.md §8.2c: analyst_score is computed
+                # every cycle but was never persisted, so it could never be
+                # correlated against realised P&L -- the only way to learn
+                # whether the analyst layer is worth its tokens. Zero-migration
+                # merge into the existing TEXT column, same mechanism Step 3
+                # uses for macro fields.
+                quant_json=json.dumps(
+                    dataclasses.asdict(q) | ({"analyst_score": outcome.analyst_score} if outcome is not None else {}),
+                    default=str,
+                ),
                 plan_json=plan_json,
             )
             decision_id = await storage_write.insert_decision(conn, row)
@@ -1196,6 +1206,15 @@ async def main() -> None:
 
     if args.once:
         session = await current_or_next_session(deps.clients)
+        if not session.is_open:
+            # docs/day4_action_plan.md §9.5: the worst skew_abs readings ever
+            # seen came from ad-hoc --once runs before the open, where
+            # feed=indicative quotes are modelled rather than traded. Every
+            # SCHEDULED scan (SCAN_OFFSETS_MIN, all measured from open_utc)
+            # is inside RTH by construction, so only a manual run can hit
+            # this -- flag it so it is never mistaken for a representative
+            # scan.
+            print("WARNING: market is closed -- this --once scan will read indicative, not traded, quotes")
         await scan_cycle(deps, session, dry_run=dry_run)
         return
 

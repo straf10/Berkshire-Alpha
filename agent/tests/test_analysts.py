@@ -12,6 +12,7 @@ from agent.agents.analysts import (
     select_top,
 )
 from agent.agents.evidence import EvidenceBundle
+from agent.config import ANALYST_SCORE_FLOOR
 from agent.schemas.execution import Regime, Structure
 from agent.schemas.llm import NewsAnalystOutput, QuantAnalystOutput, SentimentAnalystOutput
 from agent.schemas.market import QuantSnapshot
@@ -277,6 +278,89 @@ def test_analyst_score_ignores_sentiment() -> None:
     baseline = _score(None)
     assert baseline == _score(_sentiment_out("SPY", sentiment_score=0.9, confidence=0.9))
     assert baseline == _score(_sentiment_out("SPY", sentiment_score=-0.9, confidence=0.9))
+
+
+def _quant_disagree_result(symbol: str, news_impact: str) -> AnalystResult:
+    """quant_component == 0: BULL_CALL_SPREAD/DEBIT (direction=+1) with
+    directional_momentum=STRONG_DOWN (momentum_agree=0) and
+    iv_rv_interpretation=RICH on a debit structure (iv_agree=0)."""
+    candidate = _candidate(symbol, structure=Structure.BULL_CALL_SPREAD, regime=Regime.DEBIT)
+    return AnalystResult(
+        symbol=symbol,
+        bundle=EvidenceBundle(
+            symbol=symbol, quant=candidate.snapshot, regime=candidate.decision,
+            quant_analyst=_quant_out(symbol, iv_rv_interpretation="RICH", directional_momentum="STRONG_DOWN"),
+            news_analyst=_news_out(symbol, expected_impact=news_impact),
+            sentiment_analyst=None, headlines=(), mentions=None,
+        ),
+        failures=(),
+    )
+
+
+def _quant_agree_result(symbol: str, news_impact: str) -> AnalystResult:
+    """quant_component == 1: same structure, momentum and IV read both
+    support it."""
+    candidate = _candidate(symbol, structure=Structure.BULL_CALL_SPREAD, regime=Regime.DEBIT)
+    return AnalystResult(
+        symbol=symbol,
+        bundle=EvidenceBundle(
+            symbol=symbol, quant=candidate.snapshot, regime=candidate.decision,
+            quant_analyst=_quant_out(symbol, iv_rv_interpretation="CHEAP", directional_momentum="STRONG_UP"),
+            news_analyst=_news_out(symbol, expected_impact=news_impact),
+            sentiment_analyst=None, headlines=(), mentions=None,
+        ),
+        failures=(),
+    )
+
+
+def test_floor_rejects_quant_disagreement() -> None:
+    """docs/day4_action_plan.md §8.2b: quant_component == 0 must fall below
+    ANALYST_SCORE_FLOOR for every news value -- the floor is a veto on
+    contrary evidence, not a threshold on total agreement."""
+    for news_impact in ("BULLISH", "NEUTRAL", "BEARISH"):
+        result = _quant_disagree_result("SPY", news_impact)
+        assert analyst_score(result) < ANALYST_SCORE_FLOOR
+
+
+def test_floor_passes_quant_support() -> None:
+    """quant_component == 1 must clear ANALYST_SCORE_FLOOR for every news
+    value, including active news disagreement."""
+    for news_impact in ("BULLISH", "NEUTRAL", "BEARISH"):
+        result = _quant_agree_result("SPY", news_impact)
+        assert analyst_score(result) >= ANALYST_SCORE_FLOOR
+
+
+def test_floor_admits_fully_missing_analysts() -> None:
+    """The decisive case from §8.2b: a candidate with BOTH analysts missing
+    scores exactly 0.5 and must clear the floor -- an absent LLM read is not
+    the same claim as a contradicting one, so an LLM outage must not become
+    strictly more blocking than a fully-run one."""
+    candidate = _candidate("SPY")
+    result = AnalystResult(
+        symbol="SPY",
+        bundle=EvidenceBundle(
+            symbol="SPY", quant=candidate.snapshot, regime=candidate.decision,
+            quant_analyst=None, news_analyst=None, sentiment_analyst=None, headlines=(), mentions=None,
+        ),
+        failures=(),
+    )
+    assert analyst_score(result) >= ANALYST_SCORE_FLOOR
+
+
+def test_select_top_truncates() -> None:
+    """8 results, n=4 -> the 4 highest-scoring survive regardless of input
+    order (docs/day4_action_plan.md §8.4)."""
+    from agent.config import UNIVERSE
+
+    high = [_quant_agree_result(UNIVERSE[i], "BULLISH") for i in range(4)]
+    low = [_quant_disagree_result(UNIVERSE[i], "BEARISH") for i in range(4, 8)]
+    results = [*low, *high]
+    candidates = [_candidate(r.symbol, structure=Structure.BULL_CALL_SPREAD, regime=Regime.DEBIT) for r in results]
+
+    top = select_top(results, candidates, n=4)
+
+    assert len(top) == 4
+    assert {r.symbol for r in top} == {r.symbol for r in high}
 
 
 def test_select_top_universe_index_lookup_is_constant_time() -> None:

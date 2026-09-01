@@ -177,3 +177,14 @@ def test_composite_score_uses_observed_range() -> None:
     score_rich = composite_score(rich, d, vrp_lo=1.00, vrp_hi=1.20)
     score_poor = composite_score(poor, d, vrp_lo=1.00, vrp_hi=1.20)
     assert score_rich > score_poor
+
+
+def test_composite_score_skew_uses_magnitude() -> None:
+    """docs/day4_action_plan.md Step 9: skew_abs's sign is unreliable noise,
+    so equal-magnitude opposite-sign readings must score identically."""
+    d = RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "x", "TEST", None, None)
+    positive = _snap("AAPL", vrp_ratio=1.10, skew_abs=3.0, rsi=50.0)
+    negative = _snap("TSLA", vrp_ratio=1.10, skew_abs=-3.0, rsi=50.0)
+    assert composite_score(positive, d, vrp_lo=1.00, vrp_hi=1.20) == pytest.approx(
+        composite_score(negative, d, vrp_lo=1.00, vrp_hi=1.20)
+    )
