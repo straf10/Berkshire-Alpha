@@ -29,6 +29,7 @@ import pytz
 
 from agent.config import (
     BACKTEST_IV_RV_MULTIPLIER,
+    BACKTEST_SLIPPAGE_PCT,
     CROSS_SECTION_N,
     DTE_MAX,
     DTE_MIN,
@@ -83,6 +84,7 @@ def _pick_expiry(session_date: date, trading_days: frozenset[date]) -> date | No
 
 async def run_replay(
     clients: AlpacaClients, universe: tuple[str, ...], start: date, end: date,
+    *, iv_multiplier: float = BACKTEST_IV_RV_MULTIPLIER, slippage_pct: Decimal = BACKTEST_SLIPPAGE_PCT,
 ) -> list[payoff.TradeResult]:
     calendar = await clients.get_calendar(
         start - timedelta(days=_DAILY_LOOKBACK_BUFFER_DAYS),
@@ -142,7 +144,7 @@ async def run_replay(
             if rv20 == 0.0:
                 chains[sym] = None
                 continue
-            iv_atm = rv20 * BACKTEST_IV_RV_MULTIPLIER
+            iv_atm = rv20 * iv_multiplier
             chains[sym] = generate_chain(sym, session_date, target_expiry, closes[-1], iv_atm)
 
         snapshots = quant.compute_all(bars, _ChainMap(chains), session_date, trading_days)
@@ -163,7 +165,7 @@ async def run_replay(
                 continue
             plan_or_fail = spread_builder.build(q, d, chain)
             if isinstance(plan_or_fail, SpreadPlan):
-                entry_fill = payoff.entry_fill_with_slippage(plan_or_fail.net_natural)
+                entry_fill = payoff.entry_fill_with_slippage(plan_or_fail.net_natural, slippage_pct)
                 open_trades.append(_OpenTrade(plan=plan_or_fail, entry_date=session_date, entry_fill=entry_fill))
             else:
                 build_failures += 1
@@ -181,7 +183,25 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--days", type=int, default=None, help="shortcut: last N calendar days ending today, overrides --start")
     parser.add_argument("--universe", nargs="+", default=list(UNIVERSE))
     parser.add_argument("--out-dir", default="agent/backtest/output")
+    parser.add_argument("--sweep", action="store_true", help="sweep iv_multiplier x slippage_pct instead of a single run (B2, docs/report.md)")
     return parser.parse_args()
+
+
+_SWEEP_IV_MULTIPLIERS = (1.00, 1.05, 1.10, 1.15, 1.20, 1.25)
+_SWEEP_SLIPPAGE_PCTS = (Decimal("0.05"), Decimal("0.10"), Decimal("0.20"))
+
+
+async def _run_sweep(clients: AlpacaClients, universe: tuple[str, ...], start: date, end: date) -> None:
+    print(f"\nchain-assumption sweep, {start} -> {end}")
+    header = "iv_multiplier".rjust(14) + "".join(f"slip={s}".rjust(14) for s in _SWEEP_SLIPPAGE_PCTS)
+    print(header)
+    for iv_mult in _SWEEP_IV_MULTIPLIERS:
+        row = f"{iv_mult:.2f}".rjust(14)
+        for slip in _SWEEP_SLIPPAGE_PCTS:
+            trades = await run_replay(clients, universe, start, end, iv_multiplier=iv_mult, slippage_pct=slip)
+            total_pnl = sum(t.realized_pnl for t in trades)
+            row += f"${total_pnl:,.2f}".rjust(14)
+        print(row)
 
 
 async def _amain() -> None:
@@ -196,6 +216,10 @@ async def _amain() -> None:
 
     settings = load_settings(dry_run=True)
     clients = AlpacaClients(settings)
+
+    if args.sweep:
+        await _run_sweep(clients, tuple(args.universe), start, end)
+        return
 
     trades = await run_replay(clients, tuple(args.universe), start, end)
     payoff.write_report(trades, args.out_dir)
