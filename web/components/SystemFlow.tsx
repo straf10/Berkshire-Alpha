@@ -118,13 +118,14 @@ const STAGE_DEFS: StageDef[] = [
     title: "Universe screen",
     mode: "deterministic",
     description: "Full ticker universe scored against the macro/regime snapshot -- pure math, no model calls.",
+    reject: "NOT_SHORTLISTED, NO_REGIME, DATA_NOT_OK, DEBIT_NO_MOMENTUM_CONFIRMATION",
   },
   {
     icon: BarChart3,
     title: "Analysts",
     mode: "llm",
     description: "Quant + News score each shortlisted candidate in parallel.",
-    reject: "ANALYST_SCORE_BELOW_FLOOR",
+    reject: "ANALYST_SCORE_BELOW_FLOOR, NOT_TOP_DEBATE_CANDIDATE",
   },
   {
     icon: Swords,
@@ -138,7 +139,7 @@ const STAGE_DEFS: StageDef[] = [
     title: "Trader proposal",
     mode: "hybrid",
     description: "Model proposes a spread; unparsable proposals fall back to a deterministic builder.",
-    reject: "STRIKE_NOT_IN_CHAIN",
+    reject: "STRIKE_NOT_IN_CHAIN, STRUCTURE_MISMATCH, LEG_COUNT, NOT_DEFINED_RISK, ...",
   },
   {
     icon: Gavel,
@@ -152,7 +153,7 @@ const STAGE_DEFS: StageDef[] = [
     title: "Deterministic gate",
     mode: "deterministic",
     description: "Buying power, position & greeks limits, drawdown kill-switch, earnings, DTE, cutoff -- no LLM.",
-    reject: "MAX_CONCURRENT_POSITIONS, DRAWDOWN_TERMINAL, ...",
+    reject: "MAX_CONCURRENT_POSITIONS, DRAWDOWN_TERMINAL, LOW_CONVICTION, NEGATIVE_EDGE, LLM_BUDGET_CEILING, ...",
   },
   {
     icon: ArrowLeftRight,
@@ -184,7 +185,7 @@ const stageNodes: Node<StageData>[] = STAGE_DEFS.map((stage, i): Node<StageData>
 // though their own `reject` label points elsewhere (LOW_CONVICTION is
 // actually enforced at the gate; the gate's own reasons are summarized
 // rather than listed) -- both still end a candidate the same way.
-const BRANCH_INDICES = [1, 2, 3, 4, 5];
+const BRANCH_INDICES = [0, 1, 2, 3, 4, 5];
 
 const terminalX =
   (Math.min(...BRANCH_INDICES.map((i) => i * STEP_X)) + Math.max(...BRANCH_INDICES.map((i) => i * STEP_X))) / 2;
