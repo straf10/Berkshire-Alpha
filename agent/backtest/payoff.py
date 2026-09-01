@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import os
 import random
+import statistics
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -121,6 +122,55 @@ def bootstrap_pnl(trades: list[TradeResult], n: int = 10_000, seed: int = 0) -> 
     }
 
 
+def window_stability(trades: list[TradeResult], n_windows: int = 6) -> dict[str, float]:
+    """Diagnostic half of the paper's regime gate rho (Eq. 3,
+    docs/literature/2608.23808v2.md S4.1) -- the three components (p+, s_SR,
+    SR_min) reported separately, deliberately without their aggregation. Their
+    own S8.5/S9.6(6) concede rho is the most ad-hoc gate: three hand-set
+    sub-weights, a fixed reference scale, disproportionate influence at the
+    top of the scale. docs/report.md S2.D.
+
+    Splits trades into n_windows contiguous chronological windows (ordered by
+    expiry, matching build_equity_curve's convention) and computes a
+    per-trade Sharpe per window -- fmean(pnls)/pstdev(pnls), NOT annualized,
+    unlike dsr.py's SR. A window with < 2 trades or zero pnl dispersion is
+    unscoreable (pstdev of one sample, or of identical values, is 0.0 --
+    divide by zero) and is skipped, not zero-filled."""
+    zero = {"p_positive": 0.0, "sr_dispersion": 0.0, "sr_min": 0.0, "windows_used": 0}
+    if not trades:
+        return zero
+
+    ordered = sorted(trades, key=lambda t: t.expiry)
+    n_windows = min(n_windows, len(ordered))
+    if n_windows < 1:
+        return zero
+
+    base, extra = divmod(len(ordered), n_windows)
+    sharpes: list[float] = []
+    start = 0
+    for w in range(n_windows):
+        size = base + (1 if w < extra else 0)
+        window = ordered[start:start + size]
+        start += size
+        if len(window) < 2:
+            continue
+        pnls = [t.realized_pnl for t in window]
+        sd = statistics.pstdev(pnls)
+        if sd == 0.0:
+            continue
+        sharpes.append(statistics.fmean(pnls) / sd)
+
+    if not sharpes:
+        return zero
+
+    return {
+        "p_positive": sum(1 for s in sharpes if s > 0) / len(sharpes),
+        "sr_dispersion": statistics.pstdev(sharpes),
+        "sr_min": min(sharpes),
+        "windows_used": len(sharpes),
+    }
+
+
 def write_report(trades: list[TradeResult], out_dir: str) -> None:
     os.makedirs(out_dir, exist_ok=True)
 
@@ -158,3 +208,12 @@ def write_report(trades: list[TradeResult], out_dir: str) -> None:
         boot = bootstrap_pnl(trades)
         w.writerow(["total_pnl", round(boot["total_pnl_p5"], 2), round(boot["total_pnl_p50"], 2), round(boot["total_pnl_p95"], 2)])
         w.writerow(["win_rate", round(boot["win_rate_p5"], 4), round(boot["win_rate_p50"], 4), round(boot["win_rate_p95"], 4)])
+
+    with open(os.path.join(out_dir, "window_stability.csv"), "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["metric", "value"])
+        stability = window_stability(trades)
+        w.writerow(["p_positive", round(stability["p_positive"], 4)])
+        w.writerow(["sr_dispersion", round(stability["sr_dispersion"], 4)])
+        w.writerow(["sr_min", round(stability["sr_min"], 4)])
+        w.writerow(["windows_used", stability["windows_used"]])

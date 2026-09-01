@@ -100,3 +100,47 @@ def test_regime_hit_rate_groups_by_regime() -> None:
     assert stats["CREDIT"]["win_rate"] == 1.0
     assert stats["DEBIT"]["count"] == 1
     assert stats["DEBIT"]["win_rate"] == 0.0
+
+
+def _win() -> payoff.TradeResult:
+    return payoff.settle(_credit_put_spread(), _ENTRY, _credit_put_spread().net_natural, settle_spot=110.0)
+
+
+def _loss() -> payoff.TradeResult:
+    return payoff.settle(_credit_put_spread(), _ENTRY, _credit_put_spread().net_natural, settle_spot=80.0)
+
+
+def test_window_stability_all_wins_gives_full_p_positive() -> None:
+    # 12 winning trades, both legs OTM at settlement (max profit) but the
+    # entry credit varies per trade so each window has nonzero pnl dispersion
+    # -- a window of identical pnls is the zero-dispersion edge case, skipped
+    # by design, and would defeat this test.
+    trades = [
+        payoff.settle(_credit_put_spread(), _ENTRY, Decimal(str(-1.00 - i * 0.01)), settle_spot=110.0)
+        for i in range(12)
+    ]
+    stats = payoff.window_stability(trades, n_windows=6)
+    assert stats["p_positive"] == 1.0
+    assert stats["windows_used"] == 6
+
+
+def test_window_stability_alternating_wins_and_losses_has_negative_sr_min() -> None:
+    trades = []
+    for i in range(12):
+        plan = _credit_put_spread()
+        spot = 110.0 + i if i % 2 == 0 else 80.0 - i
+        trades.append(payoff.settle(plan, _ENTRY, plan.net_natural, settle_spot=spot))
+    stats = payoff.window_stability(trades, n_windows=6)
+    assert stats["sr_min"] < 0
+
+
+def test_window_stability_empty_input_returns_zero_windows_used() -> None:
+    stats = payoff.window_stability([])
+    assert stats["windows_used"] == 0
+    assert stats["p_positive"] == 0.0
+
+
+def test_window_stability_fewer_trades_than_windows_does_not_raise() -> None:
+    trades = [_win(), _loss()]
+    stats = payoff.window_stability(trades, n_windows=6)
+    assert stats["windows_used"] <= len(trades)

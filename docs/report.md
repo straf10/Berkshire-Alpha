@@ -51,6 +51,8 @@ Three consequences, all structural:
    so the bottom-`n` slice always resolves to `NO_TRADE`. Half the strategy — the entire
    momentum/debit-spread regime — is **untestable in the current backtest**, and `VWM_Z_STRONG` is a
    dead parameter there, because `regime.select` only reads it inside the DEBIT branch.
+   **Confirmed empirically, not just from reading the code:** `agent/backtest/output/trade_log.csv`
+   (31 Aug run) holds 48 settled trades, 48 CREDIT / 0 DEBIT — see the Tier 2 #6 result below.
 3. **The skew branches fire on artifacts.** `skew_abs` lands in 1.0–2.3 IV points, a deterministic
    function of `BACKTEST_SKEW_SLOPE = 0.5` and strike rounding. `SKEW_SIDE_MIN_POINTS = 1.5` sits in
    the middle of that band, so which of `SKEW_SIDED_NO_DIRECTION` / `VWAP_SIDED_NO_DIRECTION` fires
@@ -325,6 +327,55 @@ write-up in one sentence.
 and say so in the output header. Partial coverage, honestly labelled, beats full coverage priced off
 a model.
 
+**Result (built and run 2026-09-01):** `scripts/signal_forward_test.py`, real IEX daily bars,
+2024-09-01 → 2026-09-01, 50 symbols, 21,850 name-days, `h ∈ {3..7}` DTE, `k ∈ {0.5, 1.0, 1.5}`. Full
+30-row output in `agent/backtest/output/signal_forward_test.csv`; reproduced here in full because
+printing only the favourable cells would be exactly the trial-selection the paper's §6.4 (and this
+report's §1) exists to flag.
+
+| signal | h | k | n | hit_rate | base_rate | edge |
+|---|---|---|---|---|---|---|
+| momentum | 3 | 0.5 | 9168 | 68.50% | 68.77% | −0.28% |
+| momentum | 3 | 1.0 | 9168 | 82.60% | 82.80% | −0.19% |
+| momentum | 3 | 1.5 | 9168 | 90.41% | 91.04% | −0.62% |
+| momentum | 4 | 0.5 | 9157 | 68.06% | 68.12% | −0.06% |
+| momentum | 4 | 1.0 | 9157 | 82.56% | 82.43% | +0.13% |
+| momentum | 4 | 1.5 | 9157 | 90.71% | 90.88% | −0.17% |
+| momentum | 5 | 0.5 | 9143 | 67.31% | 67.58% | −0.27% |
+| momentum | 5 | 1.0 | 9143 | 82.19% | 82.27% | −0.08% |
+| momentum | 5 | 1.5 | 9143 | 90.63% | 90.75% | −0.13% |
+| momentum | 6 | 0.5 | 9129 | 68.06% | 67.99% | +0.07% |
+| momentum | 6 | 1.0 | 9129 | 82.09% | 82.14% | −0.05% |
+| momentum | 6 | 1.5 | 9129 | 90.20% | 90.49% | −0.30% |
+| momentum | 7 | 0.5 | 9113 | 67.89% | 67.84% | +0.05% |
+| momentum | 7 | 1.0 | 9113 | 82.17% | 82.17% | −0.00% |
+| momentum | 7 | 1.5 | 9113 | 90.05% | 90.35% | −0.30% |
+| mean_reversion | 3 | 0.5 | 8198 | 69.39% | 69.27% | +0.13% |
+| mean_reversion | 3 | 1.0 | 8198 | 82.83% | 83.13% | −0.30% |
+| mean_reversion | 3 | 1.5 | 8198 | 90.85% | 91.53% | −0.68% |
+| mean_reversion | 4 | 0.5 | 8189 | 69.15% | 68.84% | +0.31% |
+| mean_reversion | 4 | 1.0 | 8189 | 82.29% | 82.87% | −0.58% |
+| mean_reversion | 4 | 1.5 | 8189 | 91.02% | 91.32% | −0.29% |
+| mean_reversion | 5 | 0.5 | 8176 | 68.58% | 68.57% | +0.00% |
+| mean_reversion | 5 | 1.0 | 8176 | 82.36% | 82.72% | −0.36% |
+| mean_reversion | 5 | 1.5 | 8176 | 90.96% | 90.94% | +0.02% |
+| mean_reversion | 6 | 0.5 | 8159 | 68.81% | 68.69% | +0.12% |
+| mean_reversion | 6 | 1.0 | 8159 | 82.57% | 82.90% | −0.33% |
+| mean_reversion | 6 | 1.5 | 8159 | 90.93% | 90.84% | +0.09% |
+| mean_reversion | 7 | 0.5 | 8137 | 68.49% | 68.40% | +0.08% |
+| mean_reversion | 7 | 1.0 | 8137 | 82.49% | 82.63% | −0.14% |
+| mean_reversion | 7 | 1.5 | 8137 | 90.70% | 90.85% | −0.15% |
+
+Every edge cell falls inside ±0.68 percentage points, with no consistent sign across `h` or `k` for
+either signal — momentum's best cell is +0.13pp, worst −0.62pp; the RSI-only mean-reversion proxy's
+best is +0.31pp, worst −0.68pp. That is noise-band, not edge: **the conditional hit rate does not
+beat its own signal's unconditional base rate**, for either the momentum/debit-side proxy or the
+RSI-only credit-side proxy, at any horizon or barrier width tested. This is the first statement about
+this repo's directional edge that does not depend on `synthetic_chain.py`, and the honest answer it
+gives is null — worth knowing before Thursday's session, not after. It does not, by itself, invalidate
+the credit regime's other overlays (skew, VWAP siding), which this script does not test (see the
+scope limit above).
+
 ### N2. `agent/backtest/dsr.py` — DSR + MinTRL, applied to the live account
 **~40 LOC · ~45 minutes · stdlib only (`math.erf`, `statistics.NormalDist`)**
 
@@ -424,8 +475,8 @@ a number we currently quote as fact into a number quoted with its uncertainty.
 
 | # | Item | Files | LOC | Time |
 |---|---|---|---|---|
-| 6 | **D (diagnostic half) — `window_stability()`.** Paper's ρ components reported separately, not aggregated. | `agent/backtest/payoff.py` | ~30 | 45 min |
-| 7 | **N1 — chain-free forward directional test.** Highest research value here; also the largest. Promote to Tier 1 **only** if Tier 1 lands before Wednesday's open. | `scripts/signal_forward_test.py` (new) | ~90 | 2 h |
+| 6 | **D (diagnostic half) — `window_stability()`.** Paper's ρ components reported separately, not aggregated. **Done 2026-09-01** — run against the real 48-trade `trade_log.csv` (31 Aug, all CREDIT): `p_positive=0.333`, `sr_dispersion=2.163`, `sr_min=-0.500`, `windows_used=6`. Two of six windows carry a positive per-trade Sharpe; grades the synthetic-chain result (§0.1) — see caveat printed by `replay.py`. | `agent/backtest/payoff.py` | ~30 | 45 min |
+| 7 | **N1 — chain-free forward directional test.** Highest research value here; also the largest. **Done 2026-09-01** — result table in §3/N1: no signal beats its base rate outside ±0.68pp. | `scripts/signal_forward_test.py` (new) | ~90 | 2 h |
 | 8 | **N5 — measured slippage.** Only once the live `trades` table has filled rows. | `scripts/measure_slippage.py` (new) | ~20 | 30 min |
 
 ### Explicitly not doing, and why
