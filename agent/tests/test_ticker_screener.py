@@ -6,7 +6,7 @@ from datetime import date
 
 import pytest
 
-from agent.config import UNIVERSE
+from agent.config import CROSS_SECTION_N, SHORTLIST_MAX, UNIVERSE
 from agent.schemas.execution import Regime, Structure
 from agent.schemas.market import QuantSnapshot
 from agent.strategy.regime import RegimeDecision
@@ -36,17 +36,17 @@ def _snap(symbol: str, **overrides) -> QuantSnapshot:
     return replace(_BASE, symbol=symbol, **overrides)
 
 
-def test_shortlist_caps_at_four() -> None:
+def test_shortlist_caps_at_shortlist_max() -> None:
     snaps = [_snap(sym, skew_abs=6.0 + i) for i, sym in enumerate(UNIVERSE)]
     assigned = {s.symbol: Regime.CREDIT for s in snaps}
     result = shortlist(snaps, assigned, 0.0)
-    assert len(result) == 4
+    assert len(result) == SHORTLIST_MAX
 
 
 def test_shortlist_is_deterministic() -> None:
     snaps = [_snap("SPY", skew_abs=6.0), _snap("QQQ", skew_abs=6.0)]  # identical scores
     assigned = {"SPY": Regime.CREDIT, "QQQ": Regime.CREDIT}
-    expected_order = ["SPY", "QQQ"]  # UNIVERSE index tiebreak: SPY(0) before QQQ(1)
+    expected_order = ["QQQ", "SPY"]  # UNIVERSE index tiebreak: QQQ(6) before SPY(8)
 
     for _ in range(100):
         shuffled = snaps[:]
@@ -71,11 +71,13 @@ def test_shortlist_excludes_no_trade() -> None:
 
 def test_assign_regimes_ranks_cross_sectionally() -> None:
     """The persisted 29-Aug cross-section (docs/day4_track_ab_plan.md §1.3
-    sanity check), updated for docs/day4_action_plan.md Step 2's
-    CROSS_SECTION_N 3 -> 4: top 4 by VRP are AAPL/TSLA/SPY/MSFT, but MSFT
-    sits at exactly VRP_CREDIT_MIN (1.00), so its sign guard demotes it to
-    NO_TRADE rather than CREDIT -> CREDIT {AAPL, TSLA, SPY}. Bottom 4 by VRP
-    are NVDA/AMD/QQQ/GOOGL, all < 1.00 -> DEBIT {NVDA, AMD, QQQ, GOOGL}."""
+    sanity check), only 10 of the now-50-name UNIVERSE, so 2*CROSS_SECTION_N
+    (12) > len(ok) (10) and n shrinks to 10 // 2 = 5 (docs/day4_action_plan.md
+    §2 partition argument). Top 5 by VRP are AAPL/TSLA/SPY/MSFT/META, but
+    MSFT and META sit at or below VRP_CREDIT_MIN (1.00), so their sign guard
+    demotes them to NO_TRADE rather than CREDIT -> CREDIT {AAPL, TSLA, SPY}.
+    Bottom 5 by VRP are AMZN/GOOGL/QQQ/AMD/NVDA, all < 1.00 -> DEBIT
+    {AMZN, GOOGL, QQQ, AMD, NVDA}."""
     vrps = {
         "AAPL": 1.258, "TSLA": 1.040, "SPY": 1.021,
         "MSFT": 1.00, "META": 0.98, "AMZN": 0.95, "GOOGL": 0.90,
@@ -86,7 +88,7 @@ def test_assign_regimes_ranks_cross_sectionally() -> None:
     credit = {s for s, r in assigned.items() if r == Regime.CREDIT}
     debit = {s for s, r in assigned.items() if r == Regime.DEBIT}
     assert credit == {"AAPL", "TSLA", "SPY"}
-    assert debit == {"NVDA", "AMD", "QQQ", "GOOGL"}
+    assert debit == {"AMZN", "GOOGL", "QQQ", "AMD", "NVDA"}
 
 
 def test_assign_regimes_respects_sign_guards() -> None:
@@ -107,8 +109,9 @@ def test_assign_regimes_excludes_not_ok() -> None:
     assigned = assign_regimes(snaps)
 
     assert dropped.symbol not in assigned
-    # 9 data_ok names >= 2*CROSS_SECTION_N(4) -> buckets stay at 4+4, not shrunk.
-    assert len(assigned) == 8
+    # len(UNIVERSE)-1 data_ok names, comfortably >= 2*CROSS_SECTION_N -> both
+    # buckets stay at CROSS_SECTION_N each, not shrunk.
+    assert len(assigned) == 2 * CROSS_SECTION_N
 
 
 def test_assign_regimes_shrinks_symmetrically_when_thin() -> None:
@@ -119,11 +122,17 @@ def test_assign_regimes_shrinks_symmetrically_when_thin() -> None:
 
 
 def test_skew_threshold_70th_percentile() -> None:
-    # 10 data_ok snapshots, skew_abs = 0..9. Linear-interpolated 70th percentile
-    # over a sorted 0-indexed series of length 10: rank = 0.70 * 9 = 6.3 ->
-    # values[6] + 0.3 * (values[7] - values[6]) = 6.0 + 0.3 * 1.0 = 6.3.
+    # N data_ok snapshots, skew_abs = 0..N-1 (already sorted ascending).
+    # Linear-interpolated 70th percentile over a 0-indexed series of length N:
+    # rank = 0.70 * (N-1) -> values[floor(rank)] + frac * (values[ceil(rank)] -
+    # values[floor(rank)]). Computed generically so this stays correct however
+    # large UNIVERSE is (docs/day4_action_plan.md Step 7 widened it 10 -> 50).
+    n = len(UNIVERSE)
     snaps = [_snap(sym, skew_abs=float(i)) for i, sym in enumerate(UNIVERSE)]
-    assert skew_threshold(snaps) == pytest.approx(6.3)
+    rank = 0.70 * (n - 1)
+    lo, hi = int(rank), min(int(rank) + 1, n - 1)
+    expected = lo + (hi - lo) * (rank - lo)
+    assert skew_threshold(snaps) == pytest.approx(expected)
 
 
 def test_skew_threshold_floors_at_zero() -> None:
@@ -148,6 +157,15 @@ def test_skew_threshold_degenerate_inputs() -> None:
     assert skew_threshold([]) == 0.0
     assert skew_threshold([_snap("SPY", skew_abs=2.5)]) == 2.5
     assert skew_threshold([_snap("SPY", skew_abs=-3.0)]) == 0.0
+
+
+def test_universe_index_lookup_is_constant_time() -> None:
+    """docs/day4_action_plan.md §7.8/§7.9: shortlist's UNIVERSE tiebreak must
+    use a precomputed dict, not a fresh UNIVERSE.index() scan per comparison."""
+    import agent.strategy.ticker_screener as ticker_screener_module
+
+    assert isinstance(ticker_screener_module._UNIVERSE_INDEX, dict)
+    assert ticker_screener_module._UNIVERSE_INDEX == {sym: i for i, sym in enumerate(UNIVERSE)}
 
 
 def test_composite_score_uses_observed_range() -> None:

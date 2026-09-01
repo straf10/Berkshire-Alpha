@@ -1077,14 +1077,14 @@ def _next_action(session: SessionPlan, now_utc: datetime, completed: int) -> tup
         return "market open", session.open_utc
     # Keyed on `completed` alone, exactly like trading_loop's own branches. The
     # earlier `now_utc < scan_N_utc and completed < N` form fell through to the
-    # scan_2 branch the moment the clock passed scan_1 with the scan still
-    # in-flight, so on 2026-08-31 the dashboard read "entry scan 2 @ 18:00"
-    # while scan_1 was actually running -- display-only, but it is what made
-    # the operator think nothing was happening (memory.md, Day-1 post-mortem).
-    if completed < 1:
-        return "entry scan 1", max(session.scan_1_utc, now_utc)
-    if completed < 2:
-        return "entry scan 2", max(session.scan_2_utc, now_utc)
+    # next scan's branch the moment the clock passed the current slot with the
+    # scan still in-flight, so on 2026-08-31 the dashboard read "entry scan 2
+    # @ 18:00" while scan 1 was actually running -- display-only, but it is
+    # what made the operator think nothing was happening (memory.md, Day-1
+    # post-mortem). docs/day4_action_plan.md Step 7 generalises the old
+    # two-branch if/elif to N slots without reintroducing that comparison.
+    if completed < len(session.scan_utcs) and now_utc < session.cutoff_utc:
+        return f"entry scan {completed + 1}", max(session.scan_utcs[completed], now_utc)
     return "management tick", now_utc + timedelta(seconds=MANAGEMENT_INTERVAL_S)
 
 
@@ -1098,8 +1098,7 @@ async def _publish_status(conn: aiosqlite.Connection, deps: Deps, session: Sessi
         "session_date": session.session_date.isoformat(),
         "open_utc": session.open_utc.isoformat(),
         "close_utc": session.close_utc.isoformat(),
-        "scan_1_utc": session.scan_1_utc.isoformat(),
-        "scan_2_utc": session.scan_2_utc.isoformat(),
+        "scan_utcs": [t.isoformat() for t in session.scan_utcs],
         "completed_scans": completed,
         "next_action": label,
         "next_action_utc": at_utc.isoformat(),
@@ -1113,8 +1112,8 @@ async def _publish_status(conn: aiosqlite.Connection, deps: Deps, session: Sessi
 
 async def trading_loop(deps: Deps) -> None:
     """CLOSED: sleep min(seconds_until_next_open, CLOSED_SLEEP_CEILING_S).
-    OPEN: management_tick every MANAGEMENT_INTERVAL_S; scan_cycle once at
-    scan_1 and once at scan_2, guarded by a per-session completed-scan count
+    OPEN: management_tick every MANAGEMENT_INTERVAL_S; scan_cycle once per
+    SCAN_OFFSETS_MIN slot, guarded by a per-session completed-scan count
     rebuilt from decisions.cycle_id so a restart mid-session never re-scans
     a slot it already completed."""
     while True:
@@ -1129,9 +1128,12 @@ async def trading_loop(deps: Deps) -> None:
             await deps.clock.sleep(seconds_until_next_boundary(session, now))
             continue
 
-        if now >= session.scan_1_utc and completed < 1:
-            await scan_cycle(deps, session, dry_run=deps.settings.dry_run)
-        elif now >= session.scan_2_utc and completed < 2:
+        # docs/day4_action_plan.md Step 7: N evenly-spaced slots, was a
+        # hardcoded two-branch if/elif. `completed` is still
+        # COUNT(DISTINCT cycle_id) for the session, so a mid-session restart
+        # still resumes at the right slot.
+        due = sum(1 for t in session.scan_utcs if now >= t)
+        if due > completed and now < session.cutoff_utc:
             await scan_cycle(deps, session, dry_run=deps.settings.dry_run)
         else:
             await management_tick(deps, session)

@@ -279,6 +279,17 @@ def test_analyst_score_ignores_sentiment() -> None:
     assert baseline == _score(_sentiment_out("SPY", sentiment_score=-0.9, confidence=0.9))
 
 
+def test_select_top_universe_index_lookup_is_constant_time() -> None:
+    """docs/day4_action_plan.md §7.8/§7.9: select_top's UNIVERSE tiebreak
+    must use a precomputed dict, not a fresh UNIVERSE.index() scan per
+    comparison."""
+    import agent.agents.analysts as analysts_module
+    from agent.config import UNIVERSE
+
+    assert isinstance(analysts_module._UNIVERSE_INDEX, dict)
+    assert analysts_module._UNIVERSE_INDEX == {sym: i for i, sym in enumerate(UNIVERSE)}
+
+
 def test_top_two_selection_deterministic() -> None:
     candidates = [_candidate(sym) for sym in ("NVDA", "AMD", "SPY", "QQQ")]
     results = []

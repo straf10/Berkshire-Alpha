@@ -34,7 +34,7 @@ async def test_bars_are_batched(fake_clients) -> None:
     assert len(calls) == 2
     for req in calls:
         assert list(req.symbol_or_symbols) == list(UNIVERSE)
-        assert len(req.symbol_or_symbols) == 10
+        assert len(req.symbol_or_symbols) == len(UNIVERSE)
 
     assert set(result.daily) == set(UNIVERSE)
     assert set(result.minute) == set(UNIVERSE)

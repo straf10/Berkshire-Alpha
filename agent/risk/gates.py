@@ -29,6 +29,7 @@ from agent.schemas.execution import STRUCTURE_IS_CREDIT, Intent, SpreadPlan
 
 _OPTION_SYMBOL_RE = re.compile(r"^[A-Z]{1,6}\d{6}[CP]\d{8}$")
 _INTENT_FOR_SIDE: dict[str, Intent] = {"BUY": Intent.BUY_TO_OPEN, "SELL": Intent.SELL_TO_OPEN}
+_MISSING = object()   # sentinel: distinguishes "no key" from any real EARNINGS_DATES value
 
 
 class GateReason(StrEnum):
@@ -43,6 +44,7 @@ class GateReason(StrEnum):
     REDUCE_ONLY = "REDUCE_ONLY"
     CONSERVATIVE_MODE_CREDIT_BLOCKED = "CONSERVATIVE_MODE_CREDIT_BLOCKED"
     EARNINGS_BLACKOUT = "EARNINGS_BLACKOUT"
+    EARNINGS_UNVERIFIED = "EARNINGS_UNVERIFIED"
     DTE_OUT_OF_WINDOW = "DTE_OUT_OF_WINDOW"
     ENTRY_CUTOFF_PASSED = "ENTRY_CUTOFF_PASSED"
     MAX_CONCURRENT_POSITIONS = "MAX_CONCURRENT_POSITIONS"
@@ -145,9 +147,17 @@ def evaluate(plan: SpreadPlan, ctx: GateContext) -> GateDecision:
         return _reject(GateReason.ENTRY_CUTOFF_PASSED)
     if not DTE_MIN <= plan.dte <= DTE_MAX:
         return _reject(GateReason.DTE_OUT_OF_WINDOW, float(plan.dte), float(DTE_MIN))
-    earnings_date = EARNINGS_DATES.get(plan.symbol)
-    if ctx.earnings_armed and earnings_date is not None and ctx.session_date <= earnings_date <= plan.expiry:
-        return _reject(GateReason.EARNINGS_BLACKOUT)
+    if ctx.earnings_armed:
+        # docs/day4_action_plan.md §7.7a: .get() with no default returned None
+        # for a MISSING key, indistinguishable from "verified: nothing in
+        # window" -- a ticker absent from EARNINGS_DATES traded with no
+        # earnings protection at all. Fail CLOSED instead: an unverified
+        # symbol is not tradeable, ever.
+        earnings = EARNINGS_DATES.get(plan.symbol, _MISSING)
+        if earnings is _MISSING:
+            return _reject(GateReason.EARNINGS_UNVERIFIED)
+        if isinstance(earnings, date) and ctx.session_date <= earnings <= plan.expiry:
+            return _reject(GateReason.EARNINGS_BLACKOUT)
     if len(ctx.open_position_keys) >= MAX_CONCURRENT_POSITIONS:
         return _reject(
             GateReason.MAX_CONCURRENT_POSITIONS,

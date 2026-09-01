@@ -14,6 +14,7 @@ import pytest
 from alpaca.data.timeframe import TimeFrame
 
 from agent import main as main_module
+from agent.config import SCAN_OFFSETS_MIN as _SCAN_OFFSETS_MIN
 from agent.config import Settings
 from agent.execution import cli_bridge
 from agent.execution.broker import MockBroker
@@ -683,7 +684,13 @@ async def test_scan_cycle_call_counts(tmp_path, monkeypatch: pytest.MonkeyPatch)
     session = await main_module.current_or_next_session(clients)
     await main_module.scan_cycle(deps, session, dry_run=True)
 
-    assert len(clients.option_chain_calls) == len(main_module.UNIVERSE)
+    # ChainCache.load only fetches a chain for symbols with a spot -- i.e.
+    # those the fixture's minute bars actually cover (docs/day4_action_plan.md
+    # Step 7 widened UNIVERSE to 50, but the committed Group-2 bar fixture
+    # still covers only the original 10 names; the other 40 legitimately
+    # drop as INSUFFICIENT_BARS and never reach ChainCache at all).
+    symbols_with_bars = set(main_module.UNIVERSE) & set(clients._minute.data)
+    assert len(clients.option_chain_calls) == len(symbols_with_bars)
     assert len(clients.stock_bars_calls) == 2
     assert len(clients.option_snapshot_calls) == 1
 
@@ -743,13 +750,22 @@ async def test_scan_slot_not_rerun_after_restart(tmp_path, monkeypatch: pytest.M
     await storage_db.init_db(db_path)
     _patch_cli(monkeypatch)
 
-    now = datetime(2026, 8, 31, 19, 30, tzinfo=timezone.utc)  # after both scan_1 and scan_2
+    # docs/day4_action_plan.md Step 7: 4 slots at (14:15, 15:45, 17:15, 18:45)
+    # from a 13:30 open. `now` sits between slot 2 and slot 3, so exactly 2
+    # slots are "due" -- with 1 already completed (seeded below), the loop
+    # must fire exactly once more (slot 2) and then stop, never reaching
+    # slot 3/4 while the clock stays frozen there.
+    now = datetime(2026, 8, 31, 16, 0, tzinfo=timezone.utc)
     fixed_session = SessionPlan(
         session_date=SESSION_DATE,
         open_utc=datetime(2026, 8, 31, 13, 30, tzinfo=timezone.utc),
         close_utc=datetime(2026, 8, 31, 20, 0, tzinfo=timezone.utc),
-        scan_1_utc=datetime(2026, 8, 31, 14, 15, tzinfo=timezone.utc),
-        scan_2_utc=datetime(2026, 8, 31, 18, 0, tzinfo=timezone.utc),
+        scan_utcs=(
+            datetime(2026, 8, 31, 14, 15, tzinfo=timezone.utc),
+            datetime(2026, 8, 31, 15, 45, tzinfo=timezone.utc),
+            datetime(2026, 8, 31, 17, 15, tzinfo=timezone.utc),
+            datetime(2026, 8, 31, 18, 45, tzinfo=timezone.utc),
+        ),
         cutoff_utc=datetime(2026, 8, 31, 19, 0, tzinfo=timezone.utc),
         last_session_utc=(datetime(2026, 8, 28, 13, 30, tzinfo=timezone.utc), datetime(2026, 8, 28, 20, 0, tzinfo=timezone.utc)),
         trading_days=frozenset({SESSION_DATE}),
@@ -798,9 +814,84 @@ async def test_scan_slot_not_rerun_after_restart(tmp_path, monkeypatch: pytest.M
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(main_module.trading_loop(deps), timeout=0.05)
 
-    # Only scan_2 should have run (completed count went 1 -> 2, then the loop
-    # falls through to management_tick and never re-triggers a scan).
+    # Only slot 2 should have run (completed count went 1 -> 2, matching
+    # due=2 at this frozen `now`; the loop then falls through to
+    # management_tick and never re-triggers a scan).
     assert call_count == 1
+
+
+async def test_scan_slots_fire_once_each_then_stop_after_cutoff(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """docs/day4_action_plan.md §7.9: over a full session, exactly
+    len(SCAN_OFFSETS_MIN) scan_cycle calls happen -- one per slot -- and none
+    after cutoff_utc, even though the loop keeps running (management_tick)
+    for a while afterward."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    _patch_cli(monkeypatch)
+
+    fixed_session = SessionPlan(
+        session_date=SESSION_DATE,
+        open_utc=datetime(2026, 8, 31, 13, 30, tzinfo=timezone.utc),
+        close_utc=datetime(2026, 8, 31, 20, 0, tzinfo=timezone.utc),
+        scan_utcs=tuple(
+            datetime(2026, 8, 31, 13, 30, tzinfo=timezone.utc) + timedelta(minutes=m)
+            for m in _SCAN_OFFSETS_MIN
+        ),
+        cutoff_utc=datetime(2026, 8, 31, 19, 0, tzinfo=timezone.utc),
+        last_session_utc=(datetime(2026, 8, 28, 13, 30, tzinfo=timezone.utc), datetime(2026, 8, 28, 20, 0, tzinfo=timezone.utc)),
+        trading_days=frozenset({SESSION_DATE}),
+        is_open=True,
+    )
+
+    async def fake_session(clients):
+        return fixed_session
+
+    monkeypatch.setattr(main_module, "current_or_next_session", fake_session)
+
+    class _AdvancingClock:
+        """now() advances by the requested sleep duration -- lets the loop
+        fast-forward through a whole session without any real wall-clock
+        wait, while still yielding control each iteration."""
+
+        def __init__(self, start: datetime) -> None:
+            self._now = start
+
+        def now(self) -> datetime:
+            return self._now
+
+        async def sleep(self, seconds: float) -> None:
+            self._now += timedelta(seconds=seconds)
+            await asyncio.sleep(0)
+
+    call_count = 0
+
+    async def fake_scan_cycle(deps, session, *, dry_run):
+        nonlocal call_count
+        call_count += 1
+        async with storage_db.connect(deps.settings.db_path) as conn:
+            await storage_write.insert_decision(conn, storage_write.DecisionRow(
+                ts_utc=datetime.now(timezone.utc).isoformat(), cycle_id=f"scan-{call_count}",
+                session_date=session.session_date.isoformat(), symbol="SPY", mode="quant-only",
+                regime="NO_TRADE", structure=None, action="NO_TRADE", gate_reason="NO_REGIME",
+                gate_detail="NO_REGIME", observed_value=None, threshold_value=None, qty=None,
+                equity_feed="iex", earnings_armed=False, quant_json="{}", plan_json=None,
+            ))
+        return []
+
+    monkeypatch.setattr(main_module, "scan_cycle", fake_scan_cycle)
+
+    clients = FakeClients()
+    broker = MockBroker([])
+    clock = _AdvancingClock(datetime(2026, 8, 31, 13, 30, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+
+    # Run well past the last scan slot (18:45) and past cutoff (19:00), into
+    # management_tick territory (close is 20:00) -- bounded by a wall-clock
+    # timeout since trading_loop never exits on its own.
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(main_module.trading_loop(deps), timeout=2.0)
+
+    assert call_count == len(_SCAN_OFFSETS_MIN)
 
 
 async def _seed_trade(conn, *, max_loss: Decimal, filled_qty: int, closed_at: str | None = None) -> None:
@@ -1873,8 +1964,13 @@ def _fixed_session(*, is_open: bool) -> SessionPlan:
         session_date=SESSION_DATE,
         open_utc=datetime(2026, 8, 31, 13, 30, tzinfo=timezone.utc),
         close_utc=datetime(2026, 8, 31, 20, 0, tzinfo=timezone.utc),
-        scan_1_utc=datetime(2026, 8, 31, 14, 15, tzinfo=timezone.utc),
-        scan_2_utc=datetime(2026, 8, 31, 18, 0, tzinfo=timezone.utc),
+        # SCAN_OFFSETS_MIN = (45, 135, 225, 315) from open (13:30 UTC).
+        scan_utcs=(
+            datetime(2026, 8, 31, 14, 15, tzinfo=timezone.utc),
+            datetime(2026, 8, 31, 15, 45, tzinfo=timezone.utc),
+            datetime(2026, 8, 31, 17, 15, tzinfo=timezone.utc),
+            datetime(2026, 8, 31, 18, 45, tzinfo=timezone.utc),
+        ),
         cutoff_utc=datetime(2026, 8, 31, 19, 0, tzinfo=timezone.utc),
         last_session_utc=(datetime(2026, 8, 28, 13, 30, tzinfo=timezone.utc), datetime(2026, 8, 28, 20, 0, tzinfo=timezone.utc)),
         trading_days=frozenset({SESSION_DATE}),
@@ -1893,11 +1989,11 @@ def test_next_action_before_scan_1() -> None:
     session = _fixed_session(is_open=True)
     label, at = main_module._next_action(session, datetime(2026, 8, 31, 13, 45, tzinfo=timezone.utc), 0)
     assert label == "entry scan 1"
-    assert at == session.scan_1_utc
+    assert at == session.scan_utcs[0]
 
 
 def test_next_action_still_names_scan_1_while_it_is_running() -> None:
-    """Regression, 2026-08-31: `scan_1_utc` is only re-evaluated once per
+    """Regression, 2026-08-31: `scan_utcs[0]` is only re-evaluated once per
     MANAGEMENT_INTERVAL_S, so the clock routinely passes it with the scan not
     yet complete. The old boundary form fell straight through to the scan_2
     branch there, and `/status` advertised "entry scan 2 @ 18:00" while scan_1
@@ -1912,10 +2008,24 @@ def test_next_action_between_scans() -> None:
     session = _fixed_session(is_open=True)
     label, at = main_module._next_action(session, datetime(2026, 8, 31, 15, 0, tzinfo=timezone.utc), 1)
     assert label == "entry scan 2"
-    assert at == session.scan_2_utc
+    assert at == session.scan_utcs[1]
 
 
-def test_next_action_after_both_scans_is_management() -> None:
+def test_next_action_all_slots_done_before_cutoff_is_management() -> None:
+    """docs/day4_action_plan.md Step 7: 4 slots, not 2 -- 'all scans done' now
+    means completed == len(scan_utcs), tested here still inside the entry
+    window (before cutoff)."""
+    session = _fixed_session(is_open=True)
+    now = datetime(2026, 8, 31, 19, 0, tzinfo=timezone.utc) - timedelta(minutes=1)
+    label, at = main_module._next_action(session, now, len(session.scan_utcs))
+    assert label == "management tick"
+    assert at == now + timedelta(seconds=main_module.MANAGEMENT_INTERVAL_S)
+
+
+def test_next_action_after_cutoff_is_management() -> None:
+    """docs/day4_action_plan.md Step 7 added the cutoff check to _next_action
+    directly -- even with slots still nominally 'due', past cutoff is always
+    management, mirroring trading_loop's own `now < session.cutoff_utc` guard."""
     session = _fixed_session(is_open=True)
     now = datetime(2026, 8, 31, 19, 30, tzinfo=timezone.utc)
     label, at = main_module._next_action(session, now, 2)

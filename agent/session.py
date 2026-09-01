@@ -8,8 +8,7 @@ import pytz
 from agent.config import (
     CLOSED_SLEEP_CEILING_S,
     ENTRY_CUTOFF_OFFSET_MIN,
-    SCAN_1_OFFSET_MIN,
-    SCAN_2_OFFSET_MIN,
+    SCAN_OFFSETS_MIN,
     UNWIND_DATE,
     UNWIND_ET_HOUR,
     UNWIND_ET_MINUTE,
@@ -27,8 +26,7 @@ class SessionPlan:
     session_date: date              # the ET trading date this cycle is anchored to
     open_utc: datetime
     close_utc: datetime
-    scan_1_utc: datetime            # open + 45 min
-    scan_2_utc: datetime            # close - 120 min
+    scan_utcs: tuple[datetime, ...]   # SCAN_OFFSETS_MIN from open, evenly spaced
     cutoff_utc: datetime            # close - 60 min
     last_session_utc: tuple[datetime, datetime]   # most recent COMPLETED session
     trading_days: frozenset[date]   # from the calendar -- validates candidate expiries
@@ -71,8 +69,7 @@ async def current_or_next_session(clients: AlpacaClients) -> SessionPlan:
         close_utc = next_close_utc
         session_date = open_utc.date()
 
-    scan_1_utc = open_utc + timedelta(minutes=SCAN_1_OFFSET_MIN)
-    scan_2_utc = close_utc + timedelta(minutes=SCAN_2_OFFSET_MIN)
+    scan_utcs = tuple(open_utc + timedelta(minutes=m) for m in SCAN_OFFSETS_MIN)
     cutoff_utc = close_utc + timedelta(minutes=ENTRY_CUTOFF_OFFSET_MIN)
 
     past_sessions = sorted(
@@ -87,8 +84,7 @@ async def current_or_next_session(clients: AlpacaClients) -> SessionPlan:
         session_date=session_date,
         open_utc=open_utc,
         close_utc=close_utc,
-        scan_1_utc=scan_1_utc,
-        scan_2_utc=scan_2_utc,
+        scan_utcs=scan_utcs,
         cutoff_utc=cutoff_utc,
         last_session_utc=last_session_utc,
         trading_days=trading_days,

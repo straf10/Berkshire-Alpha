@@ -19,6 +19,11 @@ from agent.tools.reddit import MentionSignal
 
 logger = logging.getLogger(__name__)
 
+# Day 4 Step 7 (docs/day4_action_plan.md §7.8). Same rationale as
+# ticker_screener._UNIVERSE_INDEX -- a precomputed dict instead of repeated
+# UNIVERSE.index() calls inside select_top's sort.
+_UNIVERSE_INDEX: dict[str, int] = {sym: i for i, sym in enumerate(UNIVERSE)}
+
 DIRECTION: Final[dict[Structure, int]] = {
     Structure.BULL_PUT_SPREAD: +1, Structure.BULL_CALL_SPREAD: +1,
     Structure.BEAR_CALL_SPREAD: -1, Structure.BEAR_PUT_SPREAD: -1,
@@ -194,5 +199,5 @@ def select_top(
     """Top `n` by analyst_score. Tie-break: Day-2 ScreenedCandidate.score, then
     UNIVERSE index -- the same deterministic ordering as ticker_screener.shortlist."""
     day2_score = {c.snapshot.symbol: c.score for c in candidates}
-    ordered = sorted(results, key=lambda r: (-analyst_score(r), -day2_score[r.symbol], UNIVERSE.index(r.symbol)))
+    ordered = sorted(results, key=lambda r: (-analyst_score(r), -day2_score[r.symbol], _UNIVERSE_INDEX[r.symbol]))
     return ordered[:n]

@@ -477,7 +477,6 @@ async def test_mid_walk_restart_reconstructs_filled_position(tmp_path, monkeypat
     from agent.execution.broker import OrderState
     from agent.schemas.execution import OrderStatus as _OrderStatus
     from agent.strategy.regime import RegimeDecision
-    from agent.strategy.regime import select as real_select
 
     import agent.strategy.ticker_screener as ticker_screener_module
 
@@ -486,9 +485,15 @@ async def test_mid_walk_restart_reconstructs_filled_position(tmp_path, monkeypat
     _patch_cli(monkeypatch)
 
     def forced_select(q, assigned, skew_threshold):
+        # Force SPY as the only candidate -- everything else is NO_TRADE
+        # regardless of assign_regimes' real cross-sectional output, so this
+        # test's single-trade risk assertion stays independent of UNIVERSE
+        # size (docs/day4_action_plan.md Step 7 widened it to 50, and AMD's
+        # real fixture data would otherwise legitimately enter CREDIT via
+        # real_select and place a second, unrelated trade in this cycle).
         if q.symbol == "SPY" and q.data_ok:
             return RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "forced", "TEST", None, None)
-        return real_select(q, assigned, skew_threshold)
+        return RegimeDecision(Regime.NO_TRADE, None, "forced-no-trade", "TEST", None, None)
 
     monkeypatch.setattr(main_module, "select", forced_select)
     monkeypatch.setattr(ticker_screener_module, "select", forced_select)
