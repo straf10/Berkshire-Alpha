@@ -178,3 +178,18 @@ CREATE TABLE IF NOT EXISTS health_samples (
   ok      INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_health_samples_ts ON health_samples(ts_utc DESC);
+
+-- Day 4 (docs/day4_action_plan.md Step 5). See schema.sql for the full comment.
+CREATE TABLE IF NOT EXISTS reflections (
+  id                 SERIAL PRIMARY KEY,
+  ts_utc             TEXT    NOT NULL,
+  session_date       TEXT    NOT NULL UNIQUE,
+  decisions_examined INTEGER NOT NULL,
+  binding_constraint TEXT    NOT NULL,
+  constraint_count   INTEGER NOT NULL,
+  verdict            TEXT    NOT NULL,
+  argument           TEXT    NOT NULL,
+  proposed_change    TEXT,
+  ok                 INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_reflections_session ON reflections(session_date DESC);

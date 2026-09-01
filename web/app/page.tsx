@@ -11,6 +11,7 @@ import { LiveRefresh } from "@/components/LiveRefresh";
 import { LlmUsage } from "@/components/LlmUsage";
 import { OpenPositionsTable } from "@/components/OpenPositionsTable";
 import { ReasoningFeed } from "@/components/ReasoningFeed";
+import { Reflection } from "@/components/Reflection";
 import { ServiceDown } from "@/components/ServiceDown";
 import { StatusBar } from "@/components/StatusBar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -30,6 +31,7 @@ import type {
   HealthResponse,
   LlmUsageResponse,
   OpenPosition,
+  Reflection as ReflectionShape,
   Status,
   ToolUsageResponse,
   Trade,
@@ -122,6 +124,7 @@ export default async function Page() {
     toolUsage,
     healthHistory,
     health,
+    reflections,
   ] = await Promise.all([
     fetchJson<AgentConfig>(`${base}/config`),
     fetchJson<AccountState>(`${base}/state/account`),
@@ -134,7 +137,9 @@ export default async function Page() {
     fetchJson<ToolUsageResponse>(`${base}/tools/usage`),
     fetchJson<HealthBucket[]>(`${base}/health/history`),
     fetchJson<HealthResponse>(`${base}/health`),
+    fetchJson<ReflectionShape[]>(`${base}/reflections?limit=1`),
   ]);
+  const reflection = reflections?.[0] ?? null;
 
   const decisions = decisionsRes;
   const status = statusRes;
@@ -204,6 +209,7 @@ export default async function Page() {
         <TabsContent value="decisions">
           <DecisionsLog decisions={decisions} />
           <ReasoningFeed decisions={decisions} />
+          <Reflection reflection={reflection} />
         </TabsContent>
 
         <TabsContent value="trades">

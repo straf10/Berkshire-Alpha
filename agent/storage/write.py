@@ -179,6 +179,19 @@ class HealthSampleRow:
 
 
 @dataclass(frozen=True)
+class ReflectionRow:
+    ts_utc: str
+    session_date: str
+    decisions_examined: int
+    binding_constraint: str
+    constraint_count: int
+    verdict: str
+    argument: str
+    proposed_change: str | None
+    ok: bool
+
+
+@dataclass(frozen=True)
 class GreeksRow:
     ts_utc: str
     equity: Decimal
@@ -314,6 +327,34 @@ async def insert_health_sample(conn: aiosqlite.Connection, h: HealthSampleRow) -
     await conn.commit()
     assert cur.lastrowid is not None
     return cur.lastrowid
+
+
+async def insert_reflection(conn: aiosqlite.Connection, r: ReflectionRow) -> int:
+    """INSERT ... ON CONFLICT(session_date) DO NOTHING -- the UNIQUE
+    constraint is the idempotency guarantee, this is the application-level
+    optimisation in front of it. Deliberately re-SELECTs the id afterward
+    rather than trusting `cur.lastrowid`/`cur.rowcount`: those have different
+    semantics between aiosqlite's raw cursor and db_pg.py's asyncpg adapter
+    (PgConnection.execute only attaches a RETURNING clause for tables in
+    `_HAS_ID`, which this table deliberately isn't), so a plain follow-up
+    SELECT is the one thing guaranteed to behave identically on both
+    backends."""
+    await conn.execute(
+        """INSERT INTO reflections
+           (ts_utc, session_date, decisions_examined, binding_constraint, constraint_count,
+            verdict, argument, proposed_change, ok)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(session_date) DO NOTHING""",
+        (
+            r.ts_utc, r.session_date, r.decisions_examined, r.binding_constraint,
+            r.constraint_count, r.verdict, r.argument, r.proposed_change, int(r.ok),
+        ),
+    )
+    await conn.commit()
+    cur = await conn.execute("SELECT id FROM reflections WHERE session_date = ?", (r.session_date,))
+    row = await cur.fetchone()
+    assert row is not None
+    return int(row[0])
 
 
 async def insert_greeks_snapshot(conn: aiosqlite.Connection, g: GreeksRow) -> int:

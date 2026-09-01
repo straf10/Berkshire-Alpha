@@ -302,6 +302,13 @@ async def health_history(conn: aiosqlite.Connection, hours: int = 90) -> list[di
     return result
 
 
+async def latest_reflections(conn: aiosqlite.Connection, limit: int = 30) -> list[dict[str, Any]]:
+    """Day 4 (docs/day4_action_plan.md Step 5) -- the Reflector card's data
+    source, newest session first."""
+    cur = await conn.execute("SELECT * FROM reflections ORDER BY session_date DESC LIMIT ?", (limit,))
+    return [dict(row) for row in await cur.fetchall()]
+
+
 async def decision_chain(conn: aiosqlite.Connection, decision_id: int) -> dict[str, Any]:
     """decision + analyst_outputs + debates + debate_summary + proposal +
     risk_votes + trade + llm_calls -- the full reasoning chain in one request

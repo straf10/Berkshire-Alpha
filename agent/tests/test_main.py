@@ -2120,3 +2120,102 @@ async def test_status_published_by_trading_loop(tmp_path, monkeypatch: pytest.Mo
     assert status["is_open"] is False
     assert status["next_action"] == "market open"
     assert status["next_action_utc"] == session.open_utc.isoformat()
+
+
+async def _seed_reflect_decisions(db_path: str, session_date: str, *, n: int = 1) -> None:
+    async with storage_db.connect(db_path) as conn:
+        for i in range(n):
+            await storage_write.insert_decision(conn, storage_write.DecisionRow(
+                ts_utc=f"{session_date}T{12 + i:02d}:00:00Z", cycle_id=f"cyc-reflect-{i}",
+                session_date=session_date, symbol="SPY", mode="quant-only", regime="NO_TRADE",
+                structure=None, action="NO_TRADE", gate_reason="NO_REGIME", gate_detail="NO_REGIME",
+                observed_value=None, threshold_value=None, qty=None, equity_feed="iex",
+                earnings_armed=False, quant_json="{}", plan_json=None,
+            ))
+
+
+async def test_maybe_reflect_uses_last_completed_session(tmp_path) -> None:
+    """docs/day4_action_plan.md Step 5: session.session_date (2026-08-31, via
+    _fixed_session) is the NEXT session while the market is closed --
+    reflecting must summarise last_session_utc's date (2026-08-28) instead,
+    or it would find zero decisions."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    await _seed_reflect_decisions(db_path, "2026-08-28", n=3)
+    await _seed_reflect_decisions(db_path, "2026-08-31", n=5)  # must NOT be picked up
+
+    session = _fixed_session(is_open=False)
+    deps = main_module.Deps(
+        settings=_settings(db_path), clients=FakeClients(), broker=MockBroker([]),
+        clock=_FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc)),
+        feed=__import__("alpaca.data.enums", fromlist=["DataFeed"]).DataFeed.IEX,
+        llm_enabled=False,
+    )
+
+    await main_module._maybe_reflect(deps, session)
+
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT session_date, decisions_examined, ok FROM reflections")
+        rows = await cur.fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "2026-08-28"
+    assert rows[0][1] == 3
+    assert rows[0][2] == 0  # llm_enabled=False -> no call, ok=False
+
+
+async def test_maybe_reflect_runs_once_per_session(tmp_path) -> None:
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    await _seed_reflect_decisions(db_path, "2026-08-28")
+
+    session = _fixed_session(is_open=False)
+    deps = main_module.Deps(
+        settings=_settings(db_path), clients=FakeClients(), broker=MockBroker([]),
+        clock=_FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc)),
+        feed=__import__("alpaca.data.enums", fromlist=["DataFeed"]).DataFeed.IEX,
+        llm_enabled=False,
+    )
+
+    for _ in range(3):
+        await main_module._maybe_reflect(deps, session)
+
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT COUNT(*) FROM reflections")
+        count = (await cur.fetchone())[0]
+    assert count == 1
+
+
+async def test_maybe_reflect_skips_when_budget_exhausted(tmp_path) -> None:
+    from agent.config import LLM_DAILY_SPEND_CEILING_USD
+    from agent.storage.write import LlmCallRow, insert_llm_call
+
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    await _seed_reflect_decisions(db_path, "2026-08-28")
+    async with storage_db.connect(db_path) as conn:
+        await insert_llm_call(conn, LlmCallRow(
+            ts_utc="2026-08-28T12:00:00+00:00", node="QUANT", provider="featherless",
+            model="m", prompt_tokens=0, completion_tokens=0, latency_ms=0,
+            est_cost_usd=LLM_DAILY_SPEND_CEILING_USD + Decimal("1.00"), ok=True,
+        ))
+
+    session = _fixed_session(is_open=False)
+    deps = main_module.Deps(
+        settings=_settings(db_path), clients=FakeClients(), broker=MockBroker([]),
+        clock=_FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc)),
+        feed=__import__("alpaca.data.enums", fromlist=["DataFeed"]).DataFeed.IEX,
+        llm_enabled=True,
+    )
+    deps.http = object()  # never dereferenced: budget.exhausted short-circuits before any call
+
+    await main_module._maybe_reflect(deps, session)
+
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT ok FROM reflections WHERE session_date = '2026-08-28'")
+        row = await cur.fetchone()
+        assert row is not None
+        assert row[0] == 0
+
+        cur = await conn.execute("SELECT COUNT(*) FROM llm_calls")
+        # Still just the one seeded call -- the reflector made none of its own.
+        assert (await cur.fetchone())[0] == 1

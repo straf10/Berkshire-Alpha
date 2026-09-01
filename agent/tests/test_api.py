@@ -331,6 +331,28 @@ async def test_funnel_endpoint_defaults_to_latest_session(tmp_path) -> None:
     assert result["session_date"] == "2026-08-31"
 
 
+async def test_reflections_endpoint(tmp_path) -> None:
+    db_path = str(tmp_path / "test_agent.db")
+    await storage_db.init_db(db_path)
+
+    async with storage_db.connect(db_path) as conn:
+        await storage_write.insert_reflection(conn, storage_write.ReflectionRow(
+            ts_utc=datetime.now(timezone.utc).isoformat(), session_date=date(2026, 8, 31).isoformat(),
+            decisions_examined=10, binding_constraint="NO_REGIME", constraint_count=6,
+            verdict="HOLD", argument="the screen blocked most names for a defensible reason",
+            proposed_change=None, ok=True,
+        ))
+
+    from agent.api import app as api_app
+
+    async with storage_db.connect(db_path) as conn:
+        rows = await api_app.reflections(limit=10, conn=conn)
+    assert len(rows) == 1
+    assert rows[0]["session_date"] == "2026-08-31"
+    assert rows[0]["binding_constraint"] == "NO_REGIME"
+    assert rows[0]["verdict"] == "HOLD"
+
+
 async def test_funnel_endpoint_empty_db(tmp_path) -> None:
     db_path = str(tmp_path / "test_agent.db")
     await storage_db.init_db(db_path)
