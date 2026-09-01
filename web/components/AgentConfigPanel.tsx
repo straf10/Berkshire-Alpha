@@ -184,12 +184,10 @@ export function AgentConfigPanel({ config }: { config: AgentConfig | null }) {
               value={config.scan_schedule.shortlist_max}
             />
             <ConfigRow
-              label="Scan 1"
-              value={`open + ${config.scan_schedule.scan_1_offset_min}m`}
-            />
-            <ConfigRow
-              label="Scan 2"
-              value={`close ${config.scan_schedule.scan_2_offset_min}m`}
+              label="Scan offsets"
+              value={config.scan_schedule.scan_offsets_min
+                .map((m) => `open +${m}m`)
+                .join(", ")}
             />
             <ConfigRow
               label="Management tick"

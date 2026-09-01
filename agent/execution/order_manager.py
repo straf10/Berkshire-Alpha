@@ -94,6 +94,10 @@ async def walk_to_fill(
     try:
         return await _walk(broker, plan, qty, clock, events, on_order_id)
     except Exception:  # noqa: BLE001 -- deliberate: no reject path may raise out of the loop
+        logger.exception(
+            "walk_to_fill crashed for %s %s qty=%d -- returning REJECTED/UNKNOWN",
+            plan.symbol, plan.structure, qty,
+        )
         return WalkResult(
             status="REJECTED", order_id=None, final_limit=None, fill_price=None,
             filled_qty=0, steps=0, reject_code=RejectCode.UNKNOWN, events=tuple(events),

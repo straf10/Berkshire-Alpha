@@ -228,8 +228,7 @@ export interface AgentConfig {
   };
   scan_schedule: {
     shortlist_max: number;
-    scan_1_offset_min: number;
-    scan_2_offset_min: number;
+    scan_offsets_min: number[];
     management_interval_s: number;
     closed_sleep_ceiling_s: number;
   };

@@ -195,8 +195,7 @@ async def agent_settings() -> dict[str, Any]:
         },
         "scan_schedule": {
             "shortlist_max": c.SHORTLIST_MAX,
-            "scan_1_offset_min": c.SCAN_1_OFFSET_MIN,
-            "scan_2_offset_min": c.SCAN_2_OFFSET_MIN,
+            "scan_offsets_min": list(c.SCAN_OFFSETS_MIN),
             "management_interval_s": c.MANAGEMENT_INTERVAL_S,
             "closed_sleep_ceiling_s": c.CLOSED_SLEEP_CEILING_S,
         },
