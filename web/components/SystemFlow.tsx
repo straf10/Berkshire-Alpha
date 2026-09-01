@@ -27,7 +27,7 @@ import {
 } from "lucide-react";
 import type { ComponentType } from "react";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 
 type StageMode = "deterministic" | "llm" | "hybrid";
 
@@ -232,12 +232,6 @@ export function SystemFlow() {
   return (
     <div>
       <Card className="mb-6">
-        <CardHeader className="pb-2">
-          <CardTitle className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            <Workflow className="size-3.5" />
-            Pipeline, per candidate
-          </CardTitle>
-        </CardHeader>
         <CardContent className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
           <span className="flex items-center gap-1.5">
             <span className="inline-block h-2 w-3 rounded-sm bg-muted-foreground/50" />
@@ -262,22 +256,20 @@ export function SystemFlow() {
       </Card>
 
       <Card>
-        <CardContent className="p-0">
-          <div className="h-[560px] w-full overflow-hidden rounded-md border border-border [&_.react-flow]:bg-transparent">
-            <ReactFlow
-              nodes={nodes}
-              edges={edges}
-              nodeTypes={nodeTypes}
-              fitView
-              fitViewOptions={{ padding: 0.15 }}
-              minZoom={0.4}
-              maxZoom={1.5}
-              proOptions={{ hideAttribution: true }}
-            >
-              <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="var(--border)" />
-              <Controls showInteractive={false} />
-            </ReactFlow>
-          </div>
+        <CardContent className="h-[560px] w-full p-0 [&_.react-flow]:bg-transparent">
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={nodeTypes}
+            fitView
+            fitViewOptions={{ padding: 0.15 }}
+            minZoom={0.4}
+            maxZoom={1.5}
+            proOptions={{ hideAttribution: true }}
+          >
+            <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="var(--border)" />
+            <Controls showInteractive={false} />
+          </ReactFlow>
         </CardContent>
       </Card>
     </div>
