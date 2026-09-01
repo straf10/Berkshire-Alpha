@@ -30,18 +30,24 @@ def _plan(*, p: float, max_profit: str, max_loss: str, structure: Structure = St
 
 
 def test_kelly_hand_computed() -> None:
+    # P1 remediation (docs/audit_report_v2.md §9 item 7): KELLY_FRACTION
+    # halved 0.5 -> 0.25, so this hand-computed value is also halved
+    # (0.166666666 at half-Kelly -> 0.083333333 at quarter-Kelly).
     plan = _plan(p=0.75, max_profit="150", max_loss="350")
     result = size_position(plan, Decimal("100000"))
-    assert result.kelly_fraction == pytest.approx(0.083333333, abs=1e-9)
+    assert result.kelly_fraction == pytest.approx(0.0416666665, abs=1e-9)
 
 
 def test_kelly_units_are_ratios() -> None:
     """The regression test for the one bug that would silently make the agent
     never trade: substituting dollar amounts for W/L gives f* ~= 0.000238,
-    which floors every trade to zero contracts forever."""
+    which floors every trade to zero contracts forever. Threshold lowered
+    from 0.05 to 0.02 alongside the KELLY_FRACTION 0.5 -> 0.25 halving
+    (docs/audit_report_v2.md §9 item 7) -- still >80x the bug value this
+    guards against, so it remains a meaningful regression check."""
     plan = _plan(p=0.75, max_profit="150", max_loss="350")
     result = size_position(plan, Decimal("100000"))
-    assert result.kelly_fraction > 0.05
+    assert result.kelly_fraction > 0.02
     assert result.kelly_fraction != pytest.approx(0.000238, abs=1e-6)
 
 

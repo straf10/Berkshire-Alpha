@@ -1163,14 +1163,25 @@ async def _session_decisions(conn: aiosqlite.Connection, session_date: str) -> l
 def _reflection_row(result: reflector.ReflectionResult) -> storage_write.ReflectionRow:
     d = result.digest
     output = result.output
+    # P1 remediation (docs/audit_report_v2.md §9 item 9): digest() returns
+    # binding_constraint=None when every gate_reason observed this session is
+    # in REFLECTOR_DENYLIST -- the `reflections` table's column predates that
+    # possibility and is NOT NULL, so substitute an explicit sentinel rather
+    # than a schema migration for what should be a rare session shape.
+    binding_constraint = d.binding_constraint if d.binding_constraint is not None else "NONE_ELIGIBLE_ALL_DENYLISTED"
     return storage_write.ReflectionRow(
         ts_utc=datetime.now(timezone.utc).isoformat(),
         session_date=d.session_date.isoformat(),
         decisions_examined=d.decisions_examined,
-        binding_constraint=d.binding_constraint,
+        binding_constraint=binding_constraint,
         constraint_count=d.constraint_count,
         verdict=output.verdict if output is not None else "HOLD",
-        argument=output.argument if output is not None else "reflection unavailable",
+        argument=(
+            output.argument if output is not None
+            else ("every gate rejection this session was against a denylisted (liquidity/execution) "
+                  "guardrail -- no reflection candidate" if d.binding_constraint is None
+                  else "reflection unavailable")
+        ),
         proposed_change=output.proposed_change if output is not None else None,
         ok=result.ok,
     )

@@ -385,12 +385,14 @@ def test_gate_context_default_keeps_day2_tests_green() -> None:
 
 
 def test_conviction_only_reduces_qty() -> None:
-    # docs/day4_track_ab_plan.md §2.4: default plan's sized.qty is 8 (Kelly
-    # capped by MAX_RISK_PER_TRADE_PCT), well under every other cap here, so
-    # conviction is the only thing moving the final qty.
+    # docs/day4_track_ab_plan.md §2.4: default plan's sized.qty is Kelly
+    # capped by MAX_RISK_PER_TRADE_PCT, well under every other cap here, so
+    # conviction is the only thing moving the final qty. Was 8 at
+    # KELLY_FRACTION=0.5; the P1 remediation halving it to 0.25
+    # (docs/audit_report_v2.md §9 item 7) also halves this qty to 7.
     plan = _plan()
     baseline = evaluate(plan, _ctx())
-    assert baseline.approved and baseline.qty == 8
+    assert baseline.approved and baseline.qty == 7
 
     full = evaluate(plan, _ctx(conviction=1.0))
     assert full.qty == baseline.qty
