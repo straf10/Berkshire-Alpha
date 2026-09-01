@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import os
+import random
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -24,13 +25,13 @@ class TradeResult:
     max_loss_per_spread: Decimal
 
 
-def entry_fill_with_slippage(net_natural: Decimal) -> Decimal:
-    """Degrades `net_natural` by the fixed BACKTEST_SLIPPAGE_PCT haircut: less
+def entry_fill_with_slippage(net_natural: Decimal, slippage_pct: Decimal = BACKTEST_SLIPPAGE_PCT) -> Decimal:
+    """Degrades `net_natural` by `slippage_pct` (default BACKTEST_SLIPPAGE_PCT): less
     credit received (net_natural < 0) or more debit paid (net_natural > 0)."""
     one = Decimal("1")
     if net_natural < 0:
-        return net_natural * (one - BACKTEST_SLIPPAGE_PCT)
-    return net_natural * (one + BACKTEST_SLIPPAGE_PCT)
+        return net_natural * (one - slippage_pct)
+    return net_natural * (one + slippage_pct)
 
 
 def settle(
@@ -94,6 +95,32 @@ def regime_hit_rate(trades: list[TradeResult]) -> dict[str, dict[str, float]]:
     return out
 
 
+def bootstrap_pnl(trades: list[TradeResult], n: int = 10_000, seed: int = 0) -> dict[str, float]:
+    """Case-resampled 5th/50th/95th percentiles of total P&L and win rate (B1,
+    docs/report.md) -- turns the single point-estimate TOTAL pnl into an interval."""
+    if not trades:
+        return {k: 0.0 for k in ("total_pnl_p5", "total_pnl_p50", "total_pnl_p95", "win_rate_p5", "win_rate_p50", "win_rate_p95")}
+
+    pnls = [t.realized_pnl for t in trades]
+    rng = random.Random(seed)
+    totals: list[float] = []
+    win_rates: list[float] = []
+    for _ in range(n):
+        sample = rng.choices(pnls, k=len(pnls))
+        totals.append(sum(sample))
+        win_rates.append(sum(1 for p in sample if p > 0) / len(sample))
+    totals.sort()
+    win_rates.sort()
+
+    def pct(ordered: list[float], p: float) -> float:
+        return ordered[min(int(p * len(ordered)), len(ordered) - 1)]
+
+    return {
+        "total_pnl_p5": pct(totals, 0.05), "total_pnl_p50": pct(totals, 0.50), "total_pnl_p95": pct(totals, 0.95),
+        "win_rate_p5": pct(win_rates, 0.05), "win_rate_p50": pct(win_rates, 0.50), "win_rate_p95": pct(win_rates, 0.95),
+    }
+
+
 def write_report(trades: list[TradeResult], out_dir: str) -> None:
     os.makedirs(out_dir, exist_ok=True)
 
@@ -124,3 +151,10 @@ def write_report(trades: list[TradeResult], out_dir: str) -> None:
                 regime, stats["count"], stats["wins"],
                 round(stats["win_rate"], 4), round(stats["avg_pnl"], 2), round(stats["total_pnl"], 2),
             ])
+
+    with open(os.path.join(out_dir, "bootstrap.csv"), "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["metric", "p5", "p50", "p95"])
+        boot = bootstrap_pnl(trades)
+        w.writerow(["total_pnl", round(boot["total_pnl_p5"], 2), round(boot["total_pnl_p50"], 2), round(boot["total_pnl_p95"], 2)])
+        w.writerow(["win_rate", round(boot["win_rate_p5"], 4), round(boot["win_rate_p50"], 4), round(boot["win_rate_p95"], 4)])
