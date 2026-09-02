@@ -6,7 +6,7 @@ from decimal import Decimal
 import pytest
 
 from agent.execution.broker import MockBroker, OrderState, _build_mleg_request
-from agent.execution.order_manager import walk_to_fill
+from agent.execution.order_manager import walk_cap, walk_to_fill
 from agent.schemas.execution import Intent, Leg, OrderStatus, Regime, RejectCode, SpreadPlan, Structure
 
 EXPIRY = date(2026, 9, 4)
@@ -219,3 +219,29 @@ def test_mleg_request_shape() -> None:
     assert len(req.legs) <= 4
     assert all(leg.position_intent is not None for leg in req.legs)
     assert req.limit_price < 0  # credit structure -> negative limit
+
+
+@pytest.mark.parametrize(
+    "name, mid, natural, width, is_closing, expected",
+    [
+        # Opening debit: WALK_CAP_MAX_FRACTION_OF_WIDTH (0.60) bounds the
+        # width-fraction cap below the raw mid+0.70*(natural-mid) figure.
+        ("opening_debit", "3.00", "4.00", 5.0, False, "3.00"),
+        # Opening credit on a wide chain: natural drags the raw cap positive
+        # (a debit) -- the sign-flip floor forces it back to -0.01
+        # (docs/review.md P0-3).
+        ("opening_credit_sign_flip_floor", "-1.00", "0.50", 3.0, False, "-0.01"),
+        # Closing a credit spread (buyback): a debit order, wider
+        # WALK_CAP_MAX_FRACTION_OF_WIDTH_CLOSING (1.00) bound applies.
+        ("closing_credit_spread_buyback", "2.80", "3.50", 3.0, True, "3.00"),
+        # Closing a DEBIT spread (tomorrow's LLY case): a credit order
+        # (mid < 0) with is_closing=True -- NEITHER the width bound (mid is
+        # not a debit) NOR the sign-flip floor (elif not is_closing is
+        # skipped) applies. The cap is exactly mid + 0.70*(natural-mid),
+        # unbounded by width (docs/review.md P0-2).
+        ("closing_debit_spread_no_width_bound", "-5.00", "-6.00", 5.0, True, "-5.70"),
+    ],
+)
+def test_walk_cap_matches_documented_branches(name, mid, natural, width, is_closing, expected) -> None:
+    cap = walk_cap(mid=Decimal(mid), natural=Decimal(natural), width=width, is_closing=is_closing)
+    assert cap == Decimal(expected), name
