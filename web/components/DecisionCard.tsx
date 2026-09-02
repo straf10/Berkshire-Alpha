@@ -8,10 +8,15 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { TableCell, TableRow } from "@/components/ui/table";
 import { DebateThread } from "@/components/DebateThread";
 import { ModelTag } from "@/components/ModelTag";
+import { WalkTimelineChart } from "@/components/charts/WalkTimelineChart";
 import { apiBase, fetchJson } from "@/lib/api";
 import { actionColor, formatDateTime, modeLabel, riskDecisionVariant, safeJsonParse } from "@/lib/format";
 import { callsByNode, lastOkCall } from "@/lib/llmCalls";
 import type { Decision, DecisionChain, QuantSnapshot } from "@/lib/types";
+
+interface SpreadPlanShape {
+  net_natural: string;
+}
 
 interface AnalystOutputShape {
   ticker?: string;
@@ -73,9 +78,11 @@ function Section({
   );
 }
 
-function ExpandedChain({ chain }: { chain: DecisionChain }) {
+function ExpandedChain({ chain, walkCapFraction }: { chain: DecisionChain; walkCapFraction: number | null }) {
   const quant = chain.decision ? safeJsonParse<QuantSnapshot>(chain.decision.quant_json) : null;
   const proposal = chain.proposal ? safeJsonParse<SpreadProposalShape>(chain.proposal.proposal_json) : null;
+  const plan = chain.decision ? safeJsonParse<SpreadPlanShape>(chain.decision.plan_json) : null;
+  const natural = plan ? Number(plan.net_natural) : null;
   const byNode = callsByNode(chain.llm_calls);
 
   return (
@@ -175,6 +182,7 @@ function ExpandedChain({ chain }: { chain: DecisionChain }) {
                 {t.fill_price !== null && ` @ ${t.fill_price.toFixed(2)}`}
               </p>
               {t.reject_code && <p className="text-destructive">reject: {t.reject_code}</p>}
+              <WalkTimelineChart trade={t} natural={natural} walkCapFraction={walkCapFraction} />
             </div>
           ))}
         </Section>
@@ -203,7 +211,13 @@ function ExpandedChain({ chain }: { chain: DecisionChain }) {
 // its full reasoning chain below it, so this looks like the same table
 // (docs: "Decisions log and Reasoning feed to be table like the decision
 // log") while still being the expandable centerpiece PLAN.md calls out.
-export function DecisionCard({ decision }: { decision: Decision }) {
+export function DecisionCard({
+  decision,
+  walkCapFraction,
+}: {
+  decision: Decision;
+  walkCapFraction: number | null;
+}) {
   const [open, setOpen] = useState(false);
   const [chain, setChain] = useState<DecisionChain | null>(null);
   const [loading, setLoading] = useState(false);
@@ -240,7 +254,7 @@ export function DecisionCard({ decision }: { decision: Decision }) {
                 <Skeleton className="h-4 w-1/2" />
               </div>
             ) : chain ? (
-              <ExpandedChain chain={chain} />
+              <ExpandedChain chain={chain} walkCapFraction={walkCapFraction} />
             ) : (
               <p className="text-sm text-destructive">Could not load decision detail.</p>
             )}

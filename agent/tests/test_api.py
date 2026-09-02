@@ -141,6 +141,55 @@ async def test_decision_chain_serves_full_chain(tmp_path) -> None:
     assert detail["llm_calls"][0]["decision_id"] == decision_id
 
 
+async def test_decision_chain_attaches_walk_cap_from_plan(tmp_path) -> None:
+    """docs/review.md Task 4: /decisions/{id} attaches a `walk_cap` to each
+    trade, computed by the real agent.tools.walk_cap.walk_cap() (the same
+    function order_manager._walk calls) from the decision's plan_json --
+    never re-derived from scratch, so the M3 walk-timeline chart and the live
+    walk can never disagree. Numbers are the real 09-01 LLY trade (decision
+    149 in production): mid=1.94, natural=8.84, width=5.0, opening (BUY_TO_OPEN/
+    SELL_TO_OPEN) BEAR_PUT_SPREAD -> is_closing=False -> the P0-2/P0-3-clamped
+    cap of $3.00 (width * WALK_CAP_MAX_FRACTION_OF_WIDTH == 5.0 * 0.60), not
+    the pre-remediation unclamped $6.77 (mid + WALK_CAP_FRACTION*(natural-mid))."""
+    db_path = str(tmp_path / "test_agent.db")
+    await storage_db.init_db(db_path)
+
+    plan_json = (
+        '{"symbol":"LLY","structure":"BEAR_PUT_SPREAD","regime":"DEBIT","expiry":"2026-09-04","dte":3,'
+        '"legs":[{"occ_symbol":"LLY260904P01160000","strike":1160.0,"right":"P","side":"SELL",'
+        '"ratio_qty":1,"intent":"SELL_TO_OPEN","delta":-0.4385,"vega":0.4162,"bid":8.9,"ask":15.09},'
+        '{"occ_symbol":"LLY260904P01165000","strike":1165.0,"right":"P","side":"BUY","ratio_qty":1,'
+        '"intent":"BUY_TO_OPEN","delta":-0.4938,"vega":0.4212,"bid":10.13,"ask":17.74}],'
+        '"width":5.0,"net_mid":"1.94","net_natural":"8.84","max_profit_per_spread":"306.00",'
+        '"max_loss_per_spread":"194.00","p_success":0.4744989445350674,"spot":1164.8,'
+        '"short_leg_delta":0.4385}'
+    )
+    async with storage_db.connect(db_path) as conn:
+        decision_id = await storage_write.insert_decision(conn, storage_write.DecisionRow(
+            ts_utc=datetime.now(timezone.utc).isoformat(), cycle_id="cyc-lly",
+            session_date=date(2026, 9, 1).isoformat(), symbol="LLY", mode="llm",
+            regime="DEBIT", structure="BEAR_PUT_SPREAD", action="ENTER", gate_reason="APPROVED",
+            gate_detail="APPROVED", observed_value=None, threshold_value=None, qty=4,
+            equity_feed="iex", earnings_armed=True, quant_json="{}", plan_json=plan_json,
+        ))
+        await storage_write.insert_trade(conn, storage_write.TradeRow(
+            decision_id=decision_id, ts_utc=datetime.now(timezone.utc).isoformat(), symbol="LLY",
+            structure="BEAR_PUT_SPREAD", expiry="2026-09-04", legs_json="[]", qty=4,
+            submitted_limit=Decimal("1.94"),
+        ))
+
+    from agent.api import app as api_app
+
+    async with storage_db.connect(db_path) as conn:
+        detail = await api_app.decision_detail(decision_id, conn=conn)
+
+    assert len(detail["trades"]) == 1
+    # decision_detail is called directly here (not through FastAPI's routing),
+    # so walk_cap arrives as the raw Decimal read.py returns -- the HTTP path's
+    # jsonable_encoder is what turns it into a JSON float for the frontend.
+    assert detail["trades"][0]["walk_cap"] == Decimal("3.00")
+
+
 async def test_assignments_endpoint_serves_rows(tmp_path) -> None:
     db_path = str(tmp_path / "test_agent.db")
     await storage_db.init_db(db_path)

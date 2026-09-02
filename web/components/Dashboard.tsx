@@ -209,7 +209,10 @@ export function Dashboard({
             risk-vote chain, without hunting across tabs for one subject. */}
         <TabsContent value="decisions">
           <DecisionsLog decisions={decisions} />
-          <ReasoningFeed decisions={decisions} />
+          <ReasoningFeed
+            decisions={decisions}
+            walkCapFraction={config ? Number(config.execution_guardrails.walk_cap_fraction) : null}
+          />
           <Reflection reflection={reflection} />
         </TabsContent>
 
