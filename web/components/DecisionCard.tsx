@@ -7,8 +7,10 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TableCell, TableRow } from "@/components/ui/table";
 import { DebateThread } from "@/components/DebateThread";
+import { ModelTag } from "@/components/ModelTag";
 import { apiBase, fetchJson } from "@/lib/api";
 import { actionColor, formatDateTime, modeLabel, riskDecisionVariant, safeJsonParse } from "@/lib/format";
+import { callsByNode, lastOkCall } from "@/lib/llmCalls";
 import type { Decision, DecisionChain, QuantSnapshot } from "@/lib/types";
 
 interface AnalystOutputShape {
@@ -74,6 +76,7 @@ function Section({
 function ExpandedChain({ chain }: { chain: DecisionChain }) {
   const quant = chain.decision ? safeJsonParse<QuantSnapshot>(chain.decision.quant_json) : null;
   const proposal = chain.proposal ? safeJsonParse<SpreadProposalShape>(chain.proposal.proposal_json) : null;
+  const byNode = callsByNode(chain.llm_calls);
 
   return (
     <div className="min-w-0 space-y-3 pt-2 text-base">
@@ -88,12 +91,16 @@ function ExpandedChain({ chain }: { chain: DecisionChain }) {
           <div className="grid min-w-0 gap-2 sm:grid-cols-3">
             {chain.analyst_outputs.map((a) => {
               const out = a.output_json ? safeJsonParse<AnalystOutputShape>(a.output_json) : null;
+              const call = lastOkCall(byNode.get(a.analyst));
               return (
                 <div
                   key={a.id}
                   className={`min-w-0 rounded-md border p-2 text-sm ${a.ok ? "border-border/60" : "border-destructive/40 opacity-60"}`}
                 >
-                  <p className="mb-1 font-semibold">{a.analyst}</p>
+                  <p className="mb-1 flex flex-wrap items-baseline gap-x-1.5 font-semibold">
+                    {a.analyst}
+                    <ModelTag call={call} />
+                  </p>
                   {a.ok ? (
                     <p className="break-words text-foreground/70">{out?.analyst_summary ?? "—"}</p>
                   ) : (
@@ -107,13 +114,14 @@ function ExpandedChain({ chain }: { chain: DecisionChain }) {
       )}
 
       <div className="border-t border-border/60 pt-2">
-        <DebateThread turns={chain.debates} summary={chain.debate_summary} />
+        <DebateThread turns={chain.debates} summary={chain.debate_summary} llmCalls={chain.llm_calls} />
       </div>
 
       {proposal && (
         <Section title="Trader proposal" icon={FileSignature}>
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <span className="font-semibold">{proposal.strategy_name}</span>
+            <ModelTag call={lastOkCall(byNode.get("TRADER"))} />
             <span>{proposal.underlying}</span>
             <span>exp {proposal.expiration_date}</span>
             <span>confidence {proposal.confidence_score.toFixed(2)}</span>
@@ -132,9 +140,10 @@ function ExpandedChain({ chain }: { chain: DecisionChain }) {
           <div className="grid min-w-0 gap-2 sm:grid-cols-3">
             {chain.risk_votes.map((v) => (
               <div key={v.id} className="min-w-0 rounded-md border border-border/60 p-2 text-sm">
-                <div className="mb-1 flex items-center gap-2">
+                <div className="mb-1 flex flex-wrap items-center gap-2">
                   <span className="font-semibold">{v.persona}</span>
                   <Badge variant={riskDecisionVariant(v.decision)}>{v.decision}</Badge>
+                  <ModelTag call={lastOkCall(byNode.get(`RISK_${v.persona}`))} />
                 </div>
                 <p className="break-words text-foreground/70">{v.manager_notes}</p>
               </div>

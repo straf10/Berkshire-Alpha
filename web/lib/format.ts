@@ -104,6 +104,14 @@ export function verdictVariant(verdict: string): "default" | "destructive" | "se
   return "secondary";
 }
 
+// LLM_NODE_MODELS (agent/config.py) stores full provider/model ids
+// ("deepseek-ai/DeepSeek-V3.1-Terminus") -- the provider prefix is noise
+// next to a stage name in the reasoning feed, so this keeps only the model.
+export function formatModelName(model: string): string {
+  const idx = model.lastIndexOf("/");
+  return idx === -1 ? model : model.slice(idx + 1);
+}
+
 export function safeJsonParse<T>(raw: string | null | undefined): T | null {
   if (!raw) return null;
   try {
