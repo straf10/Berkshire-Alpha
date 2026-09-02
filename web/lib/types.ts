@@ -120,6 +120,20 @@ export interface Trade {
   realized_pnl: number | null;
   max_loss_per_spread: number;
   exit_reason: string | null;
+  // Only present on trades returned by GET /decisions/{id} (decision_chain) --
+  // /trades (latest_trades) has no decision.plan_json to compute it from.
+  // Computed server-side by agent.tools.walk_cap.walk_cap(), the identical
+  // function the live walk itself calls (docs/review.md Task 4).
+  walk_cap?: number | null;
+}
+
+export interface WalkEvent {
+  ts: string;
+  step: number;
+  action: string; // SUBMIT | POLL | REPLACE | CANCEL | SUSPEND
+  order_id: string | null;
+  limit: string | null; // Decimal serialized as a string, e.g. "1.94" -- Number() before use
+  status: string | null; // OrderStatus | null
 }
 
 export interface LlmCall {
@@ -217,6 +231,20 @@ export interface AgentConfig {
     entry_cutoff_offset_min: number;
     dte_min: number;
     dte_max: number;
+  };
+  // docs/review.md P2-2 -- the walk cap, quote-width filter, and debit-at-
+  // build-time cap, i.e. the P0 remediation constants. Was fetched by the
+  // page (page.tsx) but never typed/rendered anywhere on the frontend until
+  // docs/review.md Task 4 needed walk_cap_fraction for the walk-timeline
+  // chart's illustrative pre-P0-2/P0-3 reference line.
+  execution_guardrails: {
+    walk_cap_max_fraction_of_width: string;
+    walk_cap_max_fraction_of_width_closing: string;
+    walk_step: string;
+    walk_cap_fraction: string;
+    max_quote_spread_pct: number;
+    max_debit_fraction_of_width: string;
+    degenerate_chain_max_drop: number;
   };
   regime_thresholds: {
     rsi_period: number;

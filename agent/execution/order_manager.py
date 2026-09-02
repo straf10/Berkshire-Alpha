@@ -3,63 +3,23 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from typing import Awaitable, Callable, Literal
 
 from agent.config import (
     PARTIAL_FILL_MAX_POLL_S,
-    WALK_CAP_FRACTION,
-    WALK_CAP_MAX_FRACTION_OF_WIDTH,
-    WALK_CAP_MAX_FRACTION_OF_WIDTH_CLOSING,
     WALK_POLL_INTERVAL_S,
     WALK_REST_S,
     WALK_STEP,
 )
 from agent.execution.broker import BrokerPort, ClockPort
 from agent.schemas.execution import Intent, OrderStatus, RejectCode, SpreadPlan
+from agent.tools.walk_cap import quantize_cent as _quantize_cent
+from agent.tools.walk_cap import walk_cap
 
 logger = logging.getLogger(__name__)
 
-_CENT = Decimal("0.01")
-
 OrderIdSink = Callable[[str, int], Awaitable[None]]   # (order_id, step)
-
-
-def _quantize_cent(x: Decimal) -> Decimal:
-    return x.quantize(_CENT, rounding=ROUND_HALF_UP)
-
-
-def walk_cap(*, mid: Decimal, natural: Decimal, width: float, is_closing: bool) -> Decimal:
-    """Extracted verbatim from _walk (docs/premarket_p1_p3_plan.md P3).
-    Pure: no I/O, no clock. Behaviour is byte-for-byte identical to the inline
-    version it replaces -- see the P0-2/P0-3 rationale in the comments below.
-
-    Bound the cap on the DIRECTION of the order actually being walked (mid's
-    sign), not plan.structure -- plan.structure describes the ORIGINAL trade
-    and is unchanged by build_closing_plan, so closing a credit spread is a
-    debit order with plan.structure still CREDIT. Keying off plan.structure
-    left that closing path completely unbounded (docs/review.md P0-2)."""
-    cap = _quantize_cent(mid + WALK_CAP_FRACTION * (natural - mid))
-    is_debit_order = mid > 0
-    if is_debit_order:
-        # A vertical debit spread can never be worth more than its strike width, so a
-        # debit above the width is an arbitrage-certain loss (audit_report_v2.md §4).
-        # WALK_CAP_FRACTION alone is unbounded when the chain is wide -- clamp it.
-        # A closing order (buying back a credit spread) legitimately costs
-        # close to the full width once deep ITM, so it gets the wider bound.
-        frac = WALK_CAP_MAX_FRACTION_OF_WIDTH_CLOSING if is_closing else WALK_CAP_MAX_FRACTION_OF_WIDTH
-        cap = min(cap, _quantize_cent(Decimal(str(width)) * frac))
-    elif not is_closing:
-        # Opening a credit structure: on a wide chain `natural` can itself be
-        # positive, dragging `cap` across zero and letting the walk fill at a
-        # net DEBIT for a structure that is supposed to collect a credit --
-        # a guaranteed loss regardless of where the market moves
-        # (docs/review.md P0-3). This floor rejects nothing a compliant,
-        # in-band credit spread would ever reach -- it only forbids the sign
-        # flip. Not applied on close: closing a debit spread is expected to
-        # land in credit territory and should not be constrained here.
-        cap = min(cap, Decimal("-0.01"))
-    return cap
 
 
 @dataclass(frozen=True)

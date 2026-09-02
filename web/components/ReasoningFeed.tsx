@@ -21,7 +21,13 @@ const POLL_MS = 15_000;
 // lightweight /decisions endpoint, so it gets its own faster interval
 // instead of dragging the whole page's poll down to match and multiplying
 // Railway API load 14x for it.
-export function ReasoningFeed({ decisions }: { decisions: Decision[] }) {
+export function ReasoningFeed({
+  decisions,
+  walkCapFraction,
+}: {
+  decisions: Decision[];
+  walkCapFraction: number | null;
+}) {
   // null until the first poll lands -- falls back to the SSR-fetched prop
   // until then, and to itself after (the 15s poll is always as fresh or
   // fresher than the page's 60s refresh, so once it's running there's
@@ -58,7 +64,7 @@ export function ReasoningFeed({ decisions }: { decisions: Decision[] }) {
         </TableHeader>
         <TableBody>
           {live.map((d) => (
-            <DecisionCard key={d.id} decision={d} />
+            <DecisionCard key={d.id} decision={d} walkCapFraction={walkCapFraction} />
           ))}
         </TableBody>
       </Table>

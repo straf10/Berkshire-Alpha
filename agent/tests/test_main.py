@@ -2244,6 +2244,55 @@ async def test_maybe_reflect_runs_once_per_session(tmp_path) -> None:
     assert count == 1
 
 
+async def test_maybe_reflect_wires_closed_trade_pnl_into_digest(tmp_path) -> None:
+    """docs/review.md Task 7: _maybe_reflect must query the session's trades
+    (joined on decision_id) and thread them into reflector.digest, not just
+    the decisions rows -- otherwise SessionDigest.closed_trades would always
+    be 0 and the M2 outcome-grounded gate widening would be a dead letter in
+    production regardless of how correct reflector.py's own logic is."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+
+    async with storage_db.connect(db_path) as conn:
+        decision_id = await storage_write.insert_decision(conn, storage_write.DecisionRow(
+            ts_utc="2026-08-28T14:00:00Z", cycle_id="cyc-reflect-lly",
+            session_date="2026-08-28", symbol="LLY", mode="llm", regime="DEBIT",
+            structure="BEAR_PUT_SPREAD", action="ENTER", gate_reason="DEGENERATE_CHAIN",
+            gate_detail="DEGENERATE_CHAIN", observed_value=None, threshold_value=None, qty=4,
+            equity_feed="iex", earnings_armed=True, quant_json="{}", plan_json=None,
+        ))
+        trade_id = await storage_write.insert_trade(conn, storage_write.TradeRow(
+            decision_id=decision_id, ts_utc="2026-08-28T14:05:00Z", symbol="LLY",
+            structure="BEAR_PUT_SPREAD", expiry="2026-09-04", legs_json="[]", qty=4,
+            submitted_limit=Decimal("1.94"), fill_price=Decimal("6.65"), filled_qty=4,
+        ))
+        await storage_write.close_trade(
+            conn, trade_id, closed_at="2026-08-28T20:00:00Z", realized_pnl=Decimal("-671.00"),
+        )
+
+    session = _fixed_session(is_open=False)
+    deps = main_module.Deps(
+        settings=_settings(db_path), clients=FakeClients(), broker=MockBroker([]),
+        clock=_FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc)),
+        feed=__import__("alpaca.data.enums", fromlist=["DataFeed"]).DataFeed.IEX,
+        llm_enabled=False,
+    )
+
+    await main_module._maybe_reflect(deps, session)
+
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute(
+            "SELECT binding_constraint, ok, argument FROM reflections WHERE session_date = '2026-08-28'"
+        )
+        row = await cur.fetchone()
+    assert row is not None
+    # DEGENERATE_CHAIN is denylisted -- still no eligible binding constraint --
+    # but the closed, lossy trade must reach the persisted argument text.
+    assert row[0] == "NONE_ELIGIBLE_ALL_DENYLISTED"
+    assert row[1] == 0  # llm_enabled=False -> ok=False
+    assert row[2] == "reflection unavailable"  # NOT the old "no reflection candidate" text
+
+
 async def test_maybe_reflect_skips_when_budget_exhausted(tmp_path) -> None:
     from agent.config import LLM_DAILY_SPEND_CEILING_USD
     from agent.storage.write import LlmCallRow, insert_llm_call

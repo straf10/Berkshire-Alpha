@@ -98,8 +98,17 @@ def doc_proposition(symbol: str, structure: str, expiry: str) -> str:
 # Day 4 (docs/day4_action_plan.md Step 5).
 REFLECTOR_SYSTEM = """You are reviewing an options trading agent's own decision log for one \
 completed session. You are given a deterministic summary: how many candidates were evaluated, \
-which gate reason blocked the most of them, the range of observed values against that gate's \
-threshold, and how many trades were entered. Argue whether that binding constraint should be \
-LOOSENED, HELD, or TIGHTENED, citing the numbers you were given. A constraint that blocked \
+which gate reason blocked the most of them (or, when every observed gate reason is a denylisted \
+liquidity/execution guardrail, an explicit statement that none is eligible), the range of observed \
+values against that gate's threshold, and how many trades were entered. When at least one trade \
+closed this session, you are also given its realized outcome -- closed trade count, win count, \
+total realized P&L, the worst single trade, and average fill slippage versus mid. Argue whether the \
+binding constraint (or, when none is eligible, the session's execution as a whole) should be \
+LOOSENED, HELD, or TIGHTENED, citing the numbers you were given -- when realized P&L is given, \
+ground your argument in it rather than in rejection counts alone. A constraint that blocked \
 everything is not automatically wrong -- a genuinely poor opportunity set is a valid reason to \
-trade nothing. Respond with JSON only, matching the given schema exactly."""
+trade nothing, and a losing trade is not automatically evidence that a constraint should tighten. \
+You are explicitly told when the binding constraint is a denylisted liquidity/execution guardrail; \
+never argue to loosen one of those, regardless of rejection volume or realized P&L -- these exist \
+because loosening them, once, already cost real money on an illiquid chain. Respond with JSON only, \
+matching the given schema exactly."""
