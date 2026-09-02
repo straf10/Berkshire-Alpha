@@ -7,13 +7,34 @@ See [docs/hackathon.md](docs/hackathon.md) for the full rundown of the challenge
 
 ## What it does
 
-An autonomous options-trading agent that runs against Alpaca's paper trading environment, twice a day, unattended:
+An autonomous options-trading agent that runs against Alpaca's paper trading environment, four scans per session, unattended:
 
-- **Quant screening** — scans a fixed universe (SPY, QQQ, AAPL, MSFT, NVDA, AMD, TSLA, META, AMZN, GOOGL), computes IV/RV, skew, RSI, VWAP deviation, and cross-sectional regimes, and shortlists candidates for credit/debit vertical spreads.
-- **LLM decision layer** (optional, Featherless-hosted Qwen2.5-72B) — quant/news/sentiment analyst agents, a bull/bear debate, a trader that proposes a spread, and a risk-manager vote. Falls back to a deterministic quant-only spine if the LLM is disabled, unavailable, or over its daily spend ceiling.
+- **Quant screening** — scans a 50-name universe (`agent/config.py`'s `UNIVERSE`, ordered by measured 3–7 DTE options-chain liquidity, not market cap), computes IV/RV, skew, RSI, VWAP deviation, and cross-sectional regimes, and shortlists candidates for credit/debit vertical spreads.
+- **LLM decision layer** (optional, Featherless-hosted, four heterogeneous models — see [below](#llm-model-ensemble)) — quant/news analyst agents, a bull/bear debate, a trader that proposes a spread, and a three-persona risk-manager vote. Falls back to a deterministic quant-only spine if the LLM is disabled, unavailable, or over its daily spend ceiling.
 - **Risk gates** — position sizing (Kelly-fraction), max risk per trade/aggregate, portfolio delta/vega limits, drawdown and daily-loss kill switches, earnings blackout — all evaluated before any order is placed.
 - **Execution & management** — walks limit orders to fill via the Alpaca CLI, then manages open spreads: profit target, stop loss, time-based (DTE) exit, assignment reconciliation, and an end-of-competition unwind.
-- **FastAPI backend** persists every decision, LLM call, and trade to SQLite and serves state to a Next.js dashboard.
+- **FastAPI backend** persists every decision, LLM call, and trade to Postgres (Railway; SQLite locally for dev/test) and serves state to a Next.js dashboard, including a walk-timeline chart sourced from the real order-walking code path (not a simulation of it).
+- **Outcome-grounded Reflector** — a fifth LLM stage that runs after each session and reasons over what the agent actually did and what happened, not just what it planned. Advisory-only through the sealed evaluation window (see [Anti-overfitting discipline](#anti-overfitting-discipline) below).
+
+## LLM model ensemble
+
+The decision layer isn't one model wearing different hats — it's a genuinely heterogeneous ensemble, routed per pipeline node (`LLM_NODE_MODELS` in [`agent/config.py`](agent/config.py)):
+
+| Node(s) | Model | Why |
+|---|---|---|
+| `QUANT`, `NEWS` | Qwen2.5-72B-Instruct | Cheap, high-volume extraction — proven reliable at this workload's volume. |
+| `DEBATE_BULL` | DeepSeek-V3.1-Terminus | |
+| `DEBATE_BEAR` | Kimi-K2-Instruct | Deliberately a **different model family** from the Bull. The Bear is not the Bull's own weights re-prompted, so when the two agree, that agreement is evidence rather than an artefact of shared priors. |
+| `TRADER`, `RISK_CONSERVATIVE`, `RISK_NEUTRAL`, `RISK_AGGRESSIVE` | DeepSeek-V3.1-Terminus | Structured, constraint-heavy generation. The three risk personas share **one model on purpose** — they differ only by system prompt, so a per-persona model would confound "the conservative persona vetoed" with "the weaker model vetoed." |
+| `REFLECTOR` | Qwen3-235B-A22B | Offline, latency-tolerant, the longest synthesis step in the pipeline. |
+
+## Anti-overfitting discipline
+
+Trading parameters in `agent/config.py` were frozen ahead of the judged sessions (`docs/preregistration.md`), and every recorded parameter revision that produced the frozen values is logged in `docs/trial_ledger.md` — the trial count that feeds the backtest harness's Deflated Sharpe Ratio calculation. This is a deliberate application of the "locked final test window an iterative loop never touches" discipline to our own tuning process, not just to the strategy it produced.
+
+## Backtest / replay harness
+
+`agent/backtest/` is a historical replay harness (not used by the live agent) that walks the real, unmodified signal and screener logic against a synthetic Black-Scholes options chain — Alpaca has no historical options-chain-with-greeks endpoint. It includes a parameter sweep, a bootstrap P&L resample, a chain-assumption sensitivity sweep, Deflated Sharpe Ratio / Minimum Track Record Length, and a chain-free forward directional test. See `docs/report.md` for the full write-up, including where the harness's own assumptions bias its results and by how much.
 
 ## Status & Demo
 
@@ -23,6 +44,8 @@ Live and trading — agent, risk gates, LLM pipeline, and dashboard are all runn
 - **Agent API (Railway):** https://autonomous-debate-trading-agent-production.up.railway.app
 
 Every push to `main` runs tests (pytest, eslint, `next build`) via GitHub Actions, then auto-deploys the agent to Railway and the dashboard to Vercel. See [docs/deployment.md](docs/deployment.md) for details.
+
+The judged account's live P&L is negative over the sealed window. We're not dressing that up — four sessions is not a statistically meaningful sample either way, and `docs/report.md` audits our own backtest harness and live-session findings in detail, defects included.
 
 ## Judged Account
 
@@ -35,14 +58,15 @@ Every push to `main` runs tests (pytest, eslint, `next build`) via GitHub Action
 
 ```
 agent/
-  agents/      analyst, researcher (debate), risk-team, trader LLM agents + pipeline orchestrator
+  agents/      analyst, researcher (debate), risk-team, trader, reflector LLM agents + pipeline orchestrator
   api/         FastAPI app serving dashboard state
+  backtest/    historical replay harness: synthetic chain, payoff/settlement, DSR/MinTRL, param sweep
   execution/   Alpaca client, broker, order walking, assignment handling
   risk/        gates, sizing, greeks, exits, assignment detection
   schemas/     shared dataclasses (execution, market, LLM)
-  storage/     SQLite read/write layer
+  storage/     Postgres (production) / SQLite (dev, test) read/write layer
   strategy/    regime detection, spread building, ticker screening
-  tools/       market data, news, reddit sentiment, LLM client, quant metrics
+  tools/       market data, news, LLM client, quant metrics
   main.py      entrypoint: trading loop, scan cycles, management ticks
 web/           Next.js dashboard (deployed to Vercel)
 ```
@@ -58,14 +82,14 @@ web/           Next.js dashboard (deployed to Vercel)
 ### Setup
 
 ```bash
-git clone https://github.com/straf10/Alpaca-AI-Trading-Agents-Hackathon.git
-cd Alpaca-AI-Trading-Agents-Hackathon
+git clone https://github.com/straf10/Autonomous-Debate-Trading-Agent.git
+cd Autonomous-Debate-Trading-Agent
 
 python -m venv .venv
 source .venv/bin/activate   # or .venv\Scripts\Activate.ps1 on Windows
 
 pip install -r requirements.txt
-cp .env.example .env        # then fill in your Alpaca (and optionally Featherless/Reddit) keys
+cp .env.example .env        # then fill in your Alpaca (and optionally Featherless) keys
 ```
 
 ### Running
@@ -86,8 +110,12 @@ npm run dev   # http://localhost:3000
 
 ### Tests
 
+Run from the project's own virtualenv (the system Python is missing test-only
+dependencies like `respx`/`asyncpg` and will report false collection errors):
+
 ```bash
-pytest
+./venv/Scripts/python.exe -m pytest -q   # Windows
+./venv/bin/python -m pytest -q           # macOS/Linux
 ```
 
 ## Resources
