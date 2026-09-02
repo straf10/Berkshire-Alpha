@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from decimal import Decimal
 
 import httpx
@@ -7,7 +8,7 @@ import pytest
 import respx
 from pydantic import BaseModel
 
-from agent.config import LLM_BASE_URL
+from agent.config import LLM_BASE_URL, LLM_MODEL_COSTS
 from agent.storage import db as storage_db
 from agent.tools.llm import (
     LlmBudget,
@@ -215,8 +216,8 @@ async def test_missing_usage_estimates_cost(conn) -> None:
 
 
 def test_cost_is_monotone() -> None:
-    low = _cost(100, 20)
-    high = _cost(100, 40)
+    low = _cost(100, 20, "m")
+    high = _cost(100, 40, "m")
     assert high > low
 
 
@@ -224,3 +225,86 @@ def test_extract_json_strips_fence() -> None:
     assert _extract_json('```json\n{"a": 1}\n```') == '{"a": 1}'
     assert _extract_json('{"a": 1}') == '{"a": 1}'
     assert _extract_json('prefix noise {"a": 1} trailing noise') == '{"a": 1}'
+
+
+@respx.mock
+async def test_model_routed_per_node(conn) -> None:
+    route = respx.post(_URL).mock(return_value=httpx.Response(200, json=_openai_response('{"value": 1}')))
+    async with httpx.AsyncClient(base_url=LLM_BASE_URL) as http:
+        client = LlmClient(
+            http, conn, _budget(), model="default-model", api_key="k",
+            node_models={"TRADER": "model-a", "NEWS": "model-b"},
+        )
+        await client.complete_json("test prompt", _Simple, node="TRADER")
+        await client.complete_json("test prompt", _Simple, node="NEWS")
+
+    bodies = [json.loads(call.request.content.decode()) for call in route.calls]
+    assert bodies[0]["model"] == "model-a"
+    assert bodies[1]["model"] == "model-b"
+
+    cur = await conn.execute("SELECT node, model FROM llm_calls ORDER BY id")
+    rows = [tuple(row) for row in await cur.fetchall()]
+    assert rows[0] == ("TRADER", "model-a")
+    assert rows[1] == ("NEWS", "model-b")
+
+
+@respx.mock
+async def test_unrouted_node_falls_back_to_default_model(conn) -> None:
+    route = respx.post(_URL).mock(return_value=httpx.Response(200, json=_openai_response('{"value": 1}')))
+    async with httpx.AsyncClient(base_url=LLM_BASE_URL) as http:
+        client = LlmClient(
+            http, conn, _budget(), model="default-model", api_key="k",
+            node_models={"TRADER": "model-a"},
+        )
+        await client.complete_json("test prompt", _Simple, node="SOME_OTHER_NODE")
+
+    body = json.loads(route.calls[0].request.content.decode())
+    assert body["model"] == "default-model"
+    cur = await conn.execute("SELECT model FROM llm_calls")
+    assert (await cur.fetchone())[0] == "default-model"
+
+
+def test_cost_uses_per_model_price() -> None:
+    models = list(LLM_MODEL_COSTS)
+    cost_a = _cost(1000, 1000, models[0])
+    cost_b = _cost(1000, 1000, models[1])
+    assert cost_a != cost_b
+    # Monotonicity in completion_tokens still holds per-model.
+    for model in models:
+        assert _cost(100, 40, model) > _cost(100, 20, model)
+
+
+@respx.mock
+async def test_json_mode_probe_is_per_model(conn) -> None:
+    route = respx.post(_URL)
+    route.side_effect = [
+        httpx.Response(400, json={"error": "response_format not supported"}),
+        httpx.Response(200, json=_openai_response('{"value": 1}')),
+        httpx.Response(200, json=_openai_response('{"value": 2}')),
+    ]
+    async with httpx.AsyncClient(base_url=LLM_BASE_URL) as http:
+        client = LlmClient(
+            http, conn, _budget(), api_key="k",
+            node_models={"NODE_A": "model-a", "NODE_B": "model-b"},
+        )
+        await client.complete_json("test prompt", _Simple, node="NODE_A")
+        await client.complete_json("test prompt", _Simple, node="NODE_B")
+
+    assert route.call_count == 3
+    assert "response_format" not in route.calls[1].request.content.decode()
+    assert "response_format" in route.calls[2].request.content.decode()
+
+
+@respx.mock
+async def test_failed_call_records_routed_model(conn) -> None:
+    respx.post(_URL).mock(side_effect=httpx.TimeoutException("timed out"))
+    async with httpx.AsyncClient(base_url=LLM_BASE_URL) as http:
+        client = LlmClient(
+            http, conn, _budget(), model="default-model", api_key="k",
+            node_models={"TRADER": "model-a"},
+        )
+        with pytest.raises(LlmUnavailable):
+            await client.complete_json("test prompt", _Simple, node="TRADER")
+
+    cur = await conn.execute("SELECT model FROM llm_calls")
+    assert (await cur.fetchone())[0] == "model-a"

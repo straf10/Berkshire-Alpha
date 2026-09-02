@@ -362,6 +362,39 @@ LLM_SEMAPHORE_LIMIT: Final[int] = 6
 LLM_VALIDATION_RETRIES: Final[int] = 1
 LLM_COST_IN_PER_MTOK: Final[Decimal] = Decimal("0.20")
 LLM_COST_OUT_PER_MTOK: Final[Decimal] = Decimal("0.60")
+# Heterogeneous cognitive-role model ensemble (docs/premarket_p1_p3_plan.md P1):
+# cheap extraction nodes on a cheap model, adversarial/judgment nodes on strong
+# reasoning models. The two debate personas run on DIFFERENT model families
+# deliberately -- the Bear is not the Bull's own weights re-prompted, so
+# agreement between them is evidence rather than an artefact of shared priors.
+LLM_NODE_MODELS: Final[dict[str, str]] = {
+    # Cheap, high-volume extraction -- proven at 100% ok on this workload.
+    "QUANT": "Qwen/Qwen2.5-72B-Instruct",
+    "NEWS": "Qwen/Qwen2.5-72B-Instruct",
+    # Adversarial debate across two DIFFERENT model families: the Bear is not
+    # the Bull's own weights re-prompted, so agreement is evidence rather than
+    # an artefact of shared priors.
+    "DEBATE_BULL": "deepseek-ai/DeepSeek-V3.1-Terminus",
+    "DEBATE_BEAR": "moonshotai/Kimi-K2-Instruct-0905",
+    # Structured, constraint-heavy generation.
+    "TRADER": "deepseek-ai/DeepSeek-V3.1-Terminus",
+    # All three risk personas share ONE model deliberately: the personas differ
+    # by system prompt only, so a per-persona model would confound "conservative
+    # vetoed" with "the weaker model vetoed". Keep the variable isolated.
+    "RISK_CONSERVATIVE": "deepseek-ai/DeepSeek-V3.1-Terminus",
+    "RISK_NEUTRAL": "deepseek-ai/DeepSeek-V3.1-Terminus",
+    "RISK_AGGRESSIVE": "deepseek-ai/DeepSeek-V3.1-Terminus",
+    # Offline, latency-tolerant, longest synthesis of the run.
+    "REFLECTOR": "Qwen/Qwen3-235B-A22B",
+}
+# Per-model prices from Featherless GET /v1/models (probed 2026-09-02, USD/Mtok).
+# LLM_COST_IN/OUT_PER_MTOK stay as the fallback for any model not listed.
+LLM_MODEL_COSTS: Final[dict[str, tuple[Decimal, Decimal]]] = {
+    "Qwen/Qwen2.5-72B-Instruct": (Decimal("0.37"), Decimal("0.40")),
+    "deepseek-ai/DeepSeek-V3.1-Terminus": (Decimal("0.285"), Decimal("1.00")),
+    "moonshotai/Kimi-K2-Instruct-0905": (Decimal("0.60"), Decimal("2.50")),
+    "Qwen/Qwen3-235B-A22B": (Decimal("0.455"), Decimal("1.82")),
+}
 LLM_DAILY_SPEND_CEILING_USD: Final[Decimal] = Decimal("4.00")
 # Day 4 Step 7. Raised 80 -> 400: 4 scans x ~45 calls/scan (S=8, D=4) = ~181
 # calls/session at the widened 50-name universe. 400 is a runaway guard, not
