@@ -380,6 +380,51 @@ async def test_dry_run_prints_llm_line(tmp_path, monkeypatch: pytest.MonkeyPatch
     assert json.loads(quant_json)["analyst_score"] == pytest.approx(0.81)
 
 
+def test_format_trader_line_fallback_proposal_has_no_confidence_score() -> None:
+    """docs/review.md Task 1: a llm-fallback plan's proposal_json comes from
+    spread_builder.build() (agent/agents/pipeline.py's _proposal_json), which
+    has no confidence_score key at all -- unlike a real model proposal
+    (schema at agent/tools/llm.py). _format_trader_line must not KeyError on
+    that shape, and must not fabricate a 0.00 confidence for a deterministic
+    pick."""
+    from agent.agents.pipeline import PipelineArtifacts, PipelineOutcome, ProposalArtifact
+    from agent.schemas.execution import Intent, Leg, Regime, SpreadPlan, Structure
+
+    plan = SpreadPlan(
+        symbol="SPY", structure=Structure.BULL_PUT_SPREAD, regime=Regime.CREDIT,
+        expiry=date(2026, 9, 4), dte=4,
+        legs=(
+            Leg(occ_symbol="SPY260904P00100000", strike=100.0, right="P", side="SELL", ratio_qty=1,
+                intent=Intent.SELL_TO_OPEN, delta=-0.275, vega=0.05, bid=1.0, ask=1.1),
+            Leg(occ_symbol="SPY260904P00097000", strike=97.0, right="P", side="BUY", ratio_qty=1,
+                intent=Intent.BUY_TO_OPEN, delta=-0.10, vega=0.03, bid=0.2, ask=0.3),
+        ),
+        width=3.0, net_mid=Decimal("-0.90"), net_natural=Decimal("-0.75"),
+        max_profit_per_spread=Decimal("90"), max_loss_per_spread=Decimal("210"),
+        p_success=0.72, spot=100.0, short_leg_delta=0.275,
+    )
+    fallback_proposal_json = json.dumps({
+        "source": "spread_builder.build", "fallback_from": "PROPOSAL_INVALID",
+        "underlying": "SPY", "strategy_name": "BULL_PUT_SPREAD",
+        "expiration_date": "2026-09-04",
+        "legs": [
+            {"contract_type": "PUT", "side": "SELL", "strike_price": 100.0, "ratio_qty": 1},
+            {"contract_type": "PUT", "side": "BUY", "strike_price": 97.0, "ratio_qty": 1},
+        ],
+    }, separators=(",", ":"))
+    outcome = PipelineOutcome(
+        symbol="SPY", plan=plan, mode="llm-fallback", reason="OK", analyst_score=0.81, conviction=1.0,
+        artifacts=PipelineArtifacts(
+            proposal_row=ProposalArtifact(proposal_json=fallback_proposal_json, accepted=True, reject_reason=None),
+        ),
+    )
+
+    line = main_module._format_trader_line(outcome)
+
+    assert "n/a" in line
+    assert "conf 0.00" not in line
+
+
 async def test_conviction_reaches_gate(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     """docs/day4_track_ab_plan.md §2.4: outcome.conviction arrives in
     GateContext.conviction unmodified and Phase D applies it as a size
