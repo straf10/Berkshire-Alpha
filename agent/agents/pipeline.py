@@ -25,13 +25,12 @@ from agent.strategy.ticker_screener import ScreenedCandidate
 from agent.tools.llm import LlmPort
 from agent.tools.market_data import ChainCache
 from agent.tools.news import Headline
-from agent.tools.reddit import MentionSignal
 
 
 @dataclass(frozen=True)
 class AnalystArtifact:
     symbol: str
-    analyst: str            # QUANT | NEWS | SENTIMENT
+    analyst: str            # QUANT | NEWS
     ok: bool
     output_json: str | None
     error: str | None
@@ -188,7 +187,7 @@ def _proposal_json(outcome: ProposalOutcome) -> str:
 
 async def run_llm_pipeline(
     llm: LlmPort, candidates: Sequence[ScreenedCandidate], chains: ChainCache,
-    news: Mapping[str, tuple[Headline, ...]], mentions: Mapping[str, MentionSignal],
+    news: Mapping[str, tuple[Headline, ...]],
     account: AccountView, portfolio: PortfolioView, trading_days: frozenset[date],
     *, sem: asyncio.Semaphore, sinks: Mapping[str, list[int]], macro: MacroSnapshot,
 ) -> list[PipelineOutcome]:
@@ -212,7 +211,7 @@ async def run_llm_pipeline(
           top 2) so every name still gets a decisions row.
        Raises LlmUnavailable / LlmBudgetExceeded only; every other failure is
        already isolated to its node by the layers below."""
-    analyst_results = await run_analysts(llm, candidates, news, mentions, sem=sem, sinks=sinks, macro=macro)
+    analyst_results = await run_analysts(llm, candidates, news, sem=sem, sinks=sinks, macro=macro)
     ranked = select_top(analyst_results, candidates)
     ranked_symbols = {r.symbol for r in ranked}
     debated_symbols = {r.symbol for r in ranked if analyst_score(r) >= ANALYST_SCORE_FLOOR}

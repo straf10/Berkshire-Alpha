@@ -79,7 +79,7 @@ _MACRO = MacroSnapshot(
 def _bundle(q: QuantSnapshot, d: RegimeDecision) -> EvidenceBundle:
     return EvidenceBundle(
         symbol=q.symbol, quant=q, regime=d, macro=_MACRO, quant_analyst=None, news_analyst=None,
-        sentiment_analyst=None, headlines=(), mentions=None,
+        headlines=(),
     )
 
 

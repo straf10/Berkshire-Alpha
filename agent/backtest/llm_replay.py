@@ -9,12 +9,9 @@ trader.py on 2026-08-31.
 Options chains are still synthetic Black-Scholes (Alpaca has no historical
 chain-with-greeks endpoint -- same limitation as replay.py). News is REAL,
 date-bounded per simulated session via AlpacaClients.get_news(until=...).
-Reddit sentiment is unavailable for historical dates: agent/tools/reddit.py
-only reads currently-live posts via praw's .new(), and there is no
-historical-by-date query available (Pushshift, which used to backfill this,
-is defunct) -- so `mentions` is always {} here. The pipeline already
-degrades gracefully with no sentiment evidence, exactly as it does on a live
-Reddit outage, so this is a real, supported degrade path, not a hack.
+sentiment_analyst has been retired from run_analysts entirely (Reddit's API
+is closed to us, docs/premarket_p1_p3_plan.md P2), so there is no sentiment
+signal to replay here or live.
 
 Costs real LLM spend (Featherless) against a fresh LlmBudget per simulated
 day, mirroring the live per-session-date ceiling.
@@ -256,7 +253,7 @@ async def run_llm_backtest(
 
                 try:
                     outcomes = await run_llm_pipeline(
-                        llm_client, candidates, chain_map, news_by_symbol, {}, account, portfolio, trading_days,
+                        llm_client, candidates, chain_map, news_by_symbol, account, portfolio, trading_days,
                         sem=sem, sinks=sinks, macro=_MACRO,
                     )
                     outcomes_by_symbol = {o.symbol: o for o in outcomes}

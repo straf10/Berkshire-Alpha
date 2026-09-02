@@ -32,8 +32,6 @@ from agent.config import (
     NEWS_LOOKBACK_H,
     RECONCILE_MAX_CHAIN_HOPS,
     RECONCILE_MAX_S,
-    REDDIT_POST_LIMIT,
-    REDDIT_SUBS,
     UNIVERSE,
     WALK_POLL_INTERVAL_S,
     Settings,
@@ -76,7 +74,6 @@ from agent.tools.llm import LlmBudget, LlmClient, LlmPort, LlmUnavailable, load_
 from agent.tools.market_data import ChainCache, fetch_leg_snapshots, fetch_universe_bars
 from agent.tools.news import Headline, fetch_headlines
 from agent.tools.quant import compute_all
-from agent.tools.reddit import MentionSignal, PrawReddit, mention_signals
 
 logger = logging.getLogger(__name__)
 
@@ -663,16 +660,6 @@ def _build_llm_client(http: httpx.AsyncClient, conn: aiosqlite.Connection, budge
     return LlmClient(http, conn, budget, provider=settings.llm_provider, model=settings.llm_model, api_key=settings.llm_api_key)
 
 
-async def _fetch_reddit(deps: Deps, conn: aiosqlite.Connection) -> dict[str, MentionSignal]:
-    """Reddit is Tier-2 cuttable (plan.md scope ladder): no credentials -> {}
-    without constructing PrawReddit at all, so offline tests never trip
-    conftest's PrawReddit.__init__ block by accident."""
-    if not deps.settings.reddit_client_id:
-        return {}
-    port = PrawReddit(deps.settings.reddit_client_id, deps.settings.reddit_client_secret, deps.settings.reddit_user_agent)
-    return await mention_signals(port, conn, UNIVERSE, subs=REDDIT_SUBS, limit=REDDIT_POST_LIMIT)
-
-
 async def _persist_pipeline_artifacts(conn: aiosqlite.Connection, decision_id: int, artifacts: PipelineArtifacts) -> None:
     """Writes every artifact table AFTER the decisions row exists (FK
     ordering, docs/day3_llm_plan.md S1c/G2), then back-links the llm_calls
@@ -742,8 +729,8 @@ def _format_regime_action_line(regime_decision, plan: SpreadPlan | None) -> str:
 
 
 def _format_analysts_line(outcome: PipelineOutcome) -> str:
-    """docs/day3_llm_plan.md Group 5 DoD block: 'Analysts: quant=.../...  news=...  sentiment=+x.xx(c)  score N.NN'."""
-    quant = news = sentiment = None
+    """docs/day3_llm_plan.md Group 5 DoD block: 'Analysts: quant=.../...  news=...  score N.NN'."""
+    quant = news = None
     for a in outcome.artifacts.analyst_rows:
         if not a.ok or not a.output_json:
             continue
@@ -752,15 +739,11 @@ def _format_analysts_line(outcome: PipelineOutcome) -> str:
             quant = f"{data['iv_rv_interpretation']}/{data['directional_momentum']}"
         elif a.analyst == "NEWS":
             news = data["expected_impact"]
-        elif a.analyst == "SENTIMENT":
-            sentiment = f"{data['sentiment_score']:+.2f}({data['confidence']:.1f})"
     parts = []
     if quant is not None:
         parts.append(f"quant={quant}")
     if news is not None:
         parts.append(f"news={news}")
-    if sentiment is not None:
-        parts.append(f"sentiment={sentiment}")
     parts.append(f"score {outcome.analyst_score:.2f}")
     return f"       Analysts: {'  '.join(parts)}"
 
@@ -825,7 +808,7 @@ def _format_gate_line(gate_decision: GateDecision | None, *, mode: str, budget: 
 async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list[GateDecision]:
     """One entry scan. Order is fixed by data dependency (docs/day2_spine_plan.md
     Group 6, extended by docs/day3_llm_plan.md Group 5 step 8): CLI health ->
-    bars -> chains -> quant -> shortlist -> positions/greeks -> news/reddit ->
+    bars -> chains -> quant -> shortlist -> positions/greeks -> news ->
     LLM pipeline (or quant-only fallback) -> per-candidate gate -> persist
     every candidate (+ LLM artifacts) -> walk approved."""
     cycle_id = str(uuid.uuid4())
@@ -921,45 +904,27 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
         )
         if run_llm_this_cycle:
             since = now_utc - timedelta(hours=NEWS_LOOKBACK_H)
-            # fetch_headlines and _fetch_reddit run concurrently under gather, and
-            # _fetch_reddit also touches `conn` internally -- _timed() below never
-            # touches conn itself, so both tool_calls rows get written sequentially
-            # AFTER the gather resolves instead of racing each other (or racing
-            # _fetch_reddit's own conn use) on the one shared connection.
-            (news_by_symbol, news_latency_ms, news_error), (mentions_by_symbol, reddit_latency_ms, reddit_error) = (
-                await asyncio.gather(
-                    _timed(fetch_headlines(deps.clients, UNIVERSE, since)),
-                    _timed(_fetch_reddit(deps, conn)),
-                )
-            )
+            news_by_symbol, news_latency_ms, news_error = await _timed(fetch_headlines(deps.clients, UNIVERSE, since))
             await storage_write.insert_tool_call(conn, storage_write.ToolCallRow(
                 ts_utc=datetime.now(timezone.utc).isoformat(), tool="NEWS", endpoint="fetch_headlines",
                 ok=news_error is None, latency_ms=news_latency_ms, error=news_error,
             ))
-            await storage_write.insert_tool_call(conn, storage_write.ToolCallRow(
-                ts_utc=datetime.now(timezone.utc).isoformat(), tool="REDDIT", endpoint="mention_signals",
-                ok=reddit_error is None, latency_ms=reddit_latency_ms, error=reddit_error,
-            ))
-            # docs/review.md P1-9: these used to hard-raise, which escapes
+            # docs/review.md P1-9: this used to hard-raise, which escapes
             # scan_cycle entirely -- no decisions row gets written, so
             # `completed` never advances and the identical scan slot repeats
-            # forever, taking the quant-only path down too even though
-            # nothing in scoring actually consumes `mentions` (sentiment_analyst
-            # is retired) and the news analyst already treats no-headlines as
-            # neutral. Degrade instead: a data-source outage should cost this
-            # cycle its news/Reddit signal, not the whole session.
+            # forever, taking the quant-only path down too even though the
+            # news analyst already treats no-headlines as neutral. Degrade
+            # instead: a data-source outage should cost this cycle its news
+            # signal, not the whole session.
             if news_error is not None:
                 logger.error("fetch_headlines failed: %s -- degrading to no news for this cycle", news_error)
                 news_by_symbol = {}
-            if reddit_error is not None:
-                logger.error("_fetch_reddit failed: %s -- degrading to no mention signals for this cycle", reddit_error)
-                mentions_by_symbol = {}
             llm_client = _build_llm_client(deps.http, conn, budget, deps.settings)
             sem = asyncio.Semaphore(LLM_SEMAPHORE_LIMIT)
             sinks: dict[str, list[int]] = {c.snapshot.symbol: [] for c in candidates}
             try:
                 outcomes = await run_llm_pipeline(
-                    llm_client, candidates, chain_cache, news_by_symbol, mentions_by_symbol,
+                    llm_client, candidates, chain_cache, news_by_symbol,
                     account, portfolio, session.trading_days, sem=sem, sinks=sinks, macro=macro_snapshot,
                 )
                 outcomes_by_symbol = {o.symbol: o for o in outcomes}

@@ -48,7 +48,7 @@ export interface AnalystOutput {
   decision_id: number;
   ts_utc: string;
   symbol: string;
-  analyst: string; // SENTIMENT | NEWS | QUANT
+  analyst: string; // NEWS | QUANT
   ok: number;
   output_json: string | null;
   error: string | null;

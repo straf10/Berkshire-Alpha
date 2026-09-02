@@ -315,7 +315,6 @@ async def test_dry_run_prints_llm_line(tmp_path, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(main_module, "select", forced_select)
     monkeypatch.setattr(ticker_screener_module, "select", forced_select)
     monkeypatch.setattr(main_module, "fetch_headlines", lambda *a, **k: _immediate({}))
-    monkeypatch.setattr(main_module, "_fetch_reddit", lambda *a, **k: _immediate({}))
 
     plan = SpreadPlan(
         symbol="SPY", structure=Structure.BULL_PUT_SPREAD, regime=Regime.CREDIT,
@@ -409,7 +408,6 @@ async def test_conviction_reaches_gate(tmp_path, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(main_module, "select", forced_select)
     monkeypatch.setattr(ticker_screener_module, "select", forced_select)
     monkeypatch.setattr(main_module, "fetch_headlines", lambda *a, **k: _immediate({}))
-    monkeypatch.setattr(main_module, "_fetch_reddit", lambda *a, **k: _immediate({}))
 
     plan = SpreadPlan(
         # Strikes taken from the real chain_SPY.json fixture (same pair
@@ -619,7 +617,6 @@ async def _run_llm_scan_with_full_artifacts(tmp_path, monkeypatch: pytest.Monkey
     monkeypatch.setattr(main_module, "select", forced_select)
     monkeypatch.setattr(ticker_screener_module, "select", forced_select)
     monkeypatch.setattr(main_module, "fetch_headlines", lambda *a, **k: _immediate({}))
-    monkeypatch.setattr(main_module, "_fetch_reddit", lambda *a, **k: _immediate({}))
 
     async with storage_db.connect(db_path) as conn:
         call_id = await insert_llm_call(conn, LlmCallRow(

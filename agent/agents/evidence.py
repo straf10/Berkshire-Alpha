@@ -3,12 +3,11 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from agent.schemas.llm import NewsAnalystOutput, QuantAnalystOutput, SentimentAnalystOutput
+from agent.schemas.llm import NewsAnalystOutput, QuantAnalystOutput
 from agent.schemas.market import QuantSnapshot
 from agent.strategy.macro import MacroSnapshot
 from agent.strategy.regime import RegimeDecision
 from agent.tools.news import Headline
-from agent.tools.reddit import MentionSignal
 
 # The DoC protocol is only meaningful if "cited evidence" is checkable. This
 # structure produces both the prompt payload and the citation whitelist, so
@@ -23,9 +22,7 @@ class EvidenceBundle:
     macro: MacroSnapshot                       # deterministic, ALWAYS present (UNAVAILABLE is a valid reading, not None)
     quant_analyst: QuantAnalystOutput | None
     news_analyst: NewsAnalystOutput | None
-    sentiment_analyst: SentimentAnalystOutput | None
     headlines: tuple[Headline, ...]
-    mentions: MentionSignal | None
 
     def keys(self) -> frozenset[str]:
         """Stable citation tokens. Only keys for analysts that actually
@@ -42,8 +39,6 @@ class EvidenceBundle:
             }
         if self.news_analyst is not None:
             ks |= {"news.expected_impact", "news.catalyst"}
-        if self.sentiment_analyst is not None:
-            ks |= {"sentiment.score", "sentiment.velocity"}
         return frozenset(ks)
 
     def to_prompt_json(self) -> str:
@@ -68,7 +63,4 @@ class EvidenceBundle:
         if self.news_analyst is not None:
             d["news.expected_impact"] = self.news_analyst.expected_impact
             d["news.catalyst"] = self.news_analyst.catalyst_summary
-        if self.sentiment_analyst is not None:
-            d["sentiment.score"] = round(self.sentiment_analyst.sentiment_score, 3)
-            d["sentiment.velocity"] = self.sentiment_analyst.mention_velocity_read
         return json.dumps(d, separators=(",", ":"))

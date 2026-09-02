@@ -15,7 +15,6 @@ interface AnalystOutputShape {
   ticker?: string;
   analyst_summary?: string;
   iv_rv_interpretation?: string;
-  sentiment_score?: number;
   expected_impact?: string;
 }
 

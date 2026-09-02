@@ -117,8 +117,8 @@ async def llm_usage(session_date: str | None = None, conn: aiosqlite.Connection 
 @app.get("/tools/usage")
 async def tools_usage(session_date: str | None = None, conn: aiosqlite.Connection = Depends(get_conn)) -> dict[str, Any]:
     """Calls/latency/failures per non-LLM tool (Alpaca market data, Alpaca
-    CLI, News, Reddit) -- the counterpart to /llm/usage for tools that
-    aren't metered per-call, so counts/latency/failure-rate rather than cost."""
+    CLI, News) -- the counterpart to /llm/usage for tools that aren't
+    metered per-call, so counts/latency/failure-rate rather than cost."""
     return await read.tool_usage(conn, session_date)
 
 
@@ -241,7 +241,6 @@ async def agent_settings() -> dict[str, Any]:
             {"name": "Alpaca Trading & Data API", "purpose": "Stock bars, option chains/snapshots, order placement"},
             {"name": "Alpaca CLI", "purpose": "Account/positions/orders read path for the judged account"},
             {"name": "Featherless LLM", "purpose": f"Persona debate & conviction scoring (per-role model ensemble across {len(set(c.LLM_NODE_MODELS.values()))} models)"},
-            {"name": "Reddit", "purpose": f"Sentiment/mention velocity across r/{', r/'.join(c.REDDIT_SUBS)}"},
             {"name": "Alpaca News API", "purpose": "Headlines evidence for LLM prompts"},
             {"name": "Quant engine (internal)", "purpose": "RV/IV/VRP/RSI/VWAP/VWM computations"},
         ],

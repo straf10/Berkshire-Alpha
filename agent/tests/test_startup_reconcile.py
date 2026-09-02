@@ -528,7 +528,6 @@ async def test_mid_walk_restart_reconstructs_filled_position(tmp_path, monkeypat
     monkeypatch.setattr(main_module, "select", forced_select)
     monkeypatch.setattr(ticker_screener_module, "select", forced_select)
     monkeypatch.setattr(main_module, "fetch_headlines", lambda *a, **k: _immediate({}))
-    monkeypatch.setattr(main_module, "_fetch_reddit", lambda *a, **k: _immediate({}))
 
     plan = SpreadPlan(
         symbol="SPY", structure=Structure.BULL_PUT_SPREAD, regime=Regime.CREDIT,

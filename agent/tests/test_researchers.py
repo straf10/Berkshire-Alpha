@@ -42,8 +42,8 @@ def _bundle(*, macro: MacroSnapshot = _MACRO) -> EvidenceBundle:
     decision = RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "test", "TEST", None, None)
     return EvidenceBundle(
         symbol="SPY", quant=_snapshot(), regime=decision, macro=macro,
-        quant_analyst=None, news_analyst=None, sentiment_analyst=None,
-        headlines=(), mentions=None,
+        quant_analyst=None, news_analyst=None,
+        headlines=(),
     )
 
 

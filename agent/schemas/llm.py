@@ -55,17 +55,8 @@ class RiskManagerOutput(BaseModel):
     manager_notes: str
 
 
-# plan.md defines no schema for the sentiment and news analysts -- [NEW],
-# docs/day3_llm_plan.md Group 3, same house style as the five models above.
-
-
-class SentimentAnalystOutput(BaseModel):
-    ticker: str
-    sentiment_score: float = Field(..., ge=-1.0, le=1.0)
-    confidence: float = Field(..., ge=0.0, le=1.0)
-    mention_velocity_read: Literal["SPIKE", "ELEVATED", "NORMAL", "QUIET"]
-    top_themes: List[str] = Field(..., max_length=3)
-    analyst_summary: str
+# plan.md defines no schema for the news analyst -- [NEW],
+# docs/day3_llm_plan.md Group 3, same house style as the other models above.
 
 
 class NewsAnalystOutput(BaseModel):

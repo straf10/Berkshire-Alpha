@@ -17,7 +17,6 @@ from agent.schemas.llm import (
     OptionLegProposal,
     QuantAnalystOutput,
     RiskManagerOutput,
-    SentimentAnalystOutput,
     SpreadProposal,
 )
 from agent.schemas.market import ChainSnapshot, OptionQuote, QuantSnapshot
@@ -26,7 +25,6 @@ from agent.strategy.regime import RegimeDecision
 from agent.strategy.ticker_screener import ScreenedCandidate
 from agent.tools.llm import LlmBudgetExceeded
 from agent.tools.news import Headline
-from agent.tools.reddit import MentionSignal, RedditPost
 
 SESSION_DATE = date(2026, 8, 31)
 EXPIRY = date(2026, 9, 4)
@@ -103,11 +101,6 @@ def _news_out(symbol: str) -> NewsAnalystOutput:
                               impact_horizon_days=3, headline_ids_cited=[], analyst_summary="s")
 
 
-def _sentiment_out(symbol: str) -> SentimentAnalystOutput:
-    return SentimentAnalystOutput(ticker=symbol, sentiment_score=0.0, confidence=0.5,
-                                   mention_velocity_read="NORMAL", top_themes=[], analyst_summary="s")
-
-
 def _debate_node(persona: str, action: str, keys: list[str]) -> DebateNodeOutput:
     return DebateNodeOutput(agent_persona=persona, doc_action=action, evidence_cited=keys,
                              volatility_view="v", rebuttal_argument="r")
@@ -163,8 +156,6 @@ class ScriptedLlm:
             return _quant_out(symbol)
         if node == "NEWS":
             return _news_out(symbol)
-        if node == "SENTIMENT":
-            return _sentiment_out(symbol)
         if node == "DEBATE_BULL":
             return _debate_node("BULL", "COMMIT", ["quant.vrp_ratio", "regime.structure"])
         if node == "DEBATE_BEAR":
@@ -185,7 +176,7 @@ async def test_not_top_candidates_get_not_top_debate_outcome() -> None:
     sinks = {c.snapshot.symbol: [] for c in candidates}
 
     outcomes = await run_llm_pipeline(
-        llm, candidates, chains, {}, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
+        llm, candidates, chains, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
         sem=asyncio.Semaphore(6), sinks=sinks, macro=_MACRO,
     )
     assert len(outcomes) == 6
@@ -219,7 +210,7 @@ async def test_floor_reject_costs_no_debate_calls() -> None:
     news = {UNIVERSE[0]: (headline,)}
 
     outcomes = await run_llm_pipeline(
-        llm, candidates, chains, news, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
+        llm, candidates, chains, news, FakeAccount(), FakePortfolio(), TRADING_DAYS,
         sem=asyncio.Semaphore(6), sinks=sinks, macro=_MACRO,
     )
     assert outcomes[0].reason == "ANALYST_SCORE_BELOW_FLOOR"
@@ -239,7 +230,7 @@ async def test_floor_reject_still_writes_decision() -> None:
     sinks = {UNIVERSE[0]: []}
 
     outcomes = await run_llm_pipeline(
-        llm, candidates, chains, {}, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
+        llm, candidates, chains, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
         sem=asyncio.Semaphore(6), sinks=sinks, macro=_MACRO,
     )
     assert len(outcomes) == 1
@@ -263,7 +254,7 @@ async def test_debate_unanimous_disagree_floors_conviction_but_still_trades() ->
     sinks = {UNIVERSE[0]: []}
 
     outcomes = await run_llm_pipeline(
-        llm, candidates, chains, {}, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
+        llm, candidates, chains, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
         sem=asyncio.Semaphore(6), sinks=sinks, macro=_MACRO,
     )
     assert len(outcomes) == 1
@@ -287,7 +278,7 @@ async def test_pipeline_no_unresolved_drop() -> None:
     sinks = {UNIVERSE[0]: []}
 
     outcomes = await run_llm_pipeline(
-        llm, candidates, chains, {}, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
+        llm, candidates, chains, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
         sem=asyncio.Semaphore(6), sinks=sinks, macro=_MACRO,
     )
     outcome = outcomes[0]
@@ -306,7 +297,7 @@ async def test_risk_veto_stops_before_gate() -> None:
     sinks = {UNIVERSE[0]: []}
 
     outcomes = await run_llm_pipeline(
-        llm, candidates, chains, {}, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
+        llm, candidates, chains, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
         sem=asyncio.Semaphore(6), sinks=sinks, macro=_MACRO,
     )
     assert outcomes[0].reason == "RISK_TEAM_VETO"
@@ -322,7 +313,7 @@ async def test_full_happy_path_produces_plan() -> None:
     sinks = {UNIVERSE[0]: []}
 
     outcomes = await run_llm_pipeline(
-        llm, candidates, chains, {}, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
+        llm, candidates, chains, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
         sem=asyncio.Semaphore(6), sinks=sinks, macro=_MACRO,
     )
     outcome = outcomes[0]
@@ -351,7 +342,7 @@ async def test_trader_failure_falls_back_to_deterministic_strikes() -> None:
     sinks = {UNIVERSE[0]: []}
 
     outcomes = await run_llm_pipeline(
-        llm, candidates, chains, {}, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
+        llm, candidates, chains, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
         sem=asyncio.Semaphore(6), sinks=sinks, macro=_MACRO,
     )
     outcome = outcomes[0]
@@ -383,7 +374,7 @@ async def test_mode_degraded_when_analyst_dropped() -> None:
     news = {UNIVERSE[0]: (headline,)}
 
     outcomes = await run_llm_pipeline(
-        llm, candidates, chains, news, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
+        llm, candidates, chains, news, FakeAccount(), FakePortfolio(), TRADING_DAYS,
         sem=asyncio.Semaphore(6), sinks=sinks, macro=_MACRO,
     )
     assert outcomes[0].mode == "llm-degraded"
@@ -401,7 +392,7 @@ async def test_budget_exceeded_propagates_out_of_pipeline() -> None:
 
     with pytest.raises(LlmBudgetExceeded):
         await run_llm_pipeline(
-            llm, candidates, chains, {}, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
+            llm, candidates, chains, {}, FakeAccount(), FakePortfolio(), TRADING_DAYS,
             sem=asyncio.Semaphore(6), sinks=sinks, macro=_MACRO,
         )
 
@@ -413,7 +404,7 @@ async def test_full_cycle_call_count() -> None:
     exactly 8 (QUANT+NEWS analysts) + 8 (R1 debate) + 4 (trader) + 12 (risk)
     = 32 FakeLlm calls. Every candidate needs a real headline so all 8
     analyst calls actually fire (news_analyst skips the call entirely with
-    no input); `mentions` is passed through but no longer drives any call."""
+    no input)."""
     llm = ScriptedLlm()
     candidates = [_candidate(UNIVERSE[i], score=float(i)) for i in range(4)]
     symbols = [c.snapshot.symbol for c in candidates]
@@ -423,11 +414,9 @@ async def test_full_cycle_call_count() -> None:
         s: (Headline.build(id=f"n{i}", symbol=s, headline="h", source="s", created_at=_TS, summary="s"),)
         for i, s in enumerate(symbols)
     }
-    post = RedditPost(id="p1", subreddit="stocks", title="t", created_utc=_TS, score=1, num_comments=0)
-    mentions = {s: MentionSignal(symbol=s, mentions=1, baseline=1.0, velocity=1.0, posts=(post,)) for s in symbols}
 
     outcomes = await run_llm_pipeline(
-        llm, candidates, chains, news, mentions, FakeAccount(), FakePortfolio(), TRADING_DAYS,
+        llm, candidates, chains, news, FakeAccount(), FakePortfolio(), TRADING_DAYS,
         sem=asyncio.Semaphore(6), sinks=sinks, macro=_MACRO,
     )
     assert len(outcomes) == 4
