@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Protocol, TypeVar
+from typing import Mapping, Protocol, TypeVar
 
 import aiosqlite
 import httpx
@@ -21,6 +21,8 @@ from agent.config import (
     LLM_MAX_CALLS_PER_SESSION,
     LLM_MAX_TOKENS,
     LLM_MODEL,
+    LLM_MODEL_COSTS,
+    LLM_NODE_MODELS,
     LLM_PROVIDER,
     LLM_TEMPERATURE,
     LLM_TIMEOUT_S,
@@ -34,10 +36,13 @@ M = TypeVar("M", bound=BaseModel)
 
 _ERROR_TRACE_MAX_CHARS = 800
 
-# Providers observed not to support response_format={"type":"json_object"} --
-# probed once per process, then skipped for the rest of the session. Not a
-# validation retry (docs/day3_llm_plan.md S2).
-_JSON_MODE_UNSUPPORTED: set[str] = set()
+# (provider, model) pairs observed not to support response_format={"type":
+# "json_object"} -- probed once per process, then skipped for the rest of the
+# session. Not a validation retry (docs/day3_llm_plan.md S2). Keyed on the
+# pair rather than just the provider because one Featherless account now
+# serves many model families, and JSON-mode support differs across them
+# (docs/premarket_p1_p3_plan.md P1).
+_JSON_MODE_UNSUPPORTED: set[tuple[str, str]] = set()
 
 
 class LlmUnavailable(RuntimeError):
@@ -82,11 +87,14 @@ async def load_budget(conn: aiosqlite.Connection, session_date: str) -> LlmBudge
     return LlmBudget(spent_usd=Decimal(str(row[0])), calls=int(row[1]))
 
 
-def _cost(prompt_tokens: int, completion_tokens: int) -> Decimal:
-    """Pure -- doubling completion_tokens strictly increases cost."""
+def _cost(prompt_tokens: int, completion_tokens: int, model: str) -> Decimal:
+    """Pure -- doubling completion_tokens strictly increases cost. Looks up
+    per-model pricing in LLM_MODEL_COSTS, falling back to the flat
+    LLM_COST_IN/OUT_PER_MTOK globals for any model not in the table."""
+    cost_in, cost_out = LLM_MODEL_COSTS.get(model, (LLM_COST_IN_PER_MTOK, LLM_COST_OUT_PER_MTOK))
     return (
-        (Decimal(prompt_tokens) / Decimal(1_000_000)) * LLM_COST_IN_PER_MTOK
-        + (Decimal(completion_tokens) / Decimal(1_000_000)) * LLM_COST_OUT_PER_MTOK
+        (Decimal(prompt_tokens) / Decimal(1_000_000)) * cost_in
+        + (Decimal(completion_tokens) / Decimal(1_000_000)) * cost_out
     )
 
 
@@ -120,16 +128,25 @@ class LlmClient:
     def __init__(
         self, http: httpx.AsyncClient, conn: aiosqlite.Connection, budget: LlmBudget, *,
         provider: str = LLM_PROVIDER, model: str = LLM_MODEL, api_key: str,
+        node_models: Mapping[str, str] | None = None,
     ) -> None:
         """`http` and `conn` are injected: respx needs the transport, and the
         cycle already owns an aiosqlite connection (aiosqlite serialises
-        statements on one connection, so concurrent gather()'d calls are safe)."""
+        statements on one connection, so concurrent gather()'d calls are safe).
+
+        `model` is the fallback for any node not present in `node_models`.
+        `node_models` defaults to the LLM_NODE_MODELS routing table but is
+        injectable so tests can pin a specific model per node."""
         self._http = http
         self._conn = conn
         self._budget = budget
         self._provider = provider
         self._model = model
         self._api_key = api_key
+        self._node_models = dict(node_models if node_models is not None else LLM_NODE_MODELS)
+
+    def _model_for(self, node: str) -> str:
+        return self._node_models.get(node, self._model)
 
     async def complete_json(
         self, prompt: str, schema: type[M], *, node: str,
@@ -158,9 +175,11 @@ class LlmClient:
 
         return await self._attempt(messages, schema, node=node, sink=sink, retry_index=0)
 
-    async def _post(self, messages: list[dict[str, str]], *, use_json_mode: bool) -> tuple[httpx.Response, int]:
+    async def _post(
+        self, messages: list[dict[str, str]], *, model: str, use_json_mode: bool,
+    ) -> tuple[httpx.Response, int]:
         payload: dict = {
-            "model": self._model, "messages": messages,
+            "model": model, "messages": messages,
             "temperature": LLM_TEMPERATURE, "max_tokens": LLM_MAX_TOKENS,
         }
         if use_json_mode:
@@ -172,16 +191,16 @@ class LlmClient:
         return resp, latency_ms
 
     async def _record(
-        self, *, node: str, prompt_tokens: int, completion_tokens: int,
+        self, *, node: str, model: str, prompt_tokens: int, completion_tokens: int,
         latency_ms: int, ok: bool, retry_index: int, sink: list[int] | None,
     ) -> None:
-        cost = _cost(prompt_tokens, completion_tokens)
+        cost = _cost(prompt_tokens, completion_tokens, model)
         self._budget.charge(cost)
         row_id = await storage_write.insert_llm_call(
             self._conn,
             storage_write.LlmCallRow(
                 ts_utc=datetime.now(timezone.utc).isoformat(), node=node, provider=self._provider,
-                model=self._model, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+                model=model, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
                 latency_ms=latency_ms, est_cost_usd=cost, ok=ok, retry_index=retry_index,
             ),
         )
@@ -192,33 +211,36 @@ class LlmClient:
         self, messages: list[dict[str, str]], schema: type[M], *,
         node: str, sink: list[int] | None, retry_index: int,
     ) -> M:
-        use_json = self._provider not in _JSON_MODE_UNSUPPORTED
+        # Resolved once per top-level call; the JSON-mode and validation
+        # retries recurse through _attempt, so they inherit the same model.
+        model = self._model_for(node)
+        use_json = (self._provider, model) not in _JSON_MODE_UNSUPPORTED
         prompt_text = "".join(m["content"] for m in messages)
 
         try:
-            resp, latency_ms = await self._post(messages, use_json_mode=use_json)
+            resp, latency_ms = await self._post(messages, model=model, use_json_mode=use_json)
         except httpx.TimeoutException as e:
             await self._record(
-                node=node, prompt_tokens=_estimate_tokens(prompt_text), completion_tokens=0,
+                node=node, model=model, prompt_tokens=_estimate_tokens(prompt_text), completion_tokens=0,
                 latency_ms=0, ok=False, retry_index=retry_index, sink=sink,
             )
             raise LlmUnavailable(f"timeout on node {node}: {e}") from e
         except httpx.HTTPError as e:
             await self._record(
-                node=node, prompt_tokens=_estimate_tokens(prompt_text), completion_tokens=0,
+                node=node, model=model, prompt_tokens=_estimate_tokens(prompt_text), completion_tokens=0,
                 latency_ms=0, ok=False, retry_index=retry_index, sink=sink,
             )
             raise LlmUnavailable(f"transport error on node {node}: {e}") from e
 
         # JSON-mode negotiation: not a validation retry, does not consume LLM_VALIDATION_RETRIES.
         if resp.status_code == 400 and use_json:
-            _JSON_MODE_UNSUPPORTED.add(self._provider)
-            logger.warning("provider %s rejected response_format -- retrying without JSON mode", self._provider)
+            _JSON_MODE_UNSUPPORTED.add((self._provider, model))
+            logger.warning("provider %s model %s rejected response_format -- retrying without JSON mode", self._provider, model)
             return await self._attempt(messages, schema, node=node, sink=sink, retry_index=retry_index)
 
         if resp.status_code == 429 or resp.status_code >= 500:
             await self._record(
-                node=node, prompt_tokens=_estimate_tokens(prompt_text), completion_tokens=0,
+                node=node, model=model, prompt_tokens=_estimate_tokens(prompt_text), completion_tokens=0,
                 latency_ms=latency_ms, ok=False, retry_index=retry_index, sink=sink,
             )
             raise LlmUnavailable(f"provider error {resp.status_code} on node {node}")
@@ -238,7 +260,7 @@ class LlmClient:
             result = schema.model_validate_json(_extract_json(text))
         except ValidationError as e:
             await self._record(
-                node=node, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+                node=node, model=model, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
                 latency_ms=latency_ms, ok=False, retry_index=retry_index, sink=sink,
             )
             if retry_index >= LLM_VALIDATION_RETRIES:
@@ -251,7 +273,7 @@ class LlmClient:
             return await self._attempt(retry_messages, schema, node=node, sink=sink, retry_index=retry_index + 1)
 
         await self._record(
-            node=node, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+            node=node, model=model, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
             latency_ms=latency_ms, ok=True, retry_index=retry_index, sink=sink,
         )
         return result
