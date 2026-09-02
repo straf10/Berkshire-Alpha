@@ -1233,6 +1233,19 @@ async def _session_decisions(conn: aiosqlite.Connection, session_date: str) -> l
     return [dict(row) for row in await cur.fetchall()]
 
 
+async def _session_trades(conn: aiosqlite.Connection, session_date: str) -> list[dict[str, Any]]:
+    """Trades entered during session_date, via the decisions row that
+    approved them -- trades carries no session_date column of its own.
+    Feeds reflector.digest's outcome block (docs/review.md Task 7); same
+    raw-query convention as _session_decisions above."""
+    cur = await conn.execute(
+        "SELECT t.symbol, t.submitted_limit, t.fill_price, t.realized_pnl, t.closed_at "
+        "FROM trades t JOIN decisions d ON t.decision_id = d.id WHERE d.session_date = ?",
+        (session_date,),
+    )
+    return [dict(row) for row in await cur.fetchall()]
+
+
 def _reflection_row(result: reflector.ReflectionResult) -> storage_write.ReflectionRow:
     d = result.digest
     output = result.output
@@ -1252,7 +1265,8 @@ def _reflection_row(result: reflector.ReflectionResult) -> storage_write.Reflect
         argument=(
             output.argument if output is not None
             else ("every gate rejection this session was against a denylisted (liquidity/execution) "
-                  "guardrail -- no reflection candidate" if d.binding_constraint is None
+                  "guardrail and no trade closed -- no reflection candidate"
+                  if d.binding_constraint is None and d.closed_trades == 0
                   else "reflection unavailable")
         ),
         proposed_change=output.proposed_change if output is not None else None,
@@ -1276,7 +1290,8 @@ async def _maybe_reflect(deps: Deps, session: SessionPlan) -> None:
         rows = await _session_decisions(conn, reflect_date)
         if not rows:
             return
-        d = reflector.digest(rows)
+        trades = await _session_trades(conn, reflect_date)
+        d = reflector.digest(rows, trades)
         budget = await load_budget(conn, reflect_date)
         if not deps.llm_enabled or budget.exhausted or deps.http is None:
             result = reflector.ReflectionResult(digest=d, output=None, ok=False)
