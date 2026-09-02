@@ -458,6 +458,36 @@ async def test_scan_cycle_rejects_entries_when_entries_halted(tmp_path, monkeypa
     assert gate_reason == "REDUCE_ONLY"
 
 
+async def test_entries_halted_session_is_scoped_not_sticky(tmp_path) -> None:
+    """docs/review.md P1-2: unlike the startup_reconcile 'entries_halted' key
+    (sticky, needs an operator to clear it), the post-fill risk-breach halt
+    writes 'entries_halted_session' = the session_date that tripped it, and
+    _entries_halted must only honour it for THAT session -- ordinary
+    credit-walk slippage must not silently disable entries for the rest of
+    the competition once the session rolls over."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+
+    async with storage_db.connect(db_path) as conn:
+        await storage_write.put_state(conn, "entries_halted_session", "2026-09-02")
+
+        assert await main_module._entries_halted(conn, "2026-09-02") is True
+        assert await main_module._entries_halted(conn, "2026-09-03") is False
+
+
+async def test_entries_halted_ors_sticky_and_session_scoped_keys(tmp_path) -> None:
+    """The sticky startup_reconcile halt must still block regardless of
+    session_date -- session-scoping only applies to the newer key."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+
+    async with storage_db.connect(db_path) as conn:
+        await storage_write.put_state(conn, "entries_halted", True)
+
+        assert await main_module._entries_halted(conn, "2026-09-02") is True
+        assert await main_module._entries_halted(conn, "2026-09-03") is True
+
+
 class _SimulatedCrash(BaseException):
     """Deliberately NOT an Exception subclass -- must escape walk_to_fill's
     own bare `except Exception`, exactly as a kill -9 would."""

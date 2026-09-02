@@ -48,7 +48,7 @@ from agent.execution.order_manager import walk_to_fill
 from agent.risk.assignment import AssignmentEvent, AssignmentStatus, detect_assignments
 from agent.risk.exits import evaluate_exit
 from agent.risk.gates import GateContext, GateDecision, evaluate
-from agent.risk.greeks import aggregate, build_exposures
+from agent.risk.greeks import aggregate, build_exposures, marginal
 from agent.schemas.execution import (
     ALPACA_STATUS_MAP,
     STRUCTURE_IS_CREDIT,
@@ -153,6 +153,18 @@ async def _read_state_value(conn: aiosqlite.Connection, key: str) -> Any | None:
     return json.loads(row[0]) if row is not None else None
 
 
+async def _entries_halted(conn: aiosqlite.Connection, session_date: str) -> bool:
+    """docs/review.md P1-2. "entries_halted" (startup_reconcile's unconfirmed-
+    position fail-safe) is sticky by design -- see the comment at its write
+    site. "entries_halted_session" (the post-fill risk-breach fail-safe) is
+    scoped to the session that tripped it, so it cannot silently persist into
+    a later session the way the old shared key did."""
+    if bool(await _read_state_value(conn, "entries_halted") or False):
+        return True
+    halted_session = await _read_state_value(conn, "entries_halted_session")
+    return halted_session == session_date
+
+
 async def _completed_scan_count(conn: aiosqlite.Connection, session_date: str) -> int:
     cur = await conn.execute("SELECT COUNT(DISTINCT cycle_id) FROM decisions WHERE session_date = ?", (session_date,))
     row = await cur.fetchone()
@@ -168,7 +180,13 @@ def _max_loss_from_fill(plan: SpreadPlan, fill_price: Decimal) -> Decimal:
     f = Decimal(str(fill_price))
     w = Decimal(str(plan.width))
     if STRUCTURE_IS_CREDIT[plan.structure]:
-        return (w - abs(f)) * 100
+        # Signed, not abs() (docs/review.md P1-1): a credit fill is normally
+        # negative (f < 0), so w - abs(f) == w + f and this is a no-op change
+        # for the common case. But a credit structure walked past zero into a
+        # net debit (f > 0, see the P0-3 zero-floor bug) has true max loss
+        # w + f, not w - f -- abs() understated it by 2*f (17% on the LLY-class
+        # repro: $455 reported vs $545 true on a $5-wide spread filled +0.45).
+        return (w + f) * 100
     return f * 100
 
 
@@ -875,7 +893,7 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
         # the one read site the gate actually consults.
         reduce_only = (
             bool(await _read_state_value(conn, "reduce_only") or False)
-            or bool(await _read_state_value(conn, "entries_halted") or False)
+            or await _entries_halted(conn, session.session_date.isoformat())
         )
         now_utc = deps.clock.now()
         past_entry_cutoff = now_utc >= session.cutoff_utc
@@ -922,10 +940,20 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
                 ts_utc=datetime.now(timezone.utc).isoformat(), tool="REDDIT", endpoint="mention_signals",
                 ok=reddit_error is None, latency_ms=reddit_latency_ms, error=reddit_error,
             ))
+            # docs/review.md P1-9: these used to hard-raise, which escapes
+            # scan_cycle entirely -- no decisions row gets written, so
+            # `completed` never advances and the identical scan slot repeats
+            # forever, taking the quant-only path down too even though
+            # nothing in scoring actually consumes `mentions` (sentiment_analyst
+            # is retired) and the news analyst already treats no-headlines as
+            # neutral. Degrade instead: a data-source outage should cost this
+            # cycle its news/Reddit signal, not the whole session.
             if news_error is not None:
-                raise RuntimeError(f"fetch_headlines failed: {news_error}") from None
+                logger.error("fetch_headlines failed: %s -- degrading to no news for this cycle", news_error)
+                news_by_symbol = {}
             if reddit_error is not None:
-                raise RuntimeError(f"_fetch_reddit failed: {reddit_error}") from None
+                logger.error("_fetch_reddit failed: %s -- degrading to no mention signals for this cycle", reddit_error)
+                mentions_by_symbol = {}
             llm_client = _build_llm_client(deps.http, conn, budget, deps.settings)
             sem = asyncio.Semaphore(LLM_SEMAPHORE_LIMIT)
             sinks: dict[str, list[int]] = {c.snapshot.symbol: [] for c in candidates}
@@ -954,6 +982,17 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
                 # output must never be able to stop the deterministic spine
                 # by any other path either -- degrade to quant-only instead.
                 logger.exception("LLM pipeline raised an unexpected exception -- degrading to quant-only for this cycle")
+
+        # docs/review.md P1-8: portfolio/open_underlyings are a cycle-start
+        # snapshot, so a cycle that approves several candidates in a row (up
+        # to SHORTLIST_MAX) used to have every one of them see the SAME stale
+        # counts -- MAX_CONCURRENT_POSITIONS and the portfolio delta/vega caps
+        # could not fire against fills made earlier in this same cycle.
+        # aggregate_risk was already updated in-loop; these two mirror that
+        # pattern with a running copy fed into GateContext below, updated
+        # after every fill via greeks.marginal().
+        running_portfolio = portfolio
+        running_open_underlyings = open_underlyings
 
         for q in snapshots:
             regime_decision = select(q, assigned_regimes.get(q.symbol, Regime.NO_TRADE), skew_thresh, macro_tuning.vwm_bar)
@@ -1000,10 +1039,10 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
                         chain_symbols = chain.symbols() if chain is not None else frozenset()
                         ctx = GateContext(
                             equity=account.equity, buying_power=buying_power, day_pnl_pct=day_pnl_pct,
-                            drawdown_pct=drawdown_pct, open_position_keys=portfolio.position_keys,
-                            open_underlyings=open_underlyings,
+                            drawdown_pct=drawdown_pct, open_position_keys=running_portfolio.position_keys,
+                            open_underlyings=running_open_underlyings,
                             aggregate_defined_risk=aggregate_risk,
-                            portfolio=portfolio, session_date=session.session_date,
+                            portfolio=running_portfolio, session_date=session.session_date,
                             past_entry_cutoff=past_entry_cutoff, reduce_only=reduce_only,
                             chain_symbols=chain_symbols, earnings_armed=earnings_armed,
                             llm_budget_exhausted=budget.exhausted,
@@ -1085,22 +1124,66 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
                     await storage_write.update_trade_order_id(conn, trade_id, order_id=order_id, step=step)
 
                 result = await walk_to_fill(deps.broker, plan, qty_val, clock=deps.clock, on_order_id=_sink)
-                if result.filled_qty and result.fill_price is not None:
+                if result.filled_qty:
                     # docs/audit_report_v2.md §6/Task 3: recompute risk from the
                     # ACTUAL fill, not the pre-walk plan -- plan.max_loss_per_spread
                     # is derived from net_mid and is stale the moment the walk
                     # moves the fill off mid (trade 8, LLY: gated on $194/spread,
                     # true post-fill risk was $665/spread, a 3.43x understatement).
-                    realized_max_loss = _max_loss_from_fill(plan, result.fill_price)
-                    await storage_write.update_trade_result(conn, trade_id, result, max_loss_per_spread=realized_max_loss)
+                    if result.fill_price is not None:
+                        realized_max_loss = _max_loss_from_fill(plan, result.fill_price)
+                        await storage_write.update_trade_result(conn, trade_id, result, max_loss_per_spread=realized_max_loss)
+                    else:
+                        # docs/review.md P1-5: a filled order with no reported
+                        # fill_price (Alpaca hasn't populated filled_avg_price
+                        # yet at poll time) used to contribute ZERO to
+                        # aggregate_risk -- worse than the pre-Task-3 behaviour,
+                        # which at least booked the modelled amount. Fall back
+                        # to the pre-walk estimate rather than dropping it.
+                        realized_max_loss = plan.max_loss_per_spread
+                        logger.warning(
+                            "%s %s filled %d with fill_price=None -- falling back to pre-walk "
+                            "max_loss_per_spread %s for risk accounting",
+                            plan.symbol, plan.structure, result.filled_qty, realized_max_loss,
+                        )
+                        await storage_write.update_trade_result(conn, trade_id, result)
                     aggregate_risk += realized_max_loss * result.filled_qty
+
+                    # docs/review.md P1-8: fold this fill into the running
+                    # portfolio state so the NEXT candidate in this same cycle
+                    # sees it -- both MAX_CONCURRENT_POSITIONS/MAX_POSITIONS_
+                    # PER_UNDERLYING (via open_position_keys/open_underlyings)
+                    # and the portfolio delta/vega caps (via `portfolio`) are
+                    # read from GateContext, which is now built from these.
+                    delta_add, vega_add = marginal(plan, result.filled_qty)
+                    new_delta_dollars = running_portfolio.delta_dollars + delta_add
+                    new_vega_dollars = running_portfolio.vega_dollars + vega_add
+                    running_portfolio = dataclasses.replace(
+                        running_portfolio,
+                        delta_dollars=new_delta_dollars,
+                        vega_dollars=new_vega_dollars,
+                        delta_breached=abs(new_delta_dollars) > running_portfolio.delta_limit,
+                        vega_breached=abs(new_vega_dollars) > running_portfolio.vega_limit,
+                        position_keys=running_portfolio.position_keys | {(plan.symbol, plan.expiry)},
+                    )
+                    running_open_underlyings = running_open_underlyings | {plan.symbol}
+
                     if realized_max_loss * result.filled_qty > Decimal(str(MAX_RISK_PER_TRADE_PCT)) * account.equity:
                         logger.error(
                             "POST-FILL RISK BREACH %s %s: %s x %d = %s exceeds %.0f%% of equity %s -- halting entries",
                             plan.symbol, plan.structure, realized_max_loss, result.filled_qty,
                             realized_max_loss * result.filled_qty, MAX_RISK_PER_TRADE_PCT * 100, account.equity,
                         )
-                        await storage_write.put_state(conn, "entries_halted", True)
+                        # docs/review.md P1-2: scoped to the session that
+                        # tripped it, unlike startup_reconcile's sticky
+                        # "entries_halted" -- ordinary credit-walk slippage on
+                        # a spread sized close to the risk ceiling is enough
+                        # to cross MAX_RISK_PER_TRADE_PCT, and that must not
+                        # silently disable entries for the rest of the
+                        # competition. A 1.25x tolerance band absorbs a
+                        # rounding-scale breach without halting.
+                        if realized_max_loss * result.filled_qty > Decimal("1.25") * Decimal(str(MAX_RISK_PER_TRADE_PCT)) * account.equity:
+                            await storage_write.put_state(conn, "entries_halted_session", session.session_date.isoformat())
                 else:
                     await storage_write.update_trade_result(conn, trade_id, result)
 
@@ -1257,7 +1340,7 @@ def _next_action(session: SessionPlan, now_utc: datetime, completed: int) -> tup
 
 async def _publish_status(conn: aiosqlite.Connection, deps: Deps, session: SessionPlan, now_utc: datetime, completed: int) -> None:
     label, at_utc = _next_action(session, now_utc, completed)
-    entries_halted = bool(await _read_state_value(conn, "entries_halted") or False)
+    entries_halted = await _entries_halted(conn, session.session_date.isoformat())
     await storage_write.put_state(conn, "status", {
         "live": not deps.settings.dry_run,
         "llm_enabled": deps.llm_enabled,

@@ -84,6 +84,26 @@ Three separate problems stacked up when deploying manually from the repo after p
 **Net effect:** manual redeploys after pulling collaborator commits need, in order: (a) HEAD
 authored/committed by a verified identity, (b) run from `web/`, not the repo root.
 
+## Clearing an `entries_halted` kill switch
+
+Two independent keys in the `agent_state` table can block new entries; `/status` ORs both
+into the published `entries_halted` field, so it can't distinguish them from the dashboard
+alone — check the DB directly:
+
+- **`entries_halted`** — set by `startup_reconcile`'s unconfirmed-position fail-safe
+  (`main.py`). Sticky by design: it must survive until an operator confirms the position and
+  clears it by hand, since the API stays GET-only. Clear with:
+  `DELETE FROM agent_state WHERE key = 'entries_halted';` against the Railway Postgres.
+- **`entries_halted_session`** — set by the post-fill risk-breach fail-safe (docs/review.md
+  P1-2) when a filled trade's actual risk, recomputed from the fill price, exceeds
+  `1.25 x MAX_RISK_PER_TRADE_PCT` of equity. Scoped to the session date that tripped it (the
+  value stored is that `session_date`), so it stops blocking entries on its own once the next
+  session starts — no manual clear needed in the ordinary case. To clear it early anyway:
+  `DELETE FROM agent_state WHERE key = 'entries_halted_session';`
+
+Before any live session, confirm neither key is set to a value that would (still) apply:
+`SELECT key, value_json FROM agent_state WHERE key IN ('entries_halted', 'entries_halted_session');`
+
 ## Incident: stale `ALPACA_API_KEY` silently halted live trading (found + fixed 31 Aug)
 
 `ALPACA_API_KEY`/`ALPACA_SECRET_KEY` (the Alpaca CLI's credentials) held a **different**
