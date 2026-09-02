@@ -8,8 +8,12 @@ unmodified agent/strategy/spread_builder.build(). Models payoff-at-expiry with
 a fixed slippage haircut (payoff.py).
 
 A signal-layer sanity check, NOT a claim about live returns: the chain is
-model-generated, not observed, and no risk/position-sizing gates from
-agent/risk/ run here -- every ENTER decision is traded as one spread.
+model-generated, not observed, no risk/position-sizing gates from agent/risk/
+run here (every ENTER decision is traded as one spread), and payoff.settle()
+is payoff-AT-EXPIRY only -- none of PROFIT_TARGET_PCT_OF_MAX,
+CREDIT_STOP_LOSS_PCT/DEBIT_STOP_LOSS_PCT, or DTE_FORCE_CLOSE (agent/config.py)
+are modeled, so this measures a hold-to-expiry variant the live agent never
+runs (docs/report.md's Limitations section).
 
 Usage:
     python -m agent.backtest.replay --start 2026-03-01 --end 2026-08-31
@@ -240,6 +244,14 @@ def _parse_args() -> argparse.Namespace:
         "--param-sweep", action="store_true",
         help="sweep VWM_Z_STRONG x CROSS_SECTION_N instead of a single run, writes sweep.csv + heatmap.html to --out-dir",
     )
+    parser.add_argument(
+        "--slippage-sweep", action="store_true",
+        help=(
+            "sweep CROSS_SECTION_N x slippage_pct at the live VWM_Z_STRONG (docs/report.md's "
+            "slippage sensitivity re-run) -- writes one sweep_slippage_<pct>.csv per slippage "
+            "level to --out-dir, same 7-column schema as --param-sweep's sweep.csv"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -350,6 +362,56 @@ async def _run_param_sweep(
 
     html_path = _write_heatmap_report(cells, out_dir, debit_starved=debit_starved)
     print(f"heatmap.html written to {html_path}")
+
+
+# Slippage sensitivity re-run (docs/report.md's parameter-sweep section): the
+# backtest's entry fill (net_natural, already the worst of the two crossed
+# quotes -- ask on BUY legs, bid on SELL legs) is degraded a further
+# BACKTEST_SLIPPAGE_PCT=0.10 on top of that. This sweeps CROSS_SECTION_N (the
+# one axis --param-sweep proved is a real read, since VWM_Z_STRONG's column
+# is flat -- DEBIT is structurally unreachable, see debit_starved above) at
+# slippage_pct in {0.00, 0.05, 0.10} to check whether sweep.csv's negative
+# P&L is a fill-model artifact rather than a real negative edge.
+_SLIPPAGE_SENSITIVITY_PCTS = (Decimal("0.00"), Decimal("0.05"), Decimal("0.10"))
+
+
+async def _run_slippage_sweep(
+    clients: AlpacaClients, universe: tuple[str, ...], start: date, end: date, out_dir: str,
+) -> None:
+    print(f"\nslippage sensitivity sweep (CROSS_SECTION_N x slippage_pct), {start} -> {end}")
+    print(f"vwm_z_strong held at the live value {_LIVE_VWM_Z_STRONG} -- proven flat by --param-sweep's grid")
+
+    data = await _load_market_data(clients, universe, start, end)
+    os.makedirs(out_dir, exist_ok=True)
+
+    for slip in _SLIPPAGE_SENSITIVITY_PCTS:
+        cells: list[_SweepCell] = []
+        for n in _SWEEP_CROSS_SECTION_N:
+            trades = _simulate(data, cross_section_n=n, vwm_z_strong=_LIVE_VWM_Z_STRONG, slippage_pct=slip)
+            total_pnl = sum(t.realized_pnl for t in trades)
+            wins = sum(1 for t in trades if t.realized_pnl > 0)
+            win_rate = wins / len(trades) if trades else 0.0
+            cell = _SweepCell(
+                vwm_z_strong=_LIVE_VWM_Z_STRONG, cross_section_n=n, n_trades=len(trades), total_pnl=total_pnl,
+                win_rate=win_rate, sharpe=payoff.sharpe_ratio(trades), max_drawdown=payoff.max_drawdown(trades),
+                debit_trades=sum(1 for t in trades if t.regime == Regime.DEBIT),
+            )
+            cells.append(cell)
+            print(
+                f"  slippage={slip} cross_section_n={n}: {cell.n_trades} trades, total_pnl=${cell.total_pnl:,.2f}, "
+                f"win_rate={cell.win_rate:.2%}, sharpe={cell.sharpe:.3f}, max_drawdown=${cell.max_drawdown:,.2f}"
+            )
+
+        csv_path = os.path.join(out_dir, f"sweep_slippage_{slip}.csv")
+        with open(csv_path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["vwm_z_strong", "cross_section_n", "n_trades", "total_pnl", "win_rate", "sharpe", "max_drawdown"])
+            for c in cells:
+                w.writerow([
+                    c.vwm_z_strong, c.cross_section_n, c.n_trades,
+                    round(c.total_pnl, 2), round(c.win_rate, 4), round(c.sharpe, 4), round(c.max_drawdown, 2),
+                ])
+        print(f"  {csv_path} written")
 
 
 def _diverging_color(value: float, max_abs: float, dark: bool) -> str:
@@ -551,6 +613,10 @@ async def _amain() -> None:
 
     if args.param_sweep:
         await _run_param_sweep(clients, tuple(args.universe), start, end, args.out_dir)
+        return
+
+    if args.slippage_sweep:
+        await _run_slippage_sweep(clients, tuple(args.universe), start, end, args.out_dir)
         return
 
     trades = await run_replay(clients, tuple(args.universe), start, end)
