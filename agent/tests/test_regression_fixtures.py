@@ -69,6 +69,109 @@ def _state(order_id: str, status: OrderStatus, *, filled_qty: int = 0, fill_avg_
                        total_qty=1, fill_avg_price=fill_avg_price, reject_code=None, reject_message=None)
 
 
+def _closing_leg(side: str, strike: float, right: str, delta: float) -> Leg:
+    intent = Intent.BUY_TO_CLOSE if side == "BUY" else Intent.SELL_TO_CLOSE
+    return Leg(occ_symbol=f"TST260904{right}{int(strike*1000):08d}", strike=strike, right=right, side=side,
+               ratio_qty=1, intent=intent, delta=delta, vega=0.05, bid=1.0, ask=1.1)
+
+
+def _closing_plan(structure: Structure, width: float, mid: str, natural: str) -> SpreadPlan:
+    """A CLOSING order for a credit spread, shaped as build_closing_plan
+    (execution/exits.py) actually builds it: every leg's side/intent flipped
+    to *_TO_CLOSE, plan.structure left UNCHANGED at the original (credit)
+    structure. net_mid/net_natural are positive here -- buying back a credit
+    spread is a debit order."""
+    right = "C" if structure in (Structure.BEAR_CALL_SPREAD, Structure.BULL_CALL_SPREAD) else "P"
+    legs = (
+        _closing_leg("BUY", 100.0, right, 0.30),
+        _closing_leg("SELL", 100.0 - width if right == "P" else 100.0 + width, right, 0.10),
+    )
+    return SpreadPlan(
+        symbol="TST", structure=structure, regime=Regime.CREDIT, expiry=EXPIRY, dte=0,
+        legs=legs, width=width, net_mid=Decimal(mid), net_natural=Decimal(natural),
+        max_profit_per_spread=Decimal("1"), max_loss_per_spread=Decimal("0"),
+        p_success=0.0, spot=100.0, short_leg_delta=0.0,
+    )
+
+
+# ---------------------------------------------------------------------------
+# P0-2 (docs/review.md) -- closing a credit spread is a debit order, but
+# plan.structure is still CREDIT (build_closing_plan carries it through
+# unchanged). Keying the walk-cap clamp off plan.structure left this path
+# completely unbounded -- reproduced live at a $6.05 fill on a $5.00 width.
+# The fix keys off the order's actual direction (net_mid's sign) and gives a
+# closing debit order its own, wider bound (width itself, not 0.60*width --
+# a deep-ITM close legitimately costs close to the full width).
+# ---------------------------------------------------------------------------
+async def test_p0_2_closing_credit_spread_walk_bounded_by_width() -> None:
+    plan = _closing_plan(Structure.BULL_PUT_SPREAD, width=5.00, mid="1.60", natural="8.00")
+    broker = MockBroker([_state("o1", OrderStatus.NEW)])  # never fills -- repeats NEW
+    result = await walk_to_fill(broker, plan, 5, clock=FakeClock())
+    assert result.status == "UNFILLED_REJECT"
+    assert result.final_limit is not None
+    # Bounded at width (5.00), not left unbounded (old cap would be
+    # 1.60+0.70*6.40=6.08) and not over-clamped to the OPENING bound
+    # (0.60*width=3.00), which would strand a real deep-ITM close.
+    assert result.final_limit <= Decimal("5.00")
+    assert result.final_limit > Decimal("3.00")
+
+
+# ---------------------------------------------------------------------------
+# P0-3 (docs/review.md) -- reproduced live case: CREDIT entry
+# (BULL_PUT_SPREAD), width 5.00, mid -2.00, natural +1.50. The old cap
+# (-2.00 + 0.70*3.50 = +0.45) let the walk fill at a net DEBIT for a
+# structure supposed to collect a credit -- an arbitrage-certain loss before
+# the market even moves. The fix floors the cap at -0.01 so the walk can
+# approach zero but can never cross it.
+# ---------------------------------------------------------------------------
+async def test_p0_3_credit_open_never_crosses_to_debit() -> None:
+    plan = _plan(Structure.BULL_PUT_SPREAD, is_credit=True, width=5.00, mid="-2.00", natural="1.50", short_delta=0.275)
+    broker = MockBroker([_state("o1", OrderStatus.NEW)])  # never fills -- repeats NEW
+    result = await walk_to_fill(broker, plan, 5, clock=FakeClock())
+    assert result.status == "UNFILLED_REJECT"
+    assert result.final_limit is not None
+    assert result.final_limit <= Decimal("-0.01")
+
+
+# ---------------------------------------------------------------------------
+# P0-5 (docs/review.md) -- a proposal with two BUY legs is schema-valid
+# (SpreadProposal.legs allows it; OptionLegProposal.side is just
+# Literal["BUY","SELL"]). The delta-band block's bare `next(l for l in
+# p.legs if l.side == "SELL")` used to raise StopIteration on this shape,
+# which escapes validate_proposal -> propose() -> the LLM pipeline and
+# aborts the entire scan cycle (no decisions row written, so the identical
+# slot repeats forever). Must return STRUCTURE_MISMATCH instead.
+# ---------------------------------------------------------------------------
+def test_p0_5_two_buy_legs_returns_structure_mismatch_not_raise() -> None:
+    from agent.agents.trader import ProposalFailure, validate_proposal
+    from agent.schemas.llm import OptionLegProposal, SpreadProposal
+
+    contracts = (
+        OptionQuote(occ_symbol="TST260904P00100000", underlying="TST", expiry=EXPIRY, strike=100.0, right="P",
+                    bid=1.0, ask=1.1, delta=-0.275, gamma=0.01, theta=-0.01, vega=0.05, iv=0.2),
+        OptionQuote(occ_symbol="TST260904P00097000", underlying="TST", expiry=EXPIRY, strike=97.0, right="P",
+                    bid=0.2, ask=0.3, delta=-0.10, gamma=0.01, theta=-0.01, vega=0.03, iv=0.2),
+    )
+    chain = ChainSnapshot(underlying="TST", fetched_at=datetime(2026, 8, 28, tzinfo=timezone.utc), contracts=contracts)
+    q = QuantSnapshot(
+        symbol="TST", session_date=date(2026, 8, 31), spot=100.0, rv_20=0.15, iv_atm=0.20,
+        vrp_ratio=1.4, skew_abs=6.0, vwap=100.0, vwap_dev_pct=0.0, rsi=50.0, vwm=0.0,
+        vwm_z=0.0, target_expiry=EXPIRY, dte=4, data_ok=True, drop_reason=None,
+    )
+    d = RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "test", "TEST", None, None)
+    proposal = SpreadProposal(
+        underlying="TST", strategy_name="bull put spread", expiration_date="2026-09-04",
+        legs=[
+            OptionLegProposal(contract_type="PUT", side="BUY", strike_price=100.0, ratio_qty=1),
+            OptionLegProposal(contract_type="PUT", side="BUY", strike_price=97.0, ratio_qty=1),
+        ],
+        confidence_score=0.8, reasoning="malformed -- two BUY legs, no SELL leg",
+    )
+    trading_days = frozenset({date(2026, 8, 31), date(2026, 9, 2), date(2026, 9, 3), date(2026, 9, 4)})
+    failure = validate_proposal(proposal, q, d, chain, trading_days)
+    assert failure == ProposalFailure.STRUCTURE_MISMATCH
+
+
 # ---------------------------------------------------------------------------
 # Trade 4 -- NVDA BULL_CALL_SPREAD, debit, width 2.50, mid 1.49, natural 1.51.
 # No-regression case: walk cap is min(relative cap, width*0.6=1.50) = 1.50,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -13,6 +14,8 @@ from alpaca.data.timeframe import TimeFrame
 from agent.config import DEGENERATE_CHAIN_MAX_DROP, DTE_MAX, DTE_MIN, MAX_QUOTE_SPREAD_PCT, SEMAPHORE_LIMIT
 from agent.execution.alpaca_client import AlpacaClients
 from agent.schemas.market import ChainSnapshot, DailyBar, MinuteBar, OptionQuote
+
+logger = logging.getLogger(__name__)
 
 _OCC_RE = re.compile(r"^([A-Z]{1,6})(\d{2})(\d{2})(\d{2})([CP])(\d{8})$")
 
@@ -126,9 +129,16 @@ async def fetch_session_minute_bars(
     }
 
 
-def _is_usable(snap: Any) -> bool:
+def _is_priceable(snap: Any) -> bool:
     """Drop contracts with degenerate data. plan.md: an all-zero greeks block or
-    null IV is a realistic silent-failure mode, not a hypothetical one."""
+    null IV is a realistic silent-failure mode, not a hypothetical one.
+
+    Deliberately has no width check: this predicate is used for both chain
+    intake and pricing legs of positions we already hold. A quote must never
+    be dropped for being wide once we own it -- otherwise exit_tick cannot
+    price the position, evaluate_exit never runs, and the position becomes
+    invisible to the risk gates. See docs/review.md P0-1.
+    """
     iv = snap.implied_volatility
     if iv is None or iv <= 0:
         return False
@@ -138,11 +148,26 @@ def _is_usable(snap: Any) -> bool:
     q = snap.latest_quote
     if q is None or q.bid_price <= 0 or q.ask_price <= 0 or q.ask_price < q.bid_price:
         return False
+    return True
+
+
+def _is_usable_for_entry(snap: Any) -> bool:
+    """_is_priceable plus a bid-ask width check. Only for chain intake --
+    deciding whether to open a new position in a contract. Must never be used
+    to price a position we already hold (see _is_priceable's docstring)."""
+    if not _is_priceable(snap):
+        return False
+    q = snap.latest_quote
+    mid = (q.bid_price + q.ask_price) / 2
     # P0 remediation (docs/audit_report_v2.md §4): no bid-ask width check
     # existed anywhere in the pipeline before this -- a market of 8.90/15.09
     # (51.6% wide) passed every prior gate. See MAX_QUOTE_SPREAD_PCT's
-    # config.py comment for the measured threshold.
-    mid = (q.bid_price + q.ask_price) / 2
+    # config.py comment for the measured threshold. An absolute escape valve:
+    # a nickel-wide-or-tighter quote is never "wide" regardless of percentage
+    # (this is what saves the far-OTM wings of a liquid chain like SPY from
+    # a relative-width false positive -- docs/review.md P0-4).
+    if q.ask_price - q.bid_price <= 0.05:
+        return True
     if mid <= 0 or (q.ask_price - q.bid_price) / mid > MAX_QUOTE_SPREAD_PCT:
         return False
     return True
@@ -173,12 +198,20 @@ def _build_chain_snapshot(underlying: str, raw: Mapping[str, Any]) -> ChainSnaps
         return None  # NO_CHAIN
 
     usable: list[OptionQuote] = []
-    dropped = 0
+    dropped = 0  # data failures only: null IV, all-zero greeks, non-positive/inverted quote
+    wide_dropped = 0  # priceable but too wide to enter -- not a data failure, doesn't count toward DEGENERATE_CHAIN
     for occ, snap in raw.items():
-        if not _is_usable(snap):
+        if not _is_priceable(snap):
             dropped += 1
             continue
+        if not _is_usable_for_entry(snap):
+            wide_dropped += 1
+            continue
         usable.append(_quote_from_snapshot(occ, snap))
+
+    if wide_dropped:
+        logger.info("chain %s: %d/%d contracts too wide to enter (not counted toward DEGENERATE_CHAIN)",
+                     underlying, wide_dropped, total)
 
     fetched_at = datetime.now(timezone.utc)
     if dropped / total > DEGENERATE_CHAIN_MAX_DROP:
@@ -235,5 +268,5 @@ async def fetch_leg_snapshots(
     return {
         occ: _quote_from_snapshot(occ, snap)
         for occ, snap in raw.items()
-        if _is_usable(snap)
+        if _is_priceable(snap)
     }

@@ -175,23 +175,6 @@ def validate_proposal(
         if not any(round(c.strike, 4) == round(leg.strike_price, 4) for c in listed):
             return ProposalFailure.STRIKE_NOT_IN_CHAIN
 
-    # P0 remediation (docs/audit_report_v2.md §7A / §9 item 5). SHORT_DELTA_BAND
-    # had exactly one consumer in the whole codebase -- spread_builder's
-    # deterministic build() -- so every LLM-picked credit spread bypassed it
-    # entirely. All four live LLM credit trades on 2026-09-01 struck at
-    # 0.486-0.609 delta against the (0.22, 0.33) band. Scoped to credit
-    # structures only -- debit verticals have a different geometry and are
-    # out of scope for this check.
-    if STRUCTURE_IS_CREDIT[d.structure]:
-        lo, hi = SHORT_DELTA_BAND
-        sell = next(l for l in p.legs if l.side == "SELL")
-        listed = chain.for_expiry(expiry, _RIGHT[sell.contract_type])
-        short_q = next(
-            (c for c in listed if round(c.strike, 4) == round(sell.strike_price, 4)), None
-        )
-        if short_q is None or not (lo < abs(short_q.delta) < hi):
-            return ProposalFailure.SHORT_DELTA_OUT_OF_BAND
-
     by_right: dict[str, list] = {}
     for leg in p.legs:
         by_right.setdefault(leg.contract_type, []).append(leg)
@@ -209,6 +192,35 @@ def validate_proposal(
     structure = _infer_structure(tuple(p.legs))
     if structure is None or structure != d.structure:
         return ProposalFailure.STRUCTURE_MISMATCH
+
+    # P0 remediation (docs/audit_report_v2.md §7A / §9 item 5). SHORT_DELTA_BAND
+    # had exactly one consumer in the whole codebase -- spread_builder's
+    # deterministic build() -- so every LLM-picked credit spread bypassed it
+    # entirely. All four live LLM credit trades on 2026-09-01 struck at
+    # 0.486-0.609 delta against the (0.22, 0.33) band. Scoped to credit
+    # structures only -- debit verticals have a different geometry and are
+    # out of scope for this check.
+    #
+    # Runs LAST, after every structural check above, for two reasons
+    # (docs/review.md P0-5 / P1-6): (1) at this point exactly one SELL leg per
+    # right is guaranteed, so the lookup below can't raise StopIteration on a
+    # schema-valid-but-malformed proposal (e.g. two BUY legs) -- that crash
+    # used to escape validate_proposal, abort the whole scan cycle, and repeat
+    # indefinitely since no decisions row gets written; (2) a leg-count or
+    # leg-shape defect now gets its own diagnosis instead of being
+    # misreported as a delta problem, which used to burn the single LLM retry
+    # on the wrong fix.
+    if STRUCTURE_IS_CREDIT[d.structure]:
+        lo, hi = SHORT_DELTA_BAND
+        sell = next((l for l in p.legs if l.side == "SELL"), None)
+        if sell is None:
+            return ProposalFailure.STRUCTURE_MISMATCH
+        listed = chain.for_expiry(expiry, _RIGHT[sell.contract_type])
+        short_q = next(
+            (c for c in listed if round(c.strike, 4) == round(sell.strike_price, 4)), None
+        )
+        if short_q is None or not (lo < abs(short_q.delta) < hi):
+            return ProposalFailure.SHORT_DELTA_OUT_OF_BAND
 
     return None
 

@@ -89,7 +89,7 @@ def test_build_credit_short_delta_band() -> None:
     contracts = [
         market_data._quote_from_snapshot(occ, snap)
         for occ, snap in raw.items()
-        if occ.startswith("SPY260904P") and market_data._is_usable(snap)
+        if occ.startswith("SPY260904P") and market_data._is_usable_for_entry(snap)
     ]
     chain = ChainSnapshot(underlying="SPY", fetched_at=_TS, contracts=tuple(contracts))
 
@@ -284,14 +284,16 @@ def test_weekend_expiry_is_next_session_anchored() -> None:
     snaps = compute_all(ub, _Cache(), SESSION_DATE, trading_days)
 
     tradeable = [s for s in snaps if s.data_ok]
-    # P0 remediation (Task 2, docs/audit_report_v2.md §4/§9 item 2): chain_SPY.json
-    # is 620 contracts spanning several expiries, and 36.5% of them are wider
-    # than MAX_QUOTE_SPREAD_PCT -- SPY now correctly trips DEGENERATE_CHAIN and
-    # drops (this is the intended second-order effect the audit calls for, not
-    # a fixture regression). NVDA (13.0% dropped) and AMD (13.4% dropped) stay
-    # well under the DEGENERATE_CHAIN_MAX_DROP=0.30 threshold and remain tradeable.
-    assert len(tradeable) == 2
-    assert {s.symbol for s in tradeable} == {"NVDA", "AMD"}
+    # P0 remediation (docs/review.md P0-4): contracts dropped for being too
+    # WIDE (wide_dropped) no longer count toward DEGENERATE_CHAIN_MAX_DROP --
+    # only genuine data failures do (null IV, all-zero greeks, non-positive
+    # or inverted quotes). chain_SPY.json has 620 contracts spanning several
+    # expiries; 36.5% are wider than MAX_QUOTE_SPREAD_PCT, but 0 of the 18
+    # contracts inside the tradeable delta band are, so SPY's chain is
+    # genuinely tradeable and must not be discarded wholesale over its wings.
+    # NVDA and AMD were never affected either way.
+    assert len(tradeable) == 3
+    assert {s.symbol for s in tradeable} == {"SPY", "NVDA", "AMD"}
 
     plans = []
     for s in tradeable:

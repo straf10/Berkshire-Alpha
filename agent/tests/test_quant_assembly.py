@@ -141,16 +141,14 @@ def test_expiry_window_weekend_anchor() -> None:
     assert target == date(2026, 9, 4)
 
     # Sanity check against the real captured chain, which only lists the two
-    # tradeable expiries in the first place. P0 remediation (Task 2, docs/
-    # audit_report_v2.md §4/§9 item 2): the full raw fixture is 620 contracts
-    # spanning several expiries, and 36.5% of them are wider than
-    # MAX_QUOTE_SPREAD_PCT -- correctly tripping DEGENERATE_CHAIN under the
-    # new filter (see test_spread_builder.py's
-    # test_weekend_expiry_is_next_session_anchored). Pre-filter to the
-    # already-usable subset so this sanity check exercises expiry selection,
-    # not the whole-chain liquidity gate.
+    # tradeable expiries in the first place. Pre-filter to the entry-usable
+    # subset (docs/review.md P0-4: wide contracts no longer trip
+    # DEGENERATE_CHAIN, so this chain stays tradeable -- see
+    # test_spread_builder.py's test_weekend_expiry_is_next_session_anchored)
+    # purely to isolate this sanity check to expiry selection, not the
+    # whole-chain liquidity gate.
     raw = load_chain_raw("chain_SPY.json")
-    raw = {occ: snap for occ, snap in raw.items() if market_data._is_usable(snap)}
+    raw = {occ: snap for occ, snap in raw.items() if market_data._is_usable_for_entry(snap)}
     real_chain = market_data._build_chain_snapshot("SPY", raw)
     assert real_chain is not None
     assert select_target_expiry(real_chain, SESSION_DATE, trading_days) == date(2026, 9, 4)

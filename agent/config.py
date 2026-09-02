@@ -164,9 +164,23 @@ WALK_CAP_FRACTION: Final[Decimal] = Decimal("0.70")
 # price without ever crossing into guaranteed-loss territory (LLY trade 8:
 # cap clamps from $6.77 to $3.00 on a $5.00 width; the walk cancels
 # UNFILLED_REJECT instead of filling at $6.65). Deliberately NOT mirrored as a
-# credit floor -- see the comment at its point of use in order_manager._walk:
-# a symmetric floor is incompatible with Task 5's delta-band enforcement.
+# symmetric credit floor -- see the comment at its point of use in
+# order_manager._walk: a `0.40 * width` floor is incompatible with Task 5's
+# delta-band enforcement. (A zero floor, which rejects nothing a compliant
+# band trade would ever hit, is applied separately -- docs/review.md P0-3.)
+# This constant bounds OPENING debit orders only. Applied only when the order
+# actually being walked is a debit (by net_mid's sign, not plan.structure) --
+# see docs/review.md P0-2: plan.structure describes the ORIGINAL trade, but
+# closing a credit spread is a debit order with plan.structure still CREDIT,
+# and closing needs its own, wider bound (below).
 WALK_CAP_MAX_FRACTION_OF_WIDTH: Final[Decimal] = Decimal("0.60")
+# P0 remediation (docs/review.md P0-2). A CLOSING debit order (buying back a
+# credit spread) legitimately costs close to the full strike width once the
+# spread is deep ITM -- clamping it to 0.60x width like an opening order would
+# strand a real position at unwind. The only invariant that must hold on close
+# is the same arbitrage bound: never pay more than the spread can possibly be
+# worth, i.e. never above `width` itself.
+WALK_CAP_MAX_FRACTION_OF_WIDTH_CLOSING: Final[Decimal] = Decimal("1.00")
 # P0 remediation (docs/audit_report_v2.md §4). `_is_usable` (market_data.py)
 # previously rejected only null/zero IV, all-zero greeks, and non-positive or
 # inverted quotes -- there was NO bid-ask width check anywhere in the
@@ -175,11 +189,18 @@ WALK_CAP_MAX_FRACTION_OF_WIDTH: Final[Decimal] = Decimal("0.60")
 # cleanly were all under 16% wide (NVDA 0.5%, DIA 2.6%, ORCL 8.0%, UBER
 # 15.4%); the four that produced the loss (or nearly did) were all over 32%
 # (LLY 51.6%/54.6%/39.9%, GS 32.3%). 0.25 sits cleanly between those two
-# clusters. This is a per-contract filter, distinct from DEGENERATE_CHAIN
-# (which gates the PROPORTION of contracts dropped, never how wide the
-# survivors are) -- a chain that loses >30% of its contracts to this filter
-# now correctly trips DEGENERATE_CHAIN, which is the intended second-order
-# effect, not a bug.
+# clusters. This is a per-contract filter used only for chain ENTRY intake
+# (_is_usable_for_entry) -- it must never gate pricing of a position already
+# held (_is_priceable has no width check at all; see docs/review.md P0-1).
+# It is also deliberately NOT coupled to DEGENERATE_CHAIN's drop-proportion
+# gate: measured against the committed SPY fixture, 0/18 contracts inside the
+# tradeable delta band are wide, but far-OTM wings are wide by construction
+# (a 0.02/0.05 quote is 86% "wide" and economically irrelevant) and coupling
+# the two tripped DEGENERATE_CHAIN on 36.5% of a perfectly tradeable SPY
+# chain. wide_dropped is tracked and logged separately from dropped in
+# _build_chain_snapshot; only genuine data failures (null IV, all-zero
+# greeks, non-positive/inverted quotes) count toward DEGENERATE_CHAIN_MAX_DROP
+# (docs/review.md P0-4).
 MAX_QUOTE_SPREAD_PCT: Final[float] = 0.25   # (ask - bid) / mid
 # P0 remediation (docs/audit_report_v2.md §9 item 4). Defence in depth BEHIND
 # Task 1 (the walk-cap fix), not a substitute for it: this rejects a debit
