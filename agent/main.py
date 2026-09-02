@@ -780,9 +780,11 @@ def _format_trader_line(outcome: PipelineOutcome) -> str:
     short_leg = next(leg for leg in plan.legs if leg.side == "SELL")
     long_leg = next(leg for leg in plan.legs if leg.side == "BUY")
     legs_str = f"{int(short_leg.strike)}{short_leg.right}/{int(long_leg.strike)}{long_leg.right}"
+    conf = proposal.get("confidence_score")
+    conf_str = f"conf {conf:.2f}" if isinstance(conf, (int, float)) else "conf n/a (deterministic)"
     return (
         f"       Trader:   {side} {plan.structure.value.replace('_', ' ')} {plan.expiry.isoformat()}  "
-        f"{legs_str}  conf {proposal['confidence_score']:.2f}"
+        f"{legs_str}  {conf_str}"
     )
 
 
