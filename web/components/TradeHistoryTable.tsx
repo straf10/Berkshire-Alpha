@@ -27,6 +27,7 @@ export function TradeHistoryTable({ trades }: { trades: Trade[] | null }) {
             <TableHead>Walk steps</TableHead>
             <TableHead>Fill</TableHead>
             <TableHead>Realized P&amp;L</TableHead>
+            <TableHead>Exit reason</TableHead>
             <TableHead>Status</TableHead>
           </TableRow>
         </TableHeader>
@@ -51,6 +52,7 @@ export function TradeHistoryTable({ trades }: { trades: Trade[] | null }) {
               >
                 {t.realized_pnl != null ? formatSignedMoney(t.realized_pnl) : t.closed_at ? "—" : "open"}
               </TableCell>
+              <TableCell className="text-foreground/70">{t.exit_reason ?? "—"}</TableCell>
               <TableCell>
                 <Badge variant={statusVariant(t)}>{t.reject_code ?? t.status}</Badge>
               </TableCell>

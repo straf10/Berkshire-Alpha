@@ -184,6 +184,19 @@ async def agent_settings() -> dict[str, Any]:
             "dte_min": c.DTE_MIN,
             "dte_max": c.DTE_MAX,
         },
+        # docs/review.md P2-2: the /config panel documented sizing and gate
+        # thresholds but omitted the three constants that are the entire P0
+        # remediation story -- the walk cap, the quote-width filter, and the
+        # debit-at-build-time cap.
+        "execution_guardrails": {
+            "walk_cap_max_fraction_of_width": _jsonable(c.WALK_CAP_MAX_FRACTION_OF_WIDTH),
+            "walk_cap_max_fraction_of_width_closing": _jsonable(c.WALK_CAP_MAX_FRACTION_OF_WIDTH_CLOSING),
+            "walk_step": _jsonable(c.WALK_STEP),
+            "walk_cap_fraction": _jsonable(c.WALK_CAP_FRACTION),
+            "max_quote_spread_pct": c.MAX_QUOTE_SPREAD_PCT,
+            "max_debit_fraction_of_width": _jsonable(c.MAX_DEBIT_FRACTION_OF_WIDTH),
+            "degenerate_chain_max_drop": c.DEGENERATE_CHAIN_MAX_DROP,
+        },
         "regime_thresholds": {
             "rsi_period": c.RSI_PERIOD,
             "rsi_overbought": c.RSI_OVERBOUGHT,

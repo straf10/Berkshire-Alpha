@@ -119,6 +119,7 @@ export interface Trade {
   closed_at: string | null;
   realized_pnl: number | null;
   max_loss_per_spread: number;
+  exit_reason: string | null;
 }
 
 export interface LlmCall {
@@ -316,7 +317,7 @@ export interface OpenPosition {
 }
 
 export interface FunnelStage {
-  name: "screened" | "shortlisted" | "debated" | "entered";
+  name: "screened" | "shortlisted" | "built" | "debated" | "entered";
   count: number;
   top_reject_reason: string | null;
 }
