@@ -109,6 +109,46 @@ async def list_orders(*, status: str = "open") -> list[dict[str, Any]]:
     return await _run(["order", "list", "--status", status])
 
 
+def _order_touches_symbols(order: dict[str, Any], wanted: set[str]) -> bool:
+    """A multi-leg order (order_class=mleg) carries no top-level `symbol` --
+    only its nested `legs[]` do -- so match against those; fall back to the
+    order's own top-level `symbol` for a single-instrument order."""
+    legs = order.get("legs") or []
+    if legs:
+        return any(leg.get("symbol") in wanted for leg in legs)
+    return order.get("symbol") in wanted
+
+
+async def list_orders_for_symbols(
+    symbols: Sequence[str], *, status: str = "closed", after: str | None = None, limit: int = 100,
+) -> list[dict[str, Any]]:
+    """`alpaca order list --status <status> --symbols <a,b> --nested [--after
+    <after>] --limit <limit>`. `--nested` rolls a multi-leg order's individual
+    legs under its own `legs` field, so the primary order's top-level
+    `filled_avg_price` is the NET spread fill price (not one leg's) --
+    exactly what a realized-P&L reconciliation needs (scripts/
+    reconcile_closes.py). Read-only, same GET-only convention as list_orders/
+    get_order above.
+
+    The installed CLI's `--symbols` flag does not reliably filter multi-leg
+    orders -- verified live 2026-09-02: a `--symbols` filter for one set of
+    option legs returned an unrelated order touching entirely different
+    symbols, repeatably, even against a symbol that does not exist. An mleg
+    order has no top-level `symbol` for the flag to match against, which
+    appears to make the server-side filter silently a no-op rather than an
+    empty result. Filtered again here, client-side, against each leg's own
+    `symbol` -- callers must not rely on the CLI flag alone for correctness."""
+    args = [
+        "order", "list", "--status", status, "--symbols", ",".join(symbols),
+        "--nested", "--limit", str(limit),
+    ]
+    if after is not None:
+        args += ["--after", after]
+    raw = await _run(args)
+    wanted = set(symbols)
+    return [o for o in raw if _order_touches_symbols(o, wanted)]
+
+
 async def get_order(order_id: str) -> dict[str, Any] | None:
     """`alpaca order get --order-id <id>` -- note the FLAG, not a positional
     (verified against the installed v0.0.14 binary). Returns None when the CLI
