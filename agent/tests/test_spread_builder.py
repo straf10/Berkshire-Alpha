@@ -76,14 +76,14 @@ _DEBIT_SNAPSHOT = _snapshot(spot=100.0, rv_20=0.30, dte=4)
 
 
 def test_build_credit_short_delta_band() -> None:
-    # P0 remediation (Task 2, docs/audit_report_v2.md §4/§9 item 2): the full
-    # multi-expiry chain_SPY.json fixture now correctly trips DEGENERATE_CHAIN
-    # under MAX_QUOTE_SPREAD_PCT (36.5% of its 620 contracts are wide markets
-    # spanning several expiries) -- that is the intended second-order effect,
-    # not a bug (see test_weekend_expiry_is_next_session_anchored below, which
-    # asserts SPY drops for exactly this reason). This test's own concern is
-    # delta-band strike selection, so it builds a ChainSnapshot from the real,
-    # tight 2026-09-04 put quotes in that same fixture directly, rather than
+    # docs/review.md P2-1/P0-4: chain_SPY.json's full multi-expiry fixture does
+    # NOT trip DEGENERATE_CHAIN -- wide-but-priceable contracts (36.5% of its
+    # 620) are tracked separately from genuine data failures and no longer
+    # count toward DEGENERATE_CHAIN_MAX_DROP (see test_spread_builder.py's
+    # test_weekend_expiry_is_next_session_anchored, which asserts the raw
+    # fixture stays tradeable). This test's own concern is delta-band strike
+    # selection, so it builds a ChainSnapshot from the real, tight
+    # 2026-09-04 put quotes in that same fixture directly, rather than
     # going through the whole-chain liquidity gate.
     raw = load_chain_raw("chain_SPY.json")
     contracts = [

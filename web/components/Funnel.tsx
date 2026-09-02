@@ -11,6 +11,7 @@ export function Funnel({ funnel }: { funnel: FunnelResponse | null }) {
   const labels: Record<string, string> = {
     screened: "Screened",
     shortlisted: "Shortlisted",
+    built: "Built",
     debated: "Debated",
     entered: "Entered",
   };
@@ -27,8 +28,8 @@ export function Funnel({ funnel }: { funnel: FunnelResponse | null }) {
         <CardTitle className="flex flex-wrap items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           <Filter className="size-3.5" />
           <span className="flex items-center gap-1.5">
-            Screen <ArrowRight className="size-3" /> Shortlist <ArrowRight className="size-3" /> Debate{" "}
-            <ArrowRight className="size-3" /> Gate
+            Screen <ArrowRight className="size-3" /> Shortlist <ArrowRight className="size-3" /> Build{" "}
+            <ArrowRight className="size-3" /> Debate <ArrowRight className="size-3" /> Gate
           </span>
           <span>({funnel.session_date})</span>
         </CardTitle>

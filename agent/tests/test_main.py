@@ -22,7 +22,6 @@ from agent.session import SessionPlan
 from agent.storage import db as storage_db
 from agent.storage import write as storage_write
 from agent.tests.fixture_helpers import load_bar_data, load_chain_raw, make_barset
-from agent.tools.market_data import _is_usable_for_entry
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SESSION_DATE = date(2026, 8, 31)
@@ -71,19 +70,18 @@ class FakeClients:
     def __init__(self) -> None:
         self._daily = make_barset(load_bar_data("bars_daily.json"))
         self._minute = make_barset(load_bar_data("bars_minute.json"))
-        # P0 remediation (Task 2, docs/audit_report_v2.md §4/§9 item 2):
-        # chain_SPY.json is 620 real contracts spanning several expiries, and
-        # 36.5% of them are wider than MAX_QUOTE_SPREAD_PCT -- correctly
-        # tripping DEGENERATE_CHAIN under the new filter (see
-        # test_spread_builder.py's test_weekend_expiry_is_next_session_anchored,
-        # which asserts exactly that). These main.py tests care about exercising
-        # the pipeline on a TRADEABLE SPY chain, not about DEGENERATE_CHAIN
-        # itself, so pre-filter to the same tight subset a real feed's
-        # usability gate would leave -- still real fixture bid/ask/delta
-        # values, just without the wide legs that would otherwise sink the
-        # whole multi-expiry batch over the 30% drop threshold.
+        # docs/review.md P2-4: this used to pre-filter chain_SPY.json through
+        # _is_usable_for_entry before handing it to the pipeline, so the
+        # end-to-end scan_cycle tests below never exercised the raw 620-contract
+        # fixture (36.5% of which are wider than MAX_QUOTE_SPREAD_PCT) the way
+        # production actually receives it. P0-4 decoupled wide-but-priceable
+        # contracts from DEGENERATE_CHAIN_MAX_DROP (see market_data._build_chain_
+        # snapshot's wide_dropped tracking, and test_spread_builder.py's
+        # test_weekend_expiry_is_next_session_anchored, which asserts the raw
+        # fixture is NOT dropped), so feeding the unfiltered fixture here now
+        # exercises the real production code path instead of masking it.
         self._chains = {
-            "SPY": {occ: snap for occ, snap in load_chain_raw("chain_SPY.json").items() if _is_usable_for_entry(snap)},
+            "SPY": load_chain_raw("chain_SPY.json"),
             "NVDA": load_chain_raw("chain_NVDA.json"),
             "AMD": load_chain_raw("chain_AMD.json"),
         }

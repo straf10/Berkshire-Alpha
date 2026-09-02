@@ -319,8 +319,46 @@ async def test_funnel_endpoint_buckets_by_stage(tmp_path) -> None:
     by_name = {s["name"]: s for s in result["stages"]}
     assert by_name["screened"]["count"] == 3
     assert by_name["shortlisted"]["count"] == 2
+    assert by_name["built"]["count"] == 2
     assert by_name["debated"]["count"] == 2
     assert by_name["entered"]["count"] == 1
+
+
+async def test_funnel_endpoint_separates_build_failures_from_screen_and_gate_rejects(tmp_path) -> None:
+    """docs/review.md P2-1: DEGENERATE_CHAIN/NO_CHAIN must count as a screen
+    reject (they were previously counted as shortlisted), and a
+    BuildFailure/ProposalFailure reason (a spread that could not be
+    constructed) must land in the `built` stage's reject reason rather than
+    being conflated with a deterministic gate reject like NEGATIVE_EDGE."""
+    db_path = str(tmp_path / "test_agent.db")
+    await storage_db.init_db(db_path)
+    session_date = date(2026, 8, 31).isoformat()
+
+    async def _row(symbol: str, mode: str, gate_reason: str, action: str) -> storage_write.DecisionRow:
+        return storage_write.DecisionRow(
+            ts_utc=datetime.now(timezone.utc).isoformat(), cycle_id="cyc-5",
+            session_date=session_date, symbol=symbol, mode=mode, regime="CREDIT",
+            structure=None, action=action, gate_reason=gate_reason, gate_detail=gate_reason,
+            observed_value=None, threshold_value=None, qty=None, equity_feed="iex",
+            earnings_armed=False, quant_json="{}", plan_json=None,
+        )
+
+    async with storage_db.connect(db_path) as conn:
+        await storage_write.insert_decision(conn, await _row("SPY", "quant-only", "DEGENERATE_CHAIN", "NO_TRADE"))
+        await storage_write.insert_decision(conn, await _row("AAPL", "quant-only", "STRUCTURE_MISMATCH", "NO_TRADE"))
+        await storage_write.insert_decision(conn, await _row("TSLA", "quant-only", "NEGATIVE_EDGE", "NO_TRADE"))
+
+    from agent.api import app as api_app
+
+    async with storage_db.connect(db_path) as conn:
+        result = await api_app.funnel(session_date=session_date, conn=conn)
+
+    by_name = {s["name"]: s for s in result["stages"]}
+    assert by_name["screened"]["count"] == 3
+    assert by_name["shortlisted"]["count"] == 2  # DEGENERATE_CHAIN excluded at screen
+    assert by_name["shortlisted"]["top_reject_reason"] == "STRUCTURE_MISMATCH"
+    assert by_name["built"]["count"] == 1  # STRUCTURE_MISMATCH excluded as a build failure
+    assert by_name["built"]["top_reject_reason"] == "NEGATIVE_EDGE"
 
 
 async def test_funnel_endpoint_defaults_to_latest_session(tmp_path) -> None:

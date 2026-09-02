@@ -106,9 +106,9 @@ async def open_positions(conn: aiosqlite.Connection) -> list[dict[str, Any]]:
 
 
 async def funnel(conn: aiosqlite.Connection, session_date: str | None = None) -> dict[str, Any]:
-    """Screen -> shortlist -> debate -> gate breadth for one session, derived
-    from `decisions` + `debate_summaries` (docs/day6_ui_plan.md S0.2 / S4). No new
-    table: every stage is a count over rows already written by scan_cycle.
+    """Screen -> shortlist -> build -> debate -> gate breadth for one session,
+    derived from `decisions` + `debate_summaries` (docs/day6_ui_plan.md S0.2 / S4).
+    No new table: every stage is a count over rows already written by scan_cycle.
 
     Screened   = every decisions row this session (one per universe symbol that
                  got a row at all, including NO_TRADE ones excluded at the quant
@@ -116,13 +116,24 @@ async def funnel(conn: aiosqlite.Connection, session_date: str | None = None) ->
     Shortlisted = rows whose regime.select() outcome was CREDIT or DEBIT AND made
                  the SHORTLIST_MAX cut (i.e. gate_reason is not one of
                  `regime.select`'s own NO_TRADE reasons -- NO_REGIME / DATA_NOT_OK
-                 / DEBIT_NO_MOMENTUM_CONFIRMATION, see agent/strategy/regime.py --
-                 and not NOT_SHORTLISTED, main.py's own truncation reason for a
-                 regime-positive symbol that didn't make the top
-                 SHORTLIST_MAX). Every other gate_reason (including
+                 / DEBIT_NO_MOMENTUM_CONFIRMATION, or one of the chain-load
+                 failure reasons regime.select surfaces verbatim when data_ok
+                 is False -- DEGENERATE_CHAIN / NO_CHAIN / NO_EXPIRY_IN_WINDOW /
+                 INSUFFICIENT_BARS, see agent/strategy/regime.py and
+                 agent/tools/quant.py -- and not NOT_SHORTLISTED, main.py's own
+                 truncation reason for a regime-positive symbol that didn't make
+                 the top SHORTLIST_MAX). Every other gate_reason (including
                  EARNINGS_BLACKOUT, a fund-manager gate rejection that implies
                  the symbol cleared the screen) means the symbol proceeded past
                  the deterministic screen.
+    Built      = shortlisted rows that were NOT rejected by a BuildFailure
+                 (agent/strategy/spread_builder.py) or ProposalFailure
+                 (agent/agents/trader.py) reason -- docs/review.md P2-1: these
+                 two enums mean "could not construct a spread that fits the
+                 schema/delta band", a different failure mode from a gate
+                 rejecting a spread that WAS built (e.g. NEGATIVE_EDGE,
+                 LOW_CONVICTION). Folding them into one bucket previously made
+                 "shortlisted-then-rejected" mean two different things.
     Debated    = rows with a debate_summaries entry.
     Entered    = action == 'ENTER'.
     """
@@ -137,6 +148,7 @@ async def funnel(conn: aiosqlite.Connection, session_date: str | None = None) ->
             "stages": [
                 {"name": "screened", "count": 0, "top_reject_reason": None},
                 {"name": "shortlisted", "count": 0, "top_reject_reason": None},
+                {"name": "built", "count": 0, "top_reject_reason": None},
                 {"name": "debated", "count": 0, "top_reject_reason": None},
                 {"name": "entered", "count": 0, "top_reject_reason": None},
             ],
@@ -155,6 +167,16 @@ async def funnel(conn: aiosqlite.Connection, session_date: str | None = None) ->
 
     _SCREEN_STAGE_REJECTS = {
         "NO_REGIME", "DATA_NOT_OK", "DEBIT_NO_MOMENTUM_CONFIRMATION", "NOT_SHORTLISTED",
+        "DEGENERATE_CHAIN", "NO_CHAIN", "NO_EXPIRY_IN_WINDOW", "INSUFFICIENT_BARS",
+    }
+
+    # BuildFailure (agent/strategy/spread_builder.py) and ProposalFailure
+    # (agent/agents/trader.py) members -- see the `built` stage docstring above.
+    _BUILD_STAGE_REJECTS = {
+        "NO_SHORT_STRIKE_IN_DELTA_BAND", "NO_LONG_STRIKE_AVAILABLE", "SIGN_MISMATCH",
+        "ZERO_OR_NEGATIVE_WIDTH", "NON_POSITIVE_MAX_LOSS", "DEBIT_EXCEEDS_MAX_FRACTION_OF_WIDTH",
+        "WRONG_UNDERLYING", "EXPIRY_NOT_IN_WINDOW", "EXPIRY_NOT_TRADING_DAY", "STRIKE_NOT_IN_CHAIN",
+        "LEG_COUNT", "STRUCTURE_MISMATCH", "NOT_DEFINED_RISK", "SHORT_DELTA_OUT_OF_BAND",
     }
 
     def _top_reason(candidates: list[dict[str, Any]]) -> str | None:
@@ -167,9 +189,15 @@ async def funnel(conn: aiosqlite.Connection, session_date: str | None = None) ->
 
     screened = rows
     excluded_at_screen = [r for r in rows if r["gate_reason"] in _SCREEN_STAGE_REJECTS]
-    shortlisted = [r for r in rows if r not in excluded_at_screen]
+    excluded_at_screen_ids = {r["id"] for r in excluded_at_screen}
+    shortlisted = [r for r in rows if r["id"] not in excluded_at_screen_ids]
+    build_failed = [r for r in shortlisted if r["gate_reason"] in _BUILD_STAGE_REJECTS]
+    built = [r for r in shortlisted if r["gate_reason"] not in _BUILD_STAGE_REJECTS]
     debated = [r for r in shortlisted if r["id"] in debated_ids]
-    not_debated = [r for r in shortlisted if r["id"] not in debated_ids]
+    # Reject reason for the `built` stage: of the rows that produced a
+    # spread, why they didn't reach debate -- built rows only, so a build
+    # failure never leaks back in as the reason a later stage was left.
+    not_debated_built = [r for r in built if r["id"] not in debated_ids]
     entered = [r for r in rows if r["action"] == "ENTER"]
     # Gate-stage reject reason, over every shortlisted row that didn't enter --
     # covers both debated candidates the gate rejected and quant-only candidates
@@ -180,7 +208,8 @@ async def funnel(conn: aiosqlite.Connection, session_date: str | None = None) ->
         "session_date": session_date,
         "stages": [
             {"name": "screened", "count": len(screened), "top_reject_reason": _top_reason(excluded_at_screen)},
-            {"name": "shortlisted", "count": len(shortlisted), "top_reject_reason": _top_reason(not_debated)},
+            {"name": "shortlisted", "count": len(shortlisted), "top_reject_reason": _top_reason(build_failed)},
+            {"name": "built", "count": len(built), "top_reject_reason": _top_reason(not_debated_built)},
             {"name": "debated", "count": len(debated), "top_reject_reason": _top_reason(not_entered)},
             {"name": "entered", "count": len(entered), "top_reject_reason": None},
         ],
