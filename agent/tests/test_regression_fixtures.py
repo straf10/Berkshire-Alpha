@@ -370,3 +370,14 @@ def test_task3_post_fill_risk_formula_matches_live_and_exposes_bug() -> None:
     realized = _max_loss_from_fill(lly_plan, Decimal("6.65"))
     assert realized == Decimal("665.0")  # DB recorded 194.0 (stale, mid-based) -- bug exposed
     assert realized != Decimal("194.0")
+
+
+def test_max_loss_from_fill_signed_not_abs_on_credit_sign_flip() -> None:
+    """docs/review.md P1-1: abs() on the credit branch understated risk in
+    exactly the P0-3 sign-flip case (a credit structure walked past zero into
+    a net debit). True max loss on a $5-wide spread filled at a +0.45 debit
+    is (width + fill) x 100 = $545, not (width - abs(fill)) x 100 = $455."""
+    credit_plan = _plan(Structure.BULL_PUT_SPREAD, is_credit=True, width=5.00, mid="-2.00", natural="1.50", short_delta=0.275)
+    realized = _max_loss_from_fill(credit_plan, Decimal("0.45"))
+    assert realized == Decimal("545.0")
+    assert realized != Decimal("455.0")

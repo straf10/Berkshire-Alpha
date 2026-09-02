@@ -188,3 +188,20 @@ def test_tuning_never_exceeds_partition_ceiling() -> None:
 
 def test_tuning_fields_are_selection_only() -> None:
     assert {f.name for f in fields(MacroTuning)} == {"vwm_bar", "cross_section_n", "regime"}
+
+
+def test_tuning_ladder_never_exceeds_baseline_and_is_not_inverted() -> None:
+    """docs/review.md P1-3: the non-NEUTRAL bars are multipliers of
+    VWM_Z_STRONG so the raise from 0.75->1.00 actually binds in every regime,
+    and the ladder must stay ordered risk-on (loosest) -> risk-off
+    (strictest, but still <= the NEUTRAL/UNAVAILABLE baseline)."""
+    bars = {}
+    for regime in list(MacroRegime):
+        snap = MacroSnapshot(
+            regime=regime, gold_z=0.0, oil_z=0.0, btc_z=0.0, bars_used=_MIN_BARS,
+            horizon="SLOW", detail="x",
+        )
+        bars[regime] = tuning(snap).vwm_bar
+        if regime not in (MacroRegime.NEUTRAL, MacroRegime.UNAVAILABLE):
+            assert bars[regime] <= VWM_Z_STRONG
+    assert bars[MacroRegime.RISK_OFF] >= bars[MacroRegime.RISK_ON]

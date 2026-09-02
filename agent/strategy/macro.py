@@ -170,17 +170,28 @@ def tuning(snapshot: MacroSnapshot) -> MacroTuning:
 
     UNAVAILABLE and NEUTRAL both resolve to the configured baseline -- the
     required fail-safe: a macro data outage must degrade to exactly today's
-    behaviour, never to a loosened one."""
+    behaviour, never to a loosened one.
+
+    The four non-NEUTRAL bars are expressed as multipliers of VWM_Z_STRONG,
+    not absolute values (docs/review.md P1-3). They were originally
+    calibrated as offsets from a 0.75 baseline (0.35/0.45/0.55/0.60); when
+    VWM_Z_STRONG was raised to 1.00 those absolutes were left untouched, so
+    the raise went inert in every regime but NEUTRAL/UNAVAILABLE (all four
+    absolutes sat below the new baseline, several below LLY's 0.761) and the
+    ladder inverted -- RISK_OFF (0.60) ended up looser than NEUTRAL (1.00),
+    i.e. a stricter momentum bar in calm conditions than in risk-off ones.
+    Multipliers keep the original relative ordering while staying anchored
+    to whatever VWM_Z_STRONG is configured to."""
     match snapshot.regime:
         case MacroRegime.RISK_ON:
-            return MacroTuning(vwm_bar=0.35, cross_section_n=4, regime=snapshot.regime)
+            return MacroTuning(vwm_bar=VWM_Z_STRONG * 0.47, cross_section_n=4, regime=snapshot.regime)
         case MacroRegime.NEUTRAL:
             return MacroTuning(vwm_bar=VWM_Z_STRONG, cross_section_n=_BASELINE_CROSS_SECTION_N, regime=snapshot.regime)
         case MacroRegime.INFLATIONARY:
-            return MacroTuning(vwm_bar=0.45, cross_section_n=4, regime=snapshot.regime)
+            return MacroTuning(vwm_bar=VWM_Z_STRONG * 0.60, cross_section_n=4, regime=snapshot.regime)
         case MacroRegime.DEFENSIVE_ROTATION:
-            return MacroTuning(vwm_bar=0.55, cross_section_n=3, regime=snapshot.regime)
+            return MacroTuning(vwm_bar=VWM_Z_STRONG * 0.73, cross_section_n=3, regime=snapshot.regime)
         case MacroRegime.RISK_OFF:
-            return MacroTuning(vwm_bar=0.60, cross_section_n=3, regime=snapshot.regime)
+            return MacroTuning(vwm_bar=VWM_Z_STRONG * 0.80, cross_section_n=3, regime=snapshot.regime)
         case MacroRegime.UNAVAILABLE:
             return MacroTuning(vwm_bar=VWM_Z_STRONG, cross_section_n=_BASELINE_CROSS_SECTION_N, regime=snapshot.regime)

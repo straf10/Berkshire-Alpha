@@ -149,6 +149,17 @@ DRAWDOWN_TERMINAL_PCT: Final[float] = -0.12
 # per-spread max-loss denominator flows straight through regardless of
 # KELLY_FRACTION. Only Task 5 (SHORT_DELTA_BAND enforcement on the LLM path)
 # fixes that.
+#
+# docs/review.md P1-4: do not read this halving as "the book is half as
+# risky as before." Re-run against all 13 stored plan_json rows at equity
+# $100,000: f* x equity still exceeds the MAX_RISK_PER_TRADE_PCT ceiling
+# after halving in 8 of 9 sized decisions, so the ceiling -- not
+# KELLY_FRACTION -- is what actually binds `qty` in the vast majority of
+# measured cases. Only 1 of 9 (a TSLA quant-only decision) moved at all.
+# Genuine pre-session de-risking, if wanted, means lowering
+# MAX_RISK_PER_TRADE_PCT itself -- do not do that without re-running this
+# table, since combined with the SHORT_DELTA_BAND enforcement's own
+# tightening (P1-7) it could floor `qty` to zero across the board.
 KELLY_FRACTION: Final[float] = 0.25
 WALK_STEP: Final[Decimal] = Decimal("0.05")
 WALK_REST_S: Final[float] = 15.0
