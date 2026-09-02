@@ -6,17 +6,16 @@ from dataclasses import dataclass
 from typing import Final, Mapping, Sequence
 
 from agent.agents.evidence import EvidenceBundle
-from agent.agents.prompts import NEWS_ANALYST_SYSTEM, QUANT_ANALYST_SYSTEM, SENTIMENT_ANALYST_SYSTEM
-from agent.config import DEBATE_CANDIDATES, NEWS_MAX_HEADLINES, SENTIMENT_MAX_POSTS_IN_PROMPT, UNIVERSE
+from agent.agents.prompts import NEWS_ANALYST_SYSTEM, QUANT_ANALYST_SYSTEM
+from agent.config import DEBATE_CANDIDATES, NEWS_MAX_HEADLINES, UNIVERSE
 from agent.schemas.execution import STRUCTURE_IS_CREDIT, Structure
-from agent.schemas.llm import NewsAnalystOutput, QuantAnalystOutput, SentimentAnalystOutput
+from agent.schemas.llm import NewsAnalystOutput, QuantAnalystOutput
 from agent.schemas.market import QuantSnapshot
 from agent.strategy.macro import MacroSnapshot
 from agent.strategy.regime import RegimeDecision
 from agent.strategy.ticker_screener import ScreenedCandidate
 from agent.tools.llm import LlmBudgetExceeded, LlmPort, LlmUnavailable, LlmValidationDropped
 from agent.tools.news import Headline
-from agent.tools.reddit import MentionSignal
 
 logger = logging.getLogger(__name__)
 
@@ -60,20 +59,6 @@ async def news_analyst(
     return await llm.complete_json(prompt, NewsAnalystOutput, node="NEWS", system=NEWS_ANALYST_SYSTEM, sink=sink)
 
 
-async def sentiment_analyst(
-    llm: LlmPort, symbol: str, signal: MentionSignal | None, *, sink: list[int]
-) -> SentimentAnalystOutput | None:
-    """No posts -> no call, same reasoning as news_analyst above."""
-    if signal is None or not signal.posts:
-        return None
-    titles = "\n".join(f"- {p.title[:160]}" for p in signal.posts[:SENTIMENT_MAX_POSTS_IN_PROMPT])
-    mentions, velocity = signal.mentions, signal.velocity
-    prompt = f"Ticker: {symbol}\nMentions this scan: {mentions}  Velocity: {velocity:.2f}\nRecent post titles:\n{titles}"
-    return await llm.complete_json(
-        prompt, SentimentAnalystOutput, node="SENTIMENT", system=SENTIMENT_ANALYST_SYSTEM, sink=sink
-    )
-
-
 @dataclass(frozen=True)
 class AnalystResult:
     symbol: str
@@ -83,17 +68,12 @@ class AnalystResult:
 
 async def run_analysts(
     llm: LlmPort, candidates: Sequence[ScreenedCandidate],
-    news: Mapping[str, tuple[Headline, ...]], mentions: Mapping[str, MentionSignal],
+    news: Mapping[str, tuple[Headline, ...]],
     *, sem: asyncio.Semaphore, sinks: Mapping[str, list[int]], macro: MacroSnapshot,
 ) -> list[AnalystResult]:
     """2 x len(candidates) calls, ONE asyncio.gather, bounded by `sem`. Never
     raises except LlmBudgetExceeded (propagates immediately) or LlmUnavailable
-    when >= half the wave failed (docs/day3_llm_plan.md Group 3).
-
-    `sentiment_analyst` is never invoked here (docs/day4_action_plan.md Step
-    1): Reddit's API is closed to us, so `mentions` is always empty and the
-    call would be a guaranteed no-op. `sentiment_analyst()` itself stays,
-    unused, in case the API ever reopens."""
+    when >= half the wave failed (docs/day3_llm_plan.md Group 3)."""
 
     async def _bounded(coro):
         async with sem:
@@ -146,8 +126,7 @@ async def run_analysts(
             symbol=symbol, quant=c.snapshot, regime=c.decision, macro=macro,
             quant_analyst=by_symbol[symbol].get("QUANT"),  # type: ignore[arg-type]
             news_analyst=by_symbol[symbol].get("NEWS"),  # type: ignore[arg-type]
-            sentiment_analyst=by_symbol[symbol].get("SENTIMENT"),  # type: ignore[arg-type]
-            headlines=news.get(symbol, ()), mentions=mentions.get(symbol),
+            headlines=news.get(symbol, ()),
         )
         out.append(AnalystResult(symbol=symbol, bundle=bundle, failures=tuple(failures_by_symbol[symbol])))
     return out

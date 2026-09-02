@@ -6,8 +6,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import type { ToolUsageResponse } from "@/lib/types";
 
 // Counts/latency/failure-rate per non-LLM tool (Alpaca market data, Alpaca
-// CLI, News, Reddit) -- these aren't metered per-call like LLM tokens, so
-// this is the counts-and-reliability counterpart to LlmUsage's cost table.
+// CLI, News) -- these aren't metered per-call like LLM tokens, so this is
+// the counts-and-reliability counterpart to LlmUsage's cost table.
 export function ToolUsage({ usage }: { usage: ToolUsageResponse | null }) {
   if (usage === null) return null;
 

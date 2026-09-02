@@ -80,7 +80,7 @@ def _bundle() -> EvidenceBundle:
     regime = RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "test", "TEST", None, None)
     return EvidenceBundle(
         symbol="TST", quant=quant, regime=regime, macro=_MACRO, quant_analyst=None, news_analyst=None,
-        sentiment_analyst=None, headlines=(), mentions=None,
+        headlines=(),
     )
 
 

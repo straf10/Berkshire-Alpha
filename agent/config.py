@@ -430,7 +430,6 @@ REDDIT_POST_LIMIT: Final[int] = 250
 REDDIT_MENTION_BASELINE_N: Final[int] = 6
 NEWS_LOOKBACK_H: Final[int] = 24
 NEWS_MAX_HEADLINES: Final[int] = 10
-SENTIMENT_MAX_POSTS_IN_PROMPT: Final[int] = 8
 STRIKE_TABLE_SPAN: Final[int] = 6
 
 # Values introduced by the assignment reconciliation plan
