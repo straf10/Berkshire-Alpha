@@ -122,6 +122,34 @@ def bootstrap_pnl(trades: list[TradeResult], n: int = 10_000, seed: int = 0) -> 
     }
 
 
+def sharpe_ratio(trades: list[TradeResult]) -> float:
+    """Per-trade Sharpe (fmean(pnls)/pstdev(pnls), NOT annualized) -- same
+    convention as window_stability's per-window Sharpe, but over the whole
+    trade set. 0.0 for <2 trades or zero pnl dispersion (undefined, not
+    actually zero risk-adjusted return)."""
+    if len(trades) < 2:
+        return 0.0
+    pnls = [t.realized_pnl for t in trades]
+    sd = statistics.pstdev(pnls)
+    if sd == 0.0:
+        return 0.0
+    return statistics.fmean(pnls) / sd
+
+
+def max_drawdown(trades: list[TradeResult]) -> float:
+    """Largest peak-to-trough drop (dollars, >= 0) in the cumulative pnl curve,
+    ordered by expiry (build_equity_curve's convention)."""
+    curve = build_equity_curve(trades)
+    if not curve:
+        return 0.0
+    peak = curve[0][1]
+    worst = 0.0
+    for _, cum in curve:
+        peak = max(peak, cum)
+        worst = min(worst, cum - peak)
+    return abs(worst)
+
+
 def window_stability(trades: list[TradeResult], n_windows: int = 6) -> dict[str, float]:
     """Diagnostic half of the paper's regime gate rho (Eq. 3,
     docs/literature/2608.23808v2.md S4.1) -- the three components (p+, s_SR,
