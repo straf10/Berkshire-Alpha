@@ -22,7 +22,7 @@ from agent.session import SessionPlan
 from agent.storage import db as storage_db
 from agent.storage import write as storage_write
 from agent.tests.fixture_helpers import load_bar_data, load_chain_raw, make_barset
-from agent.tools.market_data import _is_usable
+from agent.tools.market_data import _is_usable_for_entry
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SESSION_DATE = date(2026, 8, 31)
@@ -83,7 +83,7 @@ class FakeClients:
         # values, just without the wide legs that would otherwise sink the
         # whole multi-expiry batch over the 30% drop threshold.
         self._chains = {
-            "SPY": {occ: snap for occ, snap in load_chain_raw("chain_SPY.json").items() if _is_usable(snap)},
+            "SPY": {occ: snap for occ, snap in load_chain_raw("chain_SPY.json").items() if _is_usable_for_entry(snap)},
             "NVDA": load_chain_raw("chain_NVDA.json"),
             "AMD": load_chain_raw("chain_AMD.json"),
         }

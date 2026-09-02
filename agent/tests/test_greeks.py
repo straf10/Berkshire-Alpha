@@ -103,3 +103,27 @@ async def test_leg_snapshots_batched() -> None:
     assert len(calls) == 1
     assert len(calls[0].symbol_or_symbols) == 12
     assert len(exposures) == 12
+
+
+async def test_missing_quote_still_counts_as_a_position() -> None:
+    """docs/review.md P0-1: a held contract with no usable quote (e.g. a wide
+    or stale market) must still consume a MAX_CONCURRENT_POSITIONS slot and
+    appear in position_keys -- previously build_exposures silently dropped
+    it, making the position invisible to every risk gate."""
+    class FakeClients:
+        async def get_option_snapshot(self, req):
+            return {}  # no snapshot for the held contract at all
+
+    positions = [
+        CliPosition(
+            symbol="LLY260904P00700000", asset_class="us_option", qty=Decimal(-1),
+            avg_entry_price=Decimal("1.0"), market_value=Decimal("-100"), unrealized_pl=Decimal("0"),
+        )
+    ]
+    exposures = await build_exposures(positions, FakeClients(), {"LLY": 700.0})
+    assert len(exposures) == 1
+    assert exposures[0].occ_symbol == "LLY260904P00700000"
+    assert exposures[0].underlying == "LLY"
+    assert exposures[0].expiry == EXPIRY
+    assert exposures[0].delta == 0.0
+    assert exposures[0].vega == 0.0

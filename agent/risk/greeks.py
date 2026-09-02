@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -9,7 +10,9 @@ from agent.config import PORTFOLIO_DELTA_PCT, PORTFOLIO_VEGA_PCT
 from agent.execution.alpaca_client import AlpacaClients
 from agent.execution.cli_bridge import CliPosition
 from agent.schemas.execution import SpreadPlan
-from agent.tools.market_data import fetch_leg_snapshots
+from agent.tools.market_data import _parse_occ_symbol, fetch_leg_snapshots
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -48,6 +51,26 @@ async def build_exposures(
     for p in option_positions:
         q = snapshots.get(p.symbol)
         if q is None:
+            # A held contract with an unusable quote (e.g. a wide/stale market)
+            # must still consume a MAX_CONCURRENT_POSITIONS slot and appear in
+            # position_keys -- it is a real open position, not a data gap we
+            # can pretend doesn't exist. See docs/review.md P0-1.
+            logger.error(
+                "build_exposures: %s has no usable quote -- counting the position with "
+                "delta=0.0, vega=0.0 (portfolio greeks understate true exposure)", p.symbol
+            )
+            underlying, expiry, _right, _strike = _parse_occ_symbol(p.symbol)
+            exposures.append(
+                LegExposure(
+                    occ_symbol=p.symbol,
+                    underlying=underlying,
+                    expiry=expiry,
+                    qty=int(p.qty),
+                    delta=0.0,
+                    vega=0.0,
+                    spot=spots.get(underlying, 0.0),
+                )
+            )
             continue
         exposures.append(
             LegExposure(

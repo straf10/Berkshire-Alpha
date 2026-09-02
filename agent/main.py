@@ -941,6 +941,19 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
                 # `budget` object was already mutated by every attempted call,
                 # so ctx.llm_budget_exhausted below still reflects reality.
                 logger.warning("LLM pipeline degraded to quant-only for this cycle: %s", e)
+            except Exception:
+                # P0 remediation (docs/review.md P0-5). A malformed but
+                # schema-valid model proposal (e.g. two BUY legs) used to
+                # raise StopIteration out of validate_proposal, which
+                # propagates here as an uncaught exception that escapes
+                # scan_cycle entirely -- no decisions row gets written for
+                # the cycle, so `completed` never advances and the identical
+                # scan slot repeats forever, taking down the quant-only path
+                # too. That specific crash is fixed at its source
+                # (trader.py's delta-band check), but a malformed model
+                # output must never be able to stop the deterministic spine
+                # by any other path either -- degrade to quant-only instead.
+                logger.exception("LLM pipeline raised an unexpected exception -- degrading to quant-only for this cycle")
 
         for q in snapshots:
             regime_decision = select(q, assigned_regimes.get(q.symbol, Regime.NO_TRADE), skew_thresh, macro_tuning.vwm_bar)
