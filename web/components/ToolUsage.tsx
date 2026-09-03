@@ -23,7 +23,7 @@ export function ToolUsage({ usage }: { usage: ToolUsageResponse | null }) {
   const clean = totals.failures === 0;
 
   return (
-    <Card className="mb-6">
+    <Card>
       <CardHeader className="pb-2">
         <CardTitle className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           <Wrench className="size-3.5" />
@@ -40,7 +40,7 @@ export function ToolUsage({ usage }: { usage: ToolUsageResponse | null }) {
         <p className="text-2xl font-semibold tabular-nums">
           {totals.calls.toLocaleString()} calls
           <span className="px-2 font-normal text-muted-foreground">·</span>
-          <span className={clean ? "text-emerald-400" : "text-red-400"}>
+          <span className={clean ? "text-pos" : "text-neg"}>
             {totals.failures.toLocaleString()} failure{totals.failures === 1 ? "" : "s"}
           </span>
         </p>

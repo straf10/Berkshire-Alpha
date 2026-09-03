@@ -27,7 +27,7 @@ export function DataTableSection({
   children: ReactNode;
 }) {
   return (
-    <Card className="mb-6">
+    <Card>
       <CardHeader className="pb-2">
         <CardTitle className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           <Icon className="size-3.5" />

@@ -102,8 +102,8 @@ export function TradeHistoryTable({ trades }: { trades: Trade[] | null }) {
                     t.realized_pnl == null
                       ? "text-foreground/70"
                       : t.realized_pnl >= 0
-                        ? "text-emerald-400"
-                        : "text-red-400"
+                        ? "text-pos"
+                        : "text-neg"
                   }
                 >
                   {t.realized_pnl != null ? formatSignedMoney(t.realized_pnl) : "—"}

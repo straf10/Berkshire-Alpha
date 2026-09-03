@@ -40,9 +40,20 @@ export function WalkTimelineChart({ trade, natural, walkCapFraction }: WalkTimel
     .filter((e) => e.limit !== null)
     .map((e) => ({ step: e.step, limit: Number(e.limit) }));
 
-  // 0-1 walk steps (filled or rejected at the initial SUBMIT) has nothing
-  // worth plotting as a timeline.
-  if (points.length < 2) return null;
+  // 0-1 walk steps has nothing worth plotting as a timeline -- but returning
+  // null rendered *nothing at all* where a chart belongs, and half of the
+  // production trades filled at the submitted limit, so half of the expanded
+  // rows had a silent hole in them. Say what happened instead.
+  if (points.length < 2) {
+    const only = points[0];
+    return (
+      <p className="mt-2 text-sm text-muted-foreground">
+        {trade.fill_price !== null
+          ? `Filled at the submitted limit${only ? ` of ${money(only.limit)}` : ""} — no walk was needed.`
+          : `No walk to plot — the order ${trade.status.toLowerCase()} at the submitted limit${only ? ` of ${money(only.limit)}` : ""}.`}
+      </p>
+    );
+  }
 
   const mid = trade.submitted_limit;
   const cap = trade.walk_cap ?? null;
@@ -114,54 +125,66 @@ export function WalkTimelineChart({ trade, natural, walkCapFraction }: WalkTimel
               />
             }
           />
+          {/* Colour by CATEGORY, not by chart slot. mid and natural are both
+              MARKET reference points, so they share one neutral hue and are
+              told apart by their labels; the cap is the agent's own
+              discipline threshold, so it is --warn; the pre-fix cap is
+              history, so it is --idle; the walked line and the fill are the
+              agent acting, so they are --primary. Previously these were
+              chart-2/3/4/5 in the order they were added. */}
           <ReferenceLine
             y={mid}
-            stroke="var(--chart-2)"
+            stroke="var(--muted-foreground)"
             strokeDasharray="4 2"
-            label={{ value: `mid ${money(mid)}`, position: "insideTopLeft", fontSize: 10, fill: "var(--chart-2)" }}
+            label={{
+              value: `mid ${money(mid)}`,
+              position: "insideTopLeft",
+              fontSize: 10,
+              fill: "var(--muted-foreground)",
+            }}
           />
           {natural !== null && (
             <ReferenceLine
               y={natural}
-              stroke="var(--chart-3)"
-              strokeDasharray="4 2"
+              stroke="var(--muted-foreground)"
+              strokeDasharray="1 3"
               label={{
                 value: `natural ${money(natural)}`,
                 position: "insideTopLeft",
                 fontSize: 10,
-                fill: "var(--chart-3)",
+                fill: "var(--muted-foreground)",
               }}
             />
           )}
           {cap !== null && (
             <ReferenceLine
               y={cap}
-              stroke="var(--chart-4)"
-              label={{ value: `cap ${money(cap)}`, position: "insideBottomLeft", fontSize: 10, fill: "var(--chart-4)" }}
+              stroke="var(--warn)"
+              label={{ value: `cap ${money(cap)}`, position: "insideBottomLeft", fontSize: 10, fill: "var(--warn)" }}
             />
           )}
           {showLegacyCap && legacyCap !== null && (
             <ReferenceLine
               y={legacyCap}
-              stroke="var(--chart-5)"
+              stroke="var(--idle)"
               strokeDasharray="2 2"
               label={{
                 value: `pre-fix cap ${money(legacyCap)}`,
                 position: "insideBottomLeft",
                 fontSize: 10,
-                fill: "var(--chart-5)",
+                fill: "var(--idle)",
               }}
             />
           )}
           <Line
             type="stepAfter"
             dataKey="limit"
-            stroke="var(--foreground)"
+            stroke="var(--primary)"
             strokeWidth={1.5}
             dot={false}
             isAnimationActive={false}
           />
-          {fillPoint && <ReferenceDot x={fillPoint.step} y={fillPoint.limit} r={4} fill="var(--chart-1)" stroke="none" />}
+          {fillPoint && <ReferenceDot x={fillPoint.step} y={fillPoint.limit} r={4} fill="var(--pos)" stroke="none" />}
         </LineChart>
       </ChartContainer>
     </div>

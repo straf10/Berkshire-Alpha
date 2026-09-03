@@ -40,7 +40,7 @@ function DropRow({ stage, drop }: { stage: FunnelStage; drop: number }) {
   const gloss = stage.top_reject_reason ? REASON_GLOSS[stage.top_reject_reason] : undefined;
   return (
     <p className="py-1 pl-[6.75rem] text-xs text-muted-foreground">
-      <span className="font-semibold text-red-400">−{drop}</span>
+      <span className="font-semibold text-neg">−{drop}</span>
       {stage.top_reject_reason && (
         <>
           {" · mostly "}

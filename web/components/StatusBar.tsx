@@ -48,7 +48,7 @@ function SessionSchedule({ status }: { status: Status }) {
             <span
               key={t}
               className={`size-2 rounded-full ${
-                i < done ? "bg-emerald-400" : "border border-muted-foreground/50"
+                i < done ? "bg-primary" : "border border-muted-foreground/50"
               }`}
             />
           ))}
@@ -81,17 +81,17 @@ export function StatusBar({ status }: { status: Status }) {
   const copy = known ? actionCopy(status.next_action!) : null;
 
   return (
-    <div className="mb-6 flex flex-col gap-2">
+    <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-3 text-base">
         <Badge
           variant="outline"
           className={`gap-1.5 ${
             live
-              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
-              : "border-amber-500/30 bg-amber-500/10 text-amber-400"
+              ? "border-pos/30 bg-pos/10 text-pos"
+              : "border-idle/40 bg-idle/10 text-muted-foreground"
           }`}
         >
-          <span className={`h-1.5 w-1.5 rounded-full ${live ? "bg-emerald-400" : "bg-amber-400"}`} />
+          <span className={`h-1.5 w-1.5 rounded-full ${live ? "bg-pos" : "bg-idle"}`} />
           {live ? "LIVE" : "DRY-RUN"}
         </Badge>
         {status.llm_enabled !== undefined && (
@@ -106,7 +106,7 @@ export function StatusBar({ status }: { status: Status }) {
         {status.entries_halted && (
           <Badge
             variant="outline"
-            className="gap-1.5 border-red-500/30 bg-red-500/10 text-red-400"
+            className="gap-1.5 border-warn/30 bg-warn/10 text-warn"
             title="New entries are blocked for the rest of this session. Position management and exits still run."
           >
             <OctagonAlert className="size-3" />

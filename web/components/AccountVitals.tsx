@@ -84,10 +84,11 @@ export function AccountVitals({
   const equity = account.equity ? Number(account.equity) : null;
   const pnl = dayPnl(account, history, sessionDate);
   const known = "value" in pnl;
-  const sign = known && pnl.value >= 0 ? "text-emerald-400" : "text-red-400";
+  // P&L sign is the ONE thing --pos/--neg mean. Not "good", not "pass".
+  const sign = known && pnl.value >= 0 ? "text-pos" : "text-neg";
 
   return (
-    <Card className="mb-6">
+    <Card>
       <CardHeader className="pb-2">
         <CardTitle className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           <Wallet className="size-3.5" />

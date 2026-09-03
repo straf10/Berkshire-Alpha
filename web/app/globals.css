@@ -18,6 +18,12 @@
   --color-sidebar-primary: var(--sidebar-primary);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar: var(--sidebar);
+  --color-pos: var(--pos);
+  --color-neg: var(--neg);
+  --color-warn: var(--warn);
+  --color-idle: var(--idle);
+  --color-surface-2: var(--surface-2);
+  --color-hairline: var(--hairline);
   --color-chart-5: var(--chart-5);
   --color-chart-4: var(--chart-4);
   --color-chart-3: var(--chart-3);
@@ -79,6 +85,30 @@
   --chart-3: oklch(0.75 0.19 150); /* green */
   --chart-4: oklch(0.75 0.18 70); /* amber */
   --chart-5: oklch(0.65 0.22 25); /* red */
+
+  /*
+   * Semantic colour. --chart-1..5 were being applied decoratively -- the
+   * funnel was violet because it was the second chart, the walk timeline
+   * spent four hues on four reference lines that mean four different things.
+   * These are aliases of the same hues bound to a MEANING, and the rule is
+   * that a component reaches for the meaning, never for the chart slot.
+   *
+   *   --primary  the agent's own action. ENTER, filled, "the agent decided".
+   *   --accent   the Reflector, and nothing else -- it is a different voice.
+   *   --pos/--neg  P&L sign only. Not "good/bad", not "pass/fail".
+   *   --warn     risk state and attention: reduce-only, replay, a real gap.
+   *              Distinct from --destructive, which means something failed.
+   *   --idle     "ran as designed, nothing to see" -- a closed market, an
+   *              unlit pipeline stage. Absence, not a problem.
+   */
+  --pos: oklch(0.75 0.19 150);
+  --neg: oklch(0.65 0.22 25);
+  --warn: oklch(0.75 0.18 70);
+  --idle: oklch(0.45 0.02 265);
+  /* Second elevation, so the page has two planes instead of one, and an
+     in-card rule lighter than --border for dividing content inside a plane. */
+  --surface-2: oklch(0.195 0.015 265);
+  --hairline: oklch(1 0 0 / 6%);
   --radius: 0.5rem;
   --sidebar: oklch(0.14 0.015 265);
   --sidebar-foreground: oklch(0.95 0.01 265);
@@ -114,6 +144,12 @@
   --chart-3: oklch(0.75 0.19 150);
   --chart-4: oklch(0.75 0.18 70);
   --chart-5: oklch(0.65 0.22 25);
+  --pos: oklch(0.75 0.19 150);
+  --neg: oklch(0.65 0.22 25);
+  --warn: oklch(0.75 0.18 70);
+  --idle: oklch(0.45 0.02 265);
+  --surface-2: oklch(0.195 0.015 265);
+  --hairline: oklch(1 0 0 / 6%);
   --sidebar: oklch(0.14 0.015 265);
   --sidebar-foreground: oklch(0.95 0.01 265);
   --sidebar-primary: oklch(0.78 0.16 195);

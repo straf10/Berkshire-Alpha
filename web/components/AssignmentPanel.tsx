@@ -5,8 +5,8 @@ import type { AssignmentEvent } from "@/lib/types";
 export function AssignmentPanel({ events }: { events: AssignmentEvent[] }) {
   if (events.length === 0) return null;
   return (
-    <div className="mb-6 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-base">
-      <p className="mb-2 flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-amber-400">
+    <div className="rounded-md border border-warn/30 bg-warn/10 p-3 text-base">
+      <p className="mb-2 flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-warn">
         <TriangleAlert className="size-3.5" />
         Assignment reconciliation ({events.length})
       </p>
