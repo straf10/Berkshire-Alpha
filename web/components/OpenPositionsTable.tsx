@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { DataTableSection } from "@/components/DataTableSection";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { compactLegs, daysToExpiry } from "@/lib/format";
+import { TONE_CLASS, TONE_VARIANT, tradeOutcome } from "@/lib/tradeStatus";
 import type { AssignmentEvent, OpenPosition } from "@/lib/types";
 
 function netGreeks(liveLegs: { qty: number; delta: number; vega: number }[]): { delta: number; vega: number } | null {
@@ -43,6 +44,9 @@ export function OpenPositionsTable({
         <TableBody>
           {positions.map((p) => {
             const g = netGreeks(p.live_legs);
+            // Same vocabulary as TradeHistoryTable rather than the raw enum --
+            // two tables on one tab printing FILLED and "Filled" reads as a bug.
+            const outcome = tradeOutcome(p);
             return (
               <TableRow key={p.id}>
                 <TableCell className="font-semibold">
@@ -62,7 +66,15 @@ export function OpenPositionsTable({
                 <TableCell className="text-foreground/70">
                   {g ? `${g.delta.toFixed(2)} / ${g.vega.toFixed(2)}` : "—"}
                 </TableCell>
-                <TableCell className="text-foreground/70">{p.status}</TableCell>
+                <TableCell>
+                  <Badge
+                    variant={TONE_VARIANT[outcome.tone]}
+                    className={TONE_CLASS[outcome.tone]}
+                    title={outcome.tip}
+                  >
+                    {outcome.label}
+                  </Badge>
+                </TableCell>
               </TableRow>
             );
           })}

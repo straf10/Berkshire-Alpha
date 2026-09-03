@@ -14,12 +14,16 @@ export function DataTableSection({
   title,
   isEmpty = false,
   emptyMessage = "Nothing here yet.",
+  aside,
   children,
 }: {
   icon: LucideIcon;
   title: string;
   isEmpty?: boolean;
   emptyMessage?: string;
+  // Rendered above the scroll container, inside the card -- for a legend or
+  // note that belongs to the table but must not scroll horizontally with it.
+  aside?: ReactNode;
   children: ReactNode;
 }) {
   return (
@@ -34,7 +38,10 @@ export function DataTableSection({
         {isEmpty ? (
           <p className="text-muted-foreground">{emptyMessage}</p>
         ) : (
-          <div className="overflow-x-auto rounded-md border border-border">{children}</div>
+          <>
+            {aside}
+            <div className="overflow-x-auto rounded-md border border-border">{children}</div>
+          </>
         )}
       </CardContent>
     </Card>
