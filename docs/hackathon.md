@@ -124,11 +124,10 @@ Serverless AI inference for open-source models, for integrating specialized mode
 - Alpaca Slack (community): https://alpaca.markets/slack
 - Alpaca disclosures: https://alpaca.markets/disclosures
 
-**Broker API (not used by this project — see note)**
-- [broker_api_reference.md](broker_api_reference.md) has swept notes on Alpaca's Broker API
-  (sandbox environments, KYC/account-creation rules, funding, events). Kept for reference only:
-  this hackathon runs on the plain **Trading API** + a personal paper account (see Account
-  requirements above), not the Broker API.
+**Broker API — not used by this project.** This hackathon runs on the plain **Trading API**
+plus a personal paper account (see Account requirements above). Alpaca's Broker API (sandbox
+environments, KYC/account-creation rules, funding, events) was surveyed and ruled out; the
+survey notes are not carried in this repo.
 
 ## Prizes
 
