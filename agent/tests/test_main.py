@@ -2032,8 +2032,22 @@ async def test_no_llm_on_the_assignment_path(tmp_path, monkeypatch: pytest.Monke
 
 def test_submit_close_called_only_from_assignment() -> None:
     """The structural form of 'invoked only by the deterministic management
-    pass, never by an LLM' (docs/assignment_reconciliation_plan.md Group 4)."""
-    allowed = {"agent/execution/assignment.py", "agent/execution/broker.py"}
+    pass, never by an LLM' (docs/assignment_reconciliation_plan.md Group 4).
+
+    order_manager.py joined the allowlist for the leg-by-leg close fallback
+    (docs/markgap_plan.md P2), which submits two single-instrument CLOSING
+    orders when the combined mleg close is structurally rejected. It satisfies
+    the same two properties the original carve-out was written around: it is
+    reachable only from exit_tick's deterministic management pass, and it can
+    only ever close. The second is enforced, not asserted -- `_build_close_
+    request` raises on any non-closing intent
+    (test_close_request_rejects_opening_intent), and position_intent is
+    broker-enforced on top of that."""
+    allowed = {
+        "agent/execution/assignment.py",
+        "agent/execution/broker.py",
+        "agent/execution/order_manager.py",
+    }
     for path in (REPO_ROOT / "agent").rglob("*.py"):
         rel = path.relative_to(REPO_ROOT).as_posix()
         if rel in allowed or "agent/tests/" in rel or "__pycache__" in rel:

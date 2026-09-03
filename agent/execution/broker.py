@@ -72,6 +72,13 @@ def classify_reject(status: int, body: str) -> RejectCode:
         return RejectCode.MARKET_CLOSED
     if status == 422 and any(k in text for k in ("leg", "intent", "price")):
         return RejectCode.MALFORMED_ORDER
+    # Alpaca's numeric code for a structurally unacceptable order, matched on
+    # the body regardless of the HTTP status the client surfaces. Belt and
+    # braces for the branch above, which is what actually catches this today:
+    # the code has NOT been observed in this account's logs, so it is not
+    # relied on as the trigger for the leg-by-leg close fallback.
+    if "42210000" in text:
+        return RejectCode.MALFORMED_ORDER
     return RejectCode.UNKNOWN
 
 

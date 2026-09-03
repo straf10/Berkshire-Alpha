@@ -5,8 +5,15 @@ from decimal import Decimal
 
 import pytest
 
-from agent.execution.broker import MockBroker, OrderState, _build_mleg_request
-from agent.execution.order_manager import walk_cap, walk_to_fill
+from dataclasses import replace
+
+from agent.execution.broker import MockBroker, OrderState, _build_mleg_request, classify_reject
+from agent.execution.order_manager import (
+    STRUCTURAL_CLOSE_REJECTS,
+    close_legs_individually,
+    walk_cap,
+    walk_to_fill,
+)
 from agent.schemas.execution import Intent, Leg, OrderStatus, Regime, RejectCode, SpreadPlan, Structure
 
 EXPIRY = date(2026, 9, 4)
@@ -299,3 +306,80 @@ def test_walk_cap_matches_documented_branches(
         is_closing=is_closing, structure_is_credit=structure_is_credit,
     )
     assert cap == Decimal(expected), name
+
+
+# -- leg-by-leg close fallback (docs/markgap_plan.md P2) --
+#
+# _closing_debit_plan is a closed BULL_CALL_SPREAD: the 105C (bid 3.00 / ask
+# 3.20) is the original SHORT and must be bought back FIRST; the 100C
+# (bid 6.00 / ask 6.20) is the original LONG and is sold after.
+
+
+async def test_legged_close_retires_the_short_leg_first() -> None:
+    broker = MockBroker([
+        _state("short", OrderStatus.FILLED, filled_qty=4, fill_avg_price=Decimal("3.20")),
+        _state("long", OrderStatus.FILLED, filled_qty=4, fill_avg_price=Decimal("6.00")),
+    ])
+    result = await close_legs_individually(broker, _closing_debit_plan("-2.80", "-2.80"), 4, clock=FakeClock())
+
+    assert result.status == "FILLED"
+    assert [symbol for symbol, _, _, _, _ in broker.closes] == ["TST260904C00105000", "TST260904C00100000"]
+    assert [side for _, _, side, _, _ in broker.closes] == ["BUY", "SELL"]
+    # Marketable against the live quote: pay the ask to retire the obligation,
+    # take the bid to release the asset.
+    assert [limit for _, _, _, limit, _ in broker.closes] == [Decimal("3.20"), Decimal("6.00")]
+    # Same signed net (debit positive) the combined path's fill_price carries,
+    # so realized-P&L arithmetic is identical either way.
+    assert result.close_net == Decimal("-2.80")
+
+
+async def test_legged_close_aborts_rather_than_ever_holding_a_naked_short() -> None:
+    """The whole reason the protocol exists. If the short leg does not fully
+    fill, the long leg -- the thing that covers it -- must not be sold."""
+    broker = MockBroker([_state("short", OrderStatus.REJECTED, reject_code=RejectCode.CONTRACT_NOT_FOUND)])
+    result = await close_legs_individually(broker, _closing_debit_plan("-2.80", "-2.80"), 4, clock=FakeClock())
+
+    assert result.status == "ABORTED_SHORT_LEG"
+    assert len(broker.closes) == 1, "the long leg must not be touched"
+    assert result.close_net is None
+
+
+async def test_legged_close_aborts_on_a_partially_filled_short_leg() -> None:
+    """Partially retiring the obligation is not retiring it."""
+    broker = MockBroker([_state("short", OrderStatus.FILLED, filled_qty=2, fill_avg_price=Decimal("3.20"))])
+    result = await close_legs_individually(broker, _closing_debit_plan("-2.80", "-2.80"), 4, clock=FakeClock())
+
+    assert result.status == "ABORTED_SHORT_LEG"
+    assert len(broker.closes) == 1
+
+
+async def test_legged_close_reports_a_stranded_long_leg() -> None:
+    """Short closed, long did not. Strictly better than the spread it came
+    from -- defined risk, no obligation -- but it cannot be expressed in a
+    one-row-per-spread schema, so it is surfaced rather than swallowed."""
+    broker = MockBroker([
+        _state("short", OrderStatus.FILLED, filled_qty=4, fill_avg_price=Decimal("3.20")),
+        _state("long", OrderStatus.REJECTED, reject_code=RejectCode.CONTRACT_NOT_FOUND),
+    ])
+    result = await close_legs_individually(broker, _closing_debit_plan("-2.80", "-2.80"), 4, clock=FakeClock())
+
+    assert result.status == "STRANDED_LONG_LEG"
+    assert result.stranded_occ_symbol == "TST260904C00100000"
+    assert result.short_fill == Decimal("3.20")
+    assert result.close_net is None
+
+
+async def test_legged_close_refuses_anything_that_is_not_a_1x1_vertical() -> None:
+    """More than one obligation to retire has no single safe ordering."""
+    plan = _closing_debit_plan("-2.80", "-2.80")
+    three_legs = replace(plan, legs=(*plan.legs, plan.legs[1]))
+    broker = MockBroker([_state("short", OrderStatus.FILLED, filled_qty=4)])
+    result = await close_legs_individually(broker, three_legs, 4, clock=FakeClock())
+
+    assert result.status == "ABORTED_SHORT_LEG"
+    assert broker.closes == []
+
+
+def test_alpaca_structural_reject_code_maps_to_malformed_order() -> None:
+    assert classify_reject(422, '{"code":42210000,"message":"unable to process order"}') == RejectCode.MALFORMED_ORDER
+    assert RejectCode.MALFORMED_ORDER in STRUCTURAL_CLOSE_REJECTS

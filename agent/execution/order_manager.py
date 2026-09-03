@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import Awaitable, Callable, Literal
+from typing import Awaitable, Callable, Final, Literal
 
 from agent.config import (
     PARTIAL_FILL_MAX_POLL_S,
@@ -178,3 +178,134 @@ async def _walk(
         step += 1
         events.append(WalkEvent(ts=clock.now(), step=step, action="REPLACE", order_id=order_id, limit=limit, status=state.status))
         await _emit_order_id(on_order_id, order_id, step)
+
+
+# --------------------------------------------------------------------------
+# Leg-by-leg close fallback (docs/markgap_plan.md P2).
+#
+# The combined mleg close is the only close path there was: one order, and on
+# any terminal non-fill exit_tick retries next tick. That is right for a
+# transient non-fill and useless for a STRUCTURAL rejection, which will be
+# rejected identically forever while the horizon closes on a position that has
+# to be flat.
+#
+# Legging out of a spread is dangerous in a way the combined order is not: fill
+# one leg and not the other and the book holds a NAKED SHORT OPTION -- undefined
+# risk, the single thing the whole risk stack exists to prevent. The protocol
+# below is what makes it safe, and it is not negotiable:
+#
+#   1. Short leg first, always. Buy back the obligation before selling the
+#      asset that covers it.
+#   2. If the short leg does not FULLY fill, abort. Do not touch the long leg.
+#      The failure mode is then "we did nothing", identical to today.
+#   3. Only once the short leg is fully closed, sell the long leg.
+#   4. Never submit both concurrently.
+#
+# Step 3 can still fail, leaving a long option outstanding. That is a strictly
+# better position than the spread it came from (defined risk, no obligation),
+# but it cannot be expressed in `trades`, which is one row per spread with a
+# single fill price -- so the caller flags it for the operator rather than
+# pretending the row is closed.
+# --------------------------------------------------------------------------
+
+# Alpaca rejects a structurally impossible mleg with 422 + a leg/intent/price
+# message, which classify_reject maps to MALFORMED_ORDER; a leg it will not
+# quote comes back as CONTRACT_NOT_FOUND. Everything else (buying power,
+# options level, market closed) is either transient or fatal for BOTH paths,
+# so legging out would not help and this stays deliberately narrow.
+STRUCTURAL_CLOSE_REJECTS: Final[frozenset[RejectCode]] = frozenset(
+    {RejectCode.MALFORMED_ORDER, RejectCode.CONTRACT_NOT_FOUND}
+)
+
+_LEG_MAX_POLL_S: Final[float] = PARTIAL_FILL_MAX_POLL_S
+
+
+@dataclass(frozen=True)
+class LeggedCloseResult:
+    status: Literal["FILLED", "ABORTED_SHORT_LEG", "STRANDED_LONG_LEG"]
+    # short_fill - long_fill, i.e. the same signed net (debit positive) the
+    # combined path's fill_price carries, so realized-P&L arithmetic is
+    # identical either way. None unless both legs filled.
+    close_net: Decimal | None
+    short_fill: Decimal | None
+    long_fill: Decimal | None
+    stranded_occ_symbol: str | None
+    detail: str
+
+
+async def _submit_leg_and_wait(
+    broker: BrokerPort, *, symbol: str, qty: int, side: Literal["BUY", "SELL"],
+    limit: Decimal, intent: Intent, clock: ClockPort,
+):
+    """One single-instrument closing order, polled to terminal or
+    _LEG_MAX_POLL_S. No walking: this path exists because the structured order
+    could not be sent at all, so it takes the marketable price the quote is
+    already showing rather than negotiating."""
+    state = await broker.submit_close(symbol, qty, side, limit, intent)
+    if state.status in (OrderStatus.FILLED, OrderStatus.REJECTED):
+        return state
+    elapsed = 0.0
+    while elapsed < _LEG_MAX_POLL_S:
+        await clock.sleep(WALK_POLL_INTERVAL_S)
+        elapsed += WALK_POLL_INTERVAL_S
+        state = await broker.get_order(state.order_id)
+        if state.status in (OrderStatus.FILLED, OrderStatus.REJECTED, OrderStatus.CANCELED):
+            return state
+    return state
+
+
+async def close_legs_individually(
+    broker: BrokerPort, closing_plan: SpreadPlan, qty: int, *, clock: ClockPort
+) -> LeggedCloseResult:
+    """Close a two-leg spread one leg at a time, short leg first.
+
+    `closing_plan` is build_closing_plan's output, so every leg's side and
+    intent are already flipped to closing and its bid/ask are the live quote:
+    the leg to BUY back is the original short, the leg to SELL is the original
+    long. Prices are marketable against that quote -- pay the ask to retire the
+    obligation, take the bid to release the asset -- with the sell floored at a
+    cent so a zero-bid leg produces a limit the broker will accept."""
+    buy_legs = [leg for leg in closing_plan.legs if leg.side == "BUY"]
+    sell_legs = [leg for leg in closing_plan.legs if leg.side == "SELL"]
+    if len(closing_plan.legs) != 2 or len(buy_legs) != 1 or len(sell_legs) != 1:
+        # A ratio or butterfly has more than one obligation to retire and no
+        # single safe ordering. Not this function's problem to guess at.
+        return LeggedCloseResult(
+            "ABORTED_SHORT_LEG", None, None, None, None,
+            f"leg-by-leg close only handles a 2-leg 1x1 vertical, got {len(closing_plan.legs)} legs",
+        )
+
+    short_leg, long_leg = buy_legs[0], sell_legs[0]
+
+    short_state = await _submit_leg_and_wait(
+        broker, symbol=short_leg.occ_symbol, qty=qty, side="BUY",
+        limit=_quantize_cent(Decimal(str(short_leg.ask))), intent=Intent.BUY_TO_CLOSE, clock=clock,
+    )
+    if short_state.status != OrderStatus.FILLED or short_state.filled_qty != qty:
+        # Rule 2. The spread is intact and still defined-risk; the next tick
+        # re-evaluates from scratch.
+        return LeggedCloseResult(
+            "ABORTED_SHORT_LEG", None, None, None, None,
+            f"short leg {short_leg.occ_symbol} did not fully fill "
+            f"({short_state.status}, {short_state.filled_qty}/{qty}) -- long leg untouched",
+        )
+
+    long_state = await _submit_leg_and_wait(
+        broker, symbol=long_leg.occ_symbol, qty=qty, side="SELL",
+        limit=max(_quantize_cent(Decimal(str(long_leg.bid))), Decimal("0.01")),
+        intent=Intent.SELL_TO_CLOSE, clock=clock,
+    )
+    short_fill = short_state.fill_avg_price or Decimal("0")
+    if long_state.status != OrderStatus.FILLED or long_state.filled_qty != qty:
+        return LeggedCloseResult(
+            "STRANDED_LONG_LEG", None, short_fill, None, long_leg.occ_symbol,
+            f"short leg closed at {short_fill} but long leg {long_leg.occ_symbol} did not "
+            f"({long_state.status}, {long_state.filled_qty}/{qty}) -- a lone LONG option remains, "
+            "defined risk, no obligation; operator must close it",
+        )
+
+    long_fill = long_state.fill_avg_price or Decimal("0")
+    return LeggedCloseResult(
+        "FILLED", _quantize_cent(short_fill - long_fill), short_fill, long_fill, None,
+        f"legged out: bought {short_leg.occ_symbol} at {short_fill}, sold {long_leg.occ_symbol} at {long_fill}",
+    )

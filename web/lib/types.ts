@@ -184,6 +184,10 @@ export interface Status {
   next_action_utc?: string;
   now_utc?: string;
   entries_halted?: boolean;
+  // The planned, dated stand-down on the final session (agent/config.py
+  // FREEZE_ENTRIES_FROM). Distinct from entries_halted, which is a fail-safe
+  // an operator has to clear. Optional: an older API build omits it.
+  entries_frozen?: boolean;
 }
 
 export interface AccountState {
@@ -419,4 +423,49 @@ export interface Reflection {
   argument: string;
   proposed_change: string | null;
   ok: number;
+}
+
+// /markgap -- mark integrity for the open book. Every money field is a STRING:
+// put_state serialises Decimals with `default=str`, exactly as /state/account's
+// equity does, so these must be Number()-ed before arithmetic.
+export interface MarkGapLeg {
+  occ_symbol: string;
+  side: string;
+  right: string;
+  strike: number;
+  qty: string;
+  mark: string;
+  market_value: string;
+}
+
+export interface MarkGapSpread {
+  trade_id: number;
+  symbol: string;
+  structure: string;
+  qty: number;
+  width: string;
+  /** What judged equity is carrying for this spread. */
+  broker_mark: string;
+  band_low: string;
+  band_high: string;
+  /** null when the last scan left no spot for this symbol. */
+  intrinsic: string | null;
+  /** 0 inside the band; signed distance outside it. */
+  markgap: string;
+  spot: number | null;
+  legs: MarkGapLeg[];
+}
+
+export interface MarkGapValue {
+  computed_at: string;
+  spreads: MarkGapSpread[];
+  /** Spreads that could not be bounded honestly -- shown, never hidden. */
+  omitted: number;
+  total_markgap: string;
+  intrinsic_spot_source: string;
+}
+
+export interface MarkGapResponse {
+  value: MarkGapValue;
+  asof: string;
 }

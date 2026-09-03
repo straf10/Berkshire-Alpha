@@ -462,3 +462,34 @@ async def test_funnel_endpoint_empty_db(tmp_path) -> None:
         result = await api_app.funnel(session_date=None, conn=conn)
     assert result["session_date"] is None
     assert all(s["count"] == 0 for s in result["stages"])
+
+
+async def test_markgap_endpoint_wraps_state_with_its_write_time(tmp_path) -> None:
+    """`asof` is load-bearing: after the unwind the book is flat and the panel
+    has to say when the last non-zero reading was taken."""
+    db_path = str(tmp_path / "test_agent.db")
+    await storage_db.init_db(db_path)
+
+    async with storage_db.connect(db_path) as conn:
+        await storage_write.put_state(conn, "markgap", {
+            "computed_at": "2026-09-03T14:52:00+00:00",
+            "spreads": [{"trade_id": 8, "symbol": "LLY", "markgap": "-2140.00"}],
+            "omitted": 0, "total_markgap": "-2140.00",
+        })
+
+    from agent.api import app as api_app
+
+    async with storage_db.connect(db_path) as conn:
+        payload = await api_app.markgap(conn=conn)
+    assert payload["value"]["total_markgap"] == "-2140.00"
+    assert payload["asof"]
+
+
+async def test_markgap_endpoint_empty_before_first_publish(tmp_path) -> None:
+    db_path = str(tmp_path / "test_agent.db")
+    await storage_db.init_db(db_path)
+
+    from agent.api import app as api_app
+
+    async with storage_db.connect(db_path) as conn:
+        assert await api_app.markgap(conn=conn) == {}

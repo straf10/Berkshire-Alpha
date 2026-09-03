@@ -42,7 +42,11 @@ from agent.execution.alpaca_client import AlpacaClients, probe_equity_feed
 from agent.execution.assignment import ReconcileResult, reconcile
 from agent.execution.broker import AlpacaBroker, BrokerPort, ClockPort, RealClock
 from agent.execution.exits import OpenTrade, build_closing_plan, current_net_mid
-from agent.execution.order_manager import walk_to_fill
+from agent.execution.order_manager import (
+    STRUCTURAL_CLOSE_REJECTS,
+    close_legs_individually,
+    walk_to_fill,
+)
 from agent.risk.assignment import AssignmentEvent, AssignmentStatus, detect_assignments
 from agent.risk.exits import evaluate_exit
 from agent.risk.gates import GateContext, GateDecision, evaluate
@@ -71,6 +75,7 @@ from agent.strategy.macro import classify, tuning
 from agent.strategy.regime import select
 from agent.strategy.spread_builder import BuildFailure, build
 from agent.strategy.ticker_screener import assign_regimes, shortlist, skew_threshold
+from agent.tools import markgap
 from agent.tools.llm import LlmBudget, LlmClient, LlmPort, LlmUnavailable, load_budget
 from agent.tools.market_data import ChainCache, fetch_leg_snapshots, fetch_universe_bars
 from agent.tools.news import Headline, fetch_headlines
@@ -636,8 +641,36 @@ async def exit_tick(
         result = await walk_to_fill(deps.broker, closing_plan, trade.qty, clock=deps.clock)
         logger.info("exit_tick: %s trade %d %s (%s) -> %s", trade.symbol, trade.trade_id, decision.reason, decision.detail, result.status)
 
-        if result.status == "FILLED" and result.filled_qty == trade.qty:
-            realized_pnl = (-trade.entry_net_mid - (result.fill_price or Decimal("0"))) * 100 * result.filled_qty
+        close_net = result.fill_price
+        closed_ok = result.status == "FILLED" and result.filled_qty == trade.qty
+
+        # docs/markgap_plan.md P2. A STRUCTURAL rejection will be rejected
+        # identically on every retry, so "try again next tick" is not a
+        # recovery -- it is the position riding past the horizon. Leg out
+        # instead, short leg first, aborting rather than ever holding a naked
+        # short (see close_legs_individually's protocol).
+        if result.status == "REJECTED" and result.reject_code in STRUCTURAL_CLOSE_REJECTS:
+            legged = await close_legs_individually(deps.broker, closing_plan, trade.qty, clock=deps.clock)
+            logger.warning("exit_tick: %s trade %d combined close rejected (%s) -> legged close %s: %s",
+                            trade.symbol, trade.trade_id, result.reject_code, legged.status, legged.detail)
+            if legged.status == "FILLED":
+                close_net, closed_ok = legged.close_net, True
+            elif legged.status == "STRANDED_LONG_LEG":
+                # The row cannot express half a spread (one row, one fill
+                # price), and rebuilding a 2-leg close for a 1-leg position
+                # would fail forever -- MLEG requires 2-4 legs. Park the trade
+                # so exit_tick stops touching it, and say so loudly.
+                logger.error("exit_tick: %s trade %d STRANDED: %s", trade.symbol, trade.trade_id, legged.detail)
+                pending = await _read_state_value(conn, "legged_close_pending") or {}
+                pending[str(trade.trade_id)] = {
+                    "symbol": trade.symbol, "occ_symbol": legged.stranded_occ_symbol,
+                    "qty": trade.qty, "short_fill": str(legged.short_fill),
+                    "detail": legged.detail, "ts_utc": datetime.now(timezone.utc).isoformat(),
+                }
+                await storage_write.put_state(conn, "legged_close_pending", pending)
+
+        if closed_ok:
+            realized_pnl = (-trade.entry_net_mid - (close_net or Decimal("0"))) * 100 * trade.qty
             await storage_write.close_trade(
                 conn, trade.trade_id, closed_at=datetime.now(timezone.utc).isoformat(), realized_pnl=realized_pnl,
                 # P2 remediation (docs/audit_report_v2.md §9 item 10): decision.reason
@@ -1211,15 +1244,67 @@ async def management_tick(deps: Deps, session: SessionPlan) -> None:
         )
         await storage_write.insert_greeks_snapshot(conn, greeks_row)
         await storage_write.put_state(conn, "reduce_only", breached)
-        await exit_tick(deps, session, conn, spots, skip_trade_ids=assignment.trade_ids)
+        # A spread parked by a stranded leg-by-leg close (docs/markgap_plan.md
+        # P2) is skipped for the same reason an assignment-touched one is:
+        # exit_tick would rebuild a 2-leg closing order for a position that no
+        # longer has two legs, and MLEG requires 2-4. It stays parked until an
+        # operator clears the key.
+        parked = await _read_state_value(conn, "legged_close_pending") or {}
+        skip = frozenset(assignment.trade_ids) | {int(tid) for tid in parked}
+        await exit_tick(deps, session, conn, spots, skip_trade_ids=skip)
         await storage_write.put_state(conn, "account", {
             "equity": str(account.equity), "last_equity": str(account.last_equity),
             "buying_power": str(account.buying_power), "cash": str(account.cash),
         })
         await storage_write.put_state(conn, "positions", [p.symbol for p in positions])
+        await _publish_markgap(conn, positions, spots)
         await storage_write.insert_health_sample(
             conn, storage_write.HealthSampleRow(ts_utc=datetime.now(timezone.utc).isoformat(), ok=True)
         )
+
+
+def _position_view(pos: cli_bridge.CliPosition) -> markgap.PositionView | None:
+    """CliPosition carries no per-contract mark, only the position's total
+    market_value -- so derive it: market_value = qty * price * 100 for an
+    option. None for a zero-qty row (the broker should never send one, but a
+    division is not the place to find out) or a non-option, which has no
+    strike-based bound to test in the first place."""
+    if pos.qty == 0 or pos.asset_class != "us_option":
+        return None
+    return markgap.PositionView(
+        qty=pos.qty,
+        market_value=pos.market_value,
+        mark=pos.market_value / (pos.qty * Decimal("100")),
+    )
+
+
+async def _publish_markgap(
+    conn: aiosqlite.Connection, positions: list[cli_bridge.CliPosition], spots: dict[str, float]
+) -> None:
+    """Mark integrity for the open book -> agent_state, for /markgap.
+
+    Runs AFTER exit_tick deliberately: a spread closed on this tick has no
+    open markgap to report, and reporting one would contradict the positions
+    list written beside it. Adds one DB read and no Alpaca call -- `positions`
+    and `spots` are already in hand.
+
+    `spots` is the last entry scan's snapshot, so `intrinsic` can lag the tape
+    by up to a scan interval. The band and the markgap itself need no spot."""
+    views = {p.symbol: v for p in positions if (v := _position_view(p)) is not None}
+    spreads = [
+        markgap.SpreadInput(
+            trade_id=t.trade_id, symbol=t.symbol, structure=t.structure.value,
+            structure_is_credit=STRUCTURE_IS_CREDIT[t.structure], qty=t.qty,
+            legs=tuple(
+                markgap.LegView(occ_symbol=leg.occ_symbol, side=leg.side, right=leg.right, strike=leg.strike)
+                for leg in t.legs
+            ),
+        )
+        for t in await _open_trades(conn)
+    ]
+    await storage_write.put_state(conn, "markgap", markgap.book_markgap(
+        spreads, views, spots, computed_at=datetime.now(timezone.utc).isoformat(),
+    ))
 
 
 async def _reflection_exists(conn: aiosqlite.Connection, session_date: str) -> bool:

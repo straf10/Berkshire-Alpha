@@ -13,6 +13,7 @@ import type {
   HealthBucket,
   HealthResponse,
   LlmUsageResponse,
+  MarkGapResponse,
   OpenPosition,
   Reflection as ReflectionShape,
   Status,
@@ -96,6 +97,7 @@ export default async function Page({
     healthHistory,
     health,
     reflections,
+    markgap,
   ] = await Promise.all([
     fetchJson<AgentConfig>(`${base}/config`),
     fetchJson<AccountState>(`${base}/state/account`),
@@ -109,6 +111,7 @@ export default async function Page({
     fetchJson<HealthBucket[]>(`${base}/health/history`),
     fetchJson<HealthResponse>(`${base}/health`),
     fetchJson<ReflectionShape[]>(`${base}/reflections?limit=1`),
+    fetchJson<MarkGapResponse>(`${base}/markgap`),
   ]);
 
   return (
@@ -131,6 +134,7 @@ export default async function Page({
       healthHistory={healthHistory}
       health={health}
       reflection={reflections?.[0] ?? null}
+      markgap={markgap}
       frontendLastUpdated={new Date().toISOString()}
     />
   );
