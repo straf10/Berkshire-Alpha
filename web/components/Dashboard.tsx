@@ -4,6 +4,7 @@ import {
   ArrowLeftRight,
   Coins,
   Database,
+  Gavel,
   GitCommitHorizontal,
   Globe,
   LayoutDashboard,
@@ -20,6 +21,7 @@ import { CycleTheatre } from "@/components/CycleTheatre";
 import { FeaturedWalk } from "@/components/FeaturedWalk";
 import { GreeksGauges } from "@/components/GreeksGauges";
 import { HealthStrip } from "@/components/HealthStrip";
+import { JudgesBrief } from "@/components/judges/JudgesBrief";
 import { LiveRefresh } from "@/components/LiveRefresh";
 import { LlmUsage } from "@/components/LlmUsage";
 import { ModelEnsemble } from "@/components/ModelEnsemble";
@@ -32,7 +34,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToolUsage } from "@/components/ToolUsage";
 import { TradeHistoryTable } from "@/components/TradeHistoryTable";
 import { formatDateTime } from "@/lib/format";
-import { VALID_TABS, type TabId } from "@/lib/tabs";
+import { DEFAULT_TAB, VALID_TABS, type TabId } from "@/lib/tabs";
 import type {
   AccountState,
   AgentConfig,
@@ -176,6 +178,10 @@ export function Dashboard({
   frontendLastUpdated: string;
 }) {
   const [tab, setTab] = useState<TabId>(initialTab);
+  // Controlled here, not just handed to ReasoningFeed once, because the
+  // judges tab drives it: clicking a rule in the refusal ledger has to land
+  // on Decisions already filtered to that rule.
+  const [gates, setGates] = useState<string[]>(initialGates);
   const walkCap = config ? Number(config.execution_guardrails.walk_cap_fraction) : null;
 
   // Tab switches never navigate -- everything was already fetched once on
@@ -183,15 +189,30 @@ export function Dashboard({
   // bypassing the Next.js router) so a reload or shared link restores the
   // same tab without re-running the page's data fetch.
   function handleTabChange(value: unknown) {
-    const next = (VALID_TABS as readonly string[]).includes(value as string) ? (value as TabId) : "overview";
+    const next = (VALID_TABS as readonly string[]).includes(value as string) ? (value as TabId) : DEFAULT_TAB;
     setTab(next);
     // Only the tab param is rewritten -- ?decision= and ?gate= are the deep
     // link and have to survive a tab switch, which this used to discard by
     // rebuilding the whole query string from scratch.
     const url = new URL(window.location.href);
-    if (next === "overview") url.searchParams.delete("tab");
+    if (next === DEFAULT_TAB) url.searchParams.delete("tab");
     else url.searchParams.set("tab", next);
     window.history.replaceState(null, "", `${url.pathname}${url.search}`);
+  }
+
+  // Criterion 4's whole promise is "go look at the raw thing", so the CTA has
+  // to actually land there -- switching the tab AND the filter, and writing
+  // both into the URL so the judge can share exactly what they were shown.
+  function openDecisions(gate?: string) {
+    const next = gate ? [gate] : [];
+    setGates(next);
+    setTab("decisions");
+    const url = new URL(window.location.href);
+    url.searchParams.set("tab", "decisions");
+    if (gate) url.searchParams.set("gate", gate);
+    else url.searchParams.delete("gate");
+    window.history.replaceState(null, "", `${url.pathname}${url.search}`);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   return (
@@ -232,6 +253,10 @@ export function Dashboard({
 
       <Tabs value={tab} onValueChange={handleTabChange} className="mt-6">
         <TabsList variant="line" className="mb-6 w-full">
+          <TabsTrigger value="judges" className="gap-1.5">
+            <Gavel className="size-3.5" />
+            For the Judges
+          </TabsTrigger>
           <TabsTrigger value="overview" className="gap-1.5">
             <LayoutDashboard className="size-3.5" />
             Overview
@@ -253,6 +278,22 @@ export function Dashboard({
             Config
           </TabsTrigger>
         </TabsList>
+
+        {/* The submission argument, and the tab a cold visitor lands on
+            (lib/tabs.ts DEFAULT_TAB). Reads only from props already fetched
+            above -- it issues no request of its own. */}
+        <TabsContent value="judges">
+          <JudgesBrief
+            status={status}
+            account={account}
+            config={config}
+            decisions={decisions}
+            trades={trades}
+            markgap={markgap}
+            accountAsOf={health?.last_cycle_utc ?? null}
+            onOpenDecisions={openDecisions}
+          />
+        </TabsContent>
 
         {/* Overview: glanceable totals only -- account state, risk gauges,
             and system health. No raw rows here; drill-down content
@@ -283,11 +324,16 @@ export function Dashboard({
               below it is the evidence. It used to be the last card under a
               fifty-row table. */}
           <Reflection reflection={reflection} />
+          {/* Keyed on the filter: ReasoningFeed seeds its facet selection in a
+              useState initialiser, so a prop change alone would not re-filter.
+              Remounting is the honest fix at this size -- the alternative is
+              lifting its whole facet state up for one caller. */}
           <ReasoningFeed
+            key={gates.join(",")}
             decisions={decisions}
             walkCapFraction={walkCap}
             initialDecisionId={initialDecisionId}
-            initialGates={initialGates}
+            initialGates={gates}
           />
         </TabsContent>
 

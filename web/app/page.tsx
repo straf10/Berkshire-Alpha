@@ -1,7 +1,7 @@
 import { Dashboard } from "@/components/Dashboard";
 import { ServiceDown } from "@/components/ServiceDown";
 import { apiBase, fetchJson } from "@/lib/api";
-import { VALID_TABS, type TabId } from "@/lib/tabs";
+import { DEFAULT_TAB, VALID_TABS, type TabId } from "@/lib/tabs";
 import type {
   AccountState,
   AgentConfig,
@@ -30,7 +30,7 @@ export const dynamic = "force-dynamic";
 const DECISIONS_LIMIT = 200;
 
 function toTabId(value: string | undefined): TabId {
-  return (VALID_TABS as readonly string[]).includes(value ?? "") ? (value as TabId) : "overview";
+  return (VALID_TABS as readonly string[]).includes(value ?? "") ? (value as TabId) : DEFAULT_TAB;
 }
 
 function toDecisionId(value: string | undefined): number | null {
