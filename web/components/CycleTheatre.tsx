@@ -236,7 +236,7 @@ export function CycleTheatre({
 
   return (
     <Section variant="bare" icon={Workflow} title="What the agent does, and what it just did" meta={meta}>
-      <div className="rounded-xl bg-card p-3 ring-1 ring-foreground/10">
+      <div className="glass rounded-xl p-3">
         {loading ? (
           <Skeleton className="h-24 w-full" />
         ) : (

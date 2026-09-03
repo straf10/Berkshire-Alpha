@@ -57,12 +57,12 @@ const GEOMETRY: Record<"full" | "compact", Geometry> = {
     canvasH: 820,
   },
   compact: {
-    rows: [0, 170, 340],
-    nodeH: 96,
-    laneY: (row) => row - 34,
-    laneH: 164,
-    railY: (row) => row + 120,
-    canvasH: 500,
+    rows: [0, 214, 428],
+    nodeH: 108,
+    laneY: (row) => row - 46,
+    laneH: 200,
+    railY: (row) => row + 132,
+    canvasH: 620,
   },
 };
 
@@ -393,10 +393,25 @@ export function SystemFlow({
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
-        // Was fitView + minZoom 0.4, which shrank 11px body text to
-        // illegibility to get a 2,080px ribbon on screen. The canvas is now
-        // sized to fit at 1.0, so 1.0 is where it opens.
-        defaultViewport={{ x: 0, y: 0, zoom: 1 }}
+        // The lane grid (1080px + a 50px inset either side) is wider than
+        // the column it renders in at typical widths -- always has been,
+        // full and compact share the same COLS. A static defaultViewport of
+        // zoom 1 doesn't know that: it pins content's top-left to the
+        // container's top-left regardless of fit, so the rightmost stage of
+        // every lane rendered off the edge, and on top of that it's applied
+        // against whatever the container measures as on the very first
+        // paint -- inside a CSS grid column that can still be mid-layout,
+        // that measurement is sometimes wrong too, which is what made it
+        // additionally look zoomed and off-center rather than just cropped.
+        // fitView re-measures once node dimensions actually settle and fits
+        // the whole diagram into whatever space it actually has -- the same
+        // thing a manual click on the fit-view control already did, just
+        // automatically. minZoom/maxZoom below are the floor and ceiling for
+        // that fit (and for the control's manual zoom buttons); 0.5 was
+        // chosen so a narrow window can still shrink to fit without
+        // shrinking as far as the old fitView-with-no-floor did.
+        fitView
+        fitViewOptions={{ duration: 0 }}
         minZoom={0.5}
         maxZoom={1.6}
         nodesDraggable={false}

@@ -204,8 +204,8 @@ export function Dashboard({
       <div className="mx-auto w-full max-w-5xl">
         <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-3">
-            <Image src="/logo.png" alt="" width={64} height={64} className="rounded-lg" />
-            <h1 className="text-title-2">Autonomous Debate Trading Agent</h1>
+            <Image src="/logo-earthy.png" alt="" width={64} height={64} className="rounded-lg" />
+            <h1 className="text-title-2">Berkshire Alpha</h1>
           </div>
           <span className="text-caption tabular-nums text-muted-foreground">
             <LiveRefresh />
@@ -213,11 +213,12 @@ export function Dashboard({
         </div>
       </div>
 
-      {/* Material tier 1: the only blur on the page. A translucent sticky
-          band so the halt/scan state and the countdown stay on screen while
-          a judge scrolls a long tab -- everything else (cards, table rows)
-          stays flat tonal elevation, never blurred. */}
-      <div className="sticky top-0 z-10 -mx-4 border-b border-hairline bg-background/75 px-4 pb-3 pt-2 backdrop-blur-md sm:-mx-8 sm:px-8">
+      {/* Sticky band so the halt/scan state and the countdown stay on screen
+          while a judge scrolls a long tab. Same glass language as every
+          card, just anchored to the viewport instead of the page, and a
+          shade more opaque so scrolling content never fights the text
+          sitting on top of it. */}
+      <div className="glass-bar sticky top-0 z-10 -mx-4 px-4 pb-3 pt-2 sm:-mx-8 sm:px-8">
         <div className="mx-auto w-full max-w-5xl">
           <StatusBar status={status} />
         </div>
