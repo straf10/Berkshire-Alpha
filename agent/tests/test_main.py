@@ -977,7 +977,23 @@ async def test_scan_slots_fire_once_each_then_stop_after_cutoff(tmp_path, monkey
             ))
         return []
 
+    management_ticks = 0
+
+    async def fake_management_tick(deps, session):
+        nonlocal management_ticks
+        management_ticks += 1
+
     monkeypatch.setattr(main_module, "scan_cycle", fake_scan_cycle)
+    # This test is about SLOT SCHEDULING, and its stop condition is a
+    # wall-clock timeout while the loop's own clock is simulated -- so every
+    # real millisecond the loop spends on anything else is a millisecond of
+    # scheduling it does not get to prove. management_tick is the expensive
+    # branch (CLI account + positions, greeks, exits, mark integrity) and runs
+    # on every non-scan iteration between 13:30 and the cutoff. Left real, the
+    # assertion below silently becomes a benchmark of the runner: it passed
+    # locally and failed on CI at 2 of 4 slots the moment management_tick grew
+    # a markgap publish. It has its own tests; stub it here.
+    monkeypatch.setattr(main_module, "management_tick", fake_management_tick)
 
     clients = FakeClients()
     broker = MockBroker([])
@@ -988,9 +1004,12 @@ async def test_scan_slots_fire_once_each_then_stop_after_cutoff(tmp_path, monkey
     # management_tick territory (close is 20:00) -- bounded by a wall-clock
     # timeout since trading_loop never exits on its own.
     with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(main_module.trading_loop(deps), timeout=2.0)
+        await asyncio.wait_for(main_module.trading_loop(deps), timeout=3.0)
 
     assert call_count == len(_SCAN_OFFSETS_MIN)
+    # The other half of "then stop": the loop kept running past the cutoff and
+    # went to management_tick instead of scanning again.
+    assert management_ticks > 0
 
 
 async def _seed_trade(conn, *, max_loss: Decimal, filled_qty: int, closed_at: str | None = None) -> None:
