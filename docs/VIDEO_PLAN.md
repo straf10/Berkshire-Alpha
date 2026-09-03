@@ -98,7 +98,7 @@ l
 −
 465vsActual−
 241 ($224 understated loss published live).	The commercial product isn't another predictive LLM; it's deterministic execution middleware. Agents cannot trade without mathematical walk caps and signed multi-leg safety spines. We even published an unbackfilled two hundred twenty-four dollar ledger divergence between our database and the broker.
-1:20 – 1:30<br>(10 sec / 24 words)	5. Roadmap & Final Verdict	1:20-1:30: Dark slate card. Pinned repository link: github.com/straf10/Autonomous-Debate-Trading-Agent and Account bc8bc895-... (PA3UM9X4MN5X). Fast fade.	Next: independent IV sourcing, walk-forward validation, and combinatorial cross-validation. Inspect our entire codebase on GitHub, and verify account PA3UM9X4MN5X. Real quant systems survive the autopsy.
+1:20 – 1:30<br>(10 sec / 24 words)	5. Roadmap & Final Verdict	1:20-1:30: Dark slate card. Pinned repository link: github.com/straf10/Berkshire-Alpha and Account bc8bc895-... (PA3UM9X4MN5X). Fast fade.	Next: independent IV sourcing, walk-forward validation, and combinatorial cross-validation. Inspect our entire codebase on GitHub, and verify account PA3UM9X4MN5X. Real quant systems survive the autopsy.
 DELIVERABLE 4: Critical-Path 17-Hour Countdown Schedule (90s Pipeline)
 code
 Code

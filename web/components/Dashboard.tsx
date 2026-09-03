@@ -53,7 +53,7 @@ import type {
   Trade,
 } from "@/lib/types";
 
-const REPO_URL = "https://github.com/straf10/Autonomous-Debate-Trading-Agent";
+const REPO_URL = "https://github.com/straf10/Berkshire-Alpha";
 
 // The commit this bundle was built from, baked in by next.config.ts's `env`
 // block. Deploys go out through CI to Vercel, which nobody here can inspect

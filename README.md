@@ -82,8 +82,8 @@ web/           Next.js dashboard (deployed to Vercel)
 ### Setup
 
 ```bash
-git clone https://github.com/straf10/Autonomous-Debate-Trading-Agent.git
-cd Autonomous-Debate-Trading-Agent
+git clone https://github.com/straf10/Berkshire-Alpha.git
+cd Berkshire-Alpha
 
 python -m venv .venv
 source .venv/bin/activate   # or .venv\Scripts\Activate.ps1 on Windows
