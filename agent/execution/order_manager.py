@@ -13,7 +13,7 @@ from agent.config import (
     WALK_STEP,
 )
 from agent.execution.broker import BrokerPort, ClockPort
-from agent.schemas.execution import Intent, OrderStatus, RejectCode, SpreadPlan
+from agent.schemas.execution import STRUCTURE_IS_CREDIT, Intent, OrderStatus, RejectCode, SpreadPlan
 from agent.tools.walk_cap import quantize_cent as _quantize_cent
 from agent.tools.walk_cap import walk_cap
 
@@ -116,9 +116,18 @@ async def _walk(
     mid = _quantize_cent(plan.net_mid)
     natural = _quantize_cent(plan.net_natural)
     is_closing_order = plan.legs[0].intent in (Intent.BUY_TO_CLOSE, Intent.SELL_TO_CLOSE)
-    cap = walk_cap(mid=mid, natural=natural, width=plan.width, is_closing=is_closing_order)
+    cap = walk_cap(
+        mid=mid, natural=natural, width=plan.width, is_closing=is_closing_order,
+        structure_is_credit=STRUCTURE_IS_CREDIT[plan.structure],
+    )
 
-    limit = mid
+    # The cap bounds the WALK; without this min() it does not bound the FIRST
+    # submit, which would leave the one order most likely to fill instantly
+    # unbounded. In every well-quoted case `natural` sits on the far side of
+    # `mid`, so cap > mid and this is a no-op -- it bites only when the chain
+    # is inverted, which is exactly when submitting at mid would cross an
+    # arbitrage bound (docs/markgap_plan.md P0-A).
+    limit = min(mid, cap)
     state = await broker.submit_mleg(plan, qty, limit)
     order_id = state.order_id
     events.append(WalkEvent(ts=clock.now(), step=0, action="SUBMIT", order_id=order_id, limit=limit, status=state.status))

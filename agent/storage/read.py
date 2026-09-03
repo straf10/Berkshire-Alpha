@@ -7,6 +7,7 @@ from typing import Any
 
 import aiosqlite
 
+from agent.schemas.execution import STRUCTURE_IS_CREDIT, Structure
 from agent.tools.walk_cap import walk_cap
 
 # imported ONLY by api/. No mutating SQL statements below this line.
@@ -37,6 +38,11 @@ def _walk_cap_for_trade(plan_json: str | None) -> Decimal | None:
     return walk_cap(
         mid=Decimal(str(plan["net_mid"])), natural=Decimal(str(plan["net_natural"])),
         width=plan["width"], is_closing=is_closing,
+        # Serialised as the bare StrEnum value ("BEAR_CALL_SPREAD"), so
+        # Structure() round-trips it. agent/schemas/ imports no SDK and no
+        # execution code, so this keeps the read-only API's dependency graph
+        # clean (test_api_import_graph).
+        structure_is_credit=STRUCTURE_IS_CREDIT[Structure(plan["structure"])],
     )
 
 

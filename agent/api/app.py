@@ -162,6 +162,7 @@ async def agent_settings() -> dict[str, Any]:
             "dte_force_close": c.DTE_FORCE_CLOSE,
             "unwind_date": _jsonable(c.UNWIND_DATE),
             "unwind_et_time": f"{c.UNWIND_ET_HOUR:02d}:{c.UNWIND_ET_MINUTE:02d}",
+            "freeze_entries_from": _jsonable(c.FREEZE_ENTRIES_FROM),
             "priority_order": ["UNWIND", "TIME_STOP_2DTE", "PROFIT_TARGET", "STOP_LOSS"],
         },
         "sizing": {
@@ -191,6 +192,10 @@ async def agent_settings() -> dict[str, Any]:
         "execution_guardrails": {
             "walk_cap_max_fraction_of_width": _jsonable(c.WALK_CAP_MAX_FRACTION_OF_WIDTH),
             "walk_cap_max_fraction_of_width_closing": _jsonable(c.WALK_CAP_MAX_FRACTION_OF_WIDTH_CLOSING),
+            # docs/markgap_plan.md R14: publishing this is also how a deploy
+            # proves the P0-A fix is in the running image -- the constant's
+            # presence is a stronger check than a build SHA.
+            "walk_cap_credit_sign_floor": _jsonable(c.WALK_CAP_CREDIT_SIGN_FLOOR),
             "walk_step": _jsonable(c.WALK_STEP),
             "walk_cap_fraction": _jsonable(c.WALK_CAP_FRACTION),
             "max_quote_spread_pct": c.MAX_QUOTE_SPREAD_PCT,

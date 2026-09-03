@@ -62,6 +62,47 @@ def _debit_plan(mid: str, natural: str) -> SpreadPlan:
     )
 
 
+def _closing_debit_plan(mid: str, natural: str) -> SpreadPlan:
+    """The shape build_closing_plan produces for a LONG vertical: sides and
+    intents flipped to closing, `structure` left as the ORIGINAL debit
+    structure. Models the live 2026-09-03 LLY trade-8 exit."""
+    legs = (
+        Leg(occ_symbol="TST260904C00100000", strike=100.0, right="C", side="SELL", ratio_qty=1,
+            intent=Intent.SELL_TO_CLOSE, delta=0.50, vega=0.05, bid=6.0, ask=6.2),
+        Leg(occ_symbol="TST260904C00105000", strike=105.0, right="C", side="BUY", ratio_qty=1,
+            intent=Intent.BUY_TO_CLOSE, delta=0.30, vega=0.03, bid=3.0, ask=3.2),
+    )
+    return SpreadPlan(
+        symbol="TST", structure=Structure.BULL_CALL_SPREAD, regime=Regime.DEBIT, expiry=EXPIRY, dte=0,
+        legs=legs, width=5.0, net_mid=Decimal(mid), net_natural=Decimal(natural),
+        max_profit_per_spread=Decimal("294"), max_loss_per_spread=Decimal("0"),
+        p_success=0.0, spot=100.0, short_leg_delta=0.0,
+    )
+
+
+async def test_closing_long_vertical_never_walks_into_a_debit() -> None:
+    """docs/markgap_plan.md P0-A, with the live trade-8 numbers. Before the
+    fix the cap was +3.00 and the walk could pay to exit a vertical whose
+    value is bounded below by zero."""
+    broker = MockBroker([_state("o1", OrderStatus.NEW)])
+    result = await walk_to_fill(broker, _closing_debit_plan("-2.03", "5.15"), 4, clock=FakeClock())
+    limits = [limit for _, _, limit in broker.submitted] + [limit for _, limit in broker.replaced]
+    assert limits, "the walk submitted nothing"
+    assert max(limits) <= Decimal("-0.01"), f"walked into a debit: {max(limits)}"
+    assert result.status == "UNFILLED_REJECT"
+
+
+async def test_first_submit_is_bounded_by_the_cap_on_an_inverted_chain() -> None:
+    """The cap bounds the walk; `limit = min(mid, cap)` is what also bounds the
+    FIRST submit -- the order most likely to fill instantly. An inverted chain
+    can hand a long vertical a positive closing mid; submitting there would
+    pay to exit before the walk ever ran."""
+    broker = MockBroker([_state("o1", OrderStatus.NEW)])
+    await walk_to_fill(broker, _closing_debit_plan("0.50", "5.00"), 4, clock=FakeClock())
+    first_submit_limit = broker.submitted[0][2]
+    assert first_submit_limit == Decimal("-0.01"), first_submit_limit
+
+
 def _state(order_id: str, status: OrderStatus, *, filled_qty: int = 0, fill_avg_price: Decimal | None = None,
            reject_code: RejectCode | None = None) -> OrderState:
     return OrderState(order_id=order_id, status=status, limit_price=None, filled_qty=filled_qty,
@@ -222,26 +263,39 @@ def test_mleg_request_shape() -> None:
 
 
 @pytest.mark.parametrize(
-    "name, mid, natural, width, is_closing, expected",
+    "name, mid, natural, width, is_closing, structure_is_credit, expected",
     [
         # Opening debit: WALK_CAP_MAX_FRACTION_OF_WIDTH (0.60) bounds the
         # width-fraction cap below the raw mid+0.70*(natural-mid) figure.
-        ("opening_debit", "3.00", "4.00", 5.0, False, "3.00"),
+        ("opening_debit", "3.00", "4.00", 5.0, False, False, "3.00"),
         # Opening credit on a wide chain: natural drags the raw cap positive
         # (a debit) -- the sign-flip floor forces it back to -0.01
         # (docs/review.md P0-3).
-        ("opening_credit_sign_flip_floor", "-1.00", "0.50", 3.0, False, "-0.01"),
+        ("opening_credit_sign_flip_floor", "-1.00", "0.50", 3.0, False, True, "-0.01"),
         # Closing a credit spread (buyback): a debit order, wider
         # WALK_CAP_MAX_FRACTION_OF_WIDTH_CLOSING (1.00) bound applies.
-        ("closing_credit_spread_buyback", "2.80", "3.50", 3.0, True, "3.00"),
-        # Closing a DEBIT spread (tomorrow's LLY case): a credit order
-        # (mid < 0) with is_closing=True -- NEITHER the width bound (mid is
-        # not a debit) NOR the sign-flip floor (elif not is_closing is
-        # skipped) applies. The cap is exactly mid + 0.70*(natural-mid),
-        # unbounded by width (docs/review.md P0-2).
-        ("closing_debit_spread_no_width_bound", "-5.00", "-6.00", 5.0, True, "-5.70"),
+        ("closing_credit_spread_buyback", "2.80", "3.50", 3.0, True, True, "3.00"),
+        # Closing a DEBIT spread on a chain whose natural is BETTER than mid:
+        # the raw cap is already more conservative than the sign floor, so the
+        # floor does not bind and the cap stays mid + 0.70*(natural-mid).
+        ("closing_debit_spread_raw_cap_already_below_floor", "-5.00", "-6.00", 5.0, True, False, "-5.70"),
+        # Closing a DEBIT spread on an inverted/wide chain -- the live
+        # 2026-09-03 LLY trade-8 numbers. The raw cap is +3.00: the walk would
+        # PAY 3.00 per spread to exit a vertical bounded below by zero. Before
+        # docs/markgap_plan.md P0-A neither clamp fired here.
+        ("closing_debit_spread_lly_giveaway", "-2.03", "5.15", 5.0, True, False, "-0.01"),
+        # ... and the same structure with an INVERTED closing mid (positive,
+        # which a long vertical's own quotes should never produce). Keying the
+        # branch off mid's sign would take the debit path and permit paying up
+        # to a full width; keying it off the structure does not.
+        ("closing_debit_spread_inverted_mid", "0.50", "5.00", 5.0, True, False, "-0.01"),
     ],
 )
-def test_walk_cap_matches_documented_branches(name, mid, natural, width, is_closing, expected) -> None:
-    cap = walk_cap(mid=Decimal(mid), natural=Decimal(natural), width=width, is_closing=is_closing)
+def test_walk_cap_matches_documented_branches(
+    name, mid, natural, width, is_closing, structure_is_credit, expected
+) -> None:
+    cap = walk_cap(
+        mid=Decimal(mid), natural=Decimal(natural), width=width,
+        is_closing=is_closing, structure_is_credit=structure_is_credit,
+    )
     assert cap == Decimal(expected), name
