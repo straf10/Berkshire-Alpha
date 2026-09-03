@@ -29,6 +29,35 @@ from agent.config import Settings
 logger = logging.getLogger(__name__)
 
 
+def build_replace_request(limit_price: Decimal) -> ReplaceOrderRequest:
+    """A replace priced at a NET CREDIT must survive the SDK's own validator.
+
+    `ReplaceOrderRequest`'s root_validator raises ValueError on
+    `limit_price <= 0`. That is a single-leg stock/option assumption: under
+    this project's signed convention (see plan.md, "limit-price sign
+    convention") a NEGATIVE limit is a net credit, which is the correct and
+    only price for closing a long vertical or opening a credit spread --
+    `_build_mleg_request` has always sent them, and the broker accepts them.
+
+    Because the validator runs at CONSTRUCTION, it raised before any HTTP
+    call, and ValueError is not the APIError `AlpacaBroker.replace_order`
+    catches -- so it escaped to `walk_to_fill`'s blanket except and killed
+    the walk on its first step. Every credit-side walk in production took
+    exactly zero steps for this reason (memory.md, 2026-09-03: four closing
+    walks, 0 replaces between them, against 95 on the same spread's debit
+    entry).
+
+    `model_construct` skips validation only; `to_request_fields()` returns
+    an identical payload for a price the validator would have passed, so
+    positive limits keep going through the validated path and nothing else
+    about the request changes. The broker stays the authority on whether a
+    price is acceptable -- which is where that judgement belonged.
+    """
+    if limit_price > 0:
+        return ReplaceOrderRequest(limit_price=float(limit_price))
+    return ReplaceOrderRequest.model_construct(limit_price=float(limit_price))
+
+
 class AlpacaClients:
     """Constructs the three alpaca-py SDK clients once and exposes async wrappers.
 
@@ -68,7 +97,7 @@ class AlpacaClients:
         """Returns an Order with a NEW `id` (confirmed Day 1, memory.md -- the
         old order goes to `status: replaced`). Callers must rebind their
         tracked id from the return value on every walk step."""
-        req = ReplaceOrderRequest(limit_price=float(limit_price))
+        req = build_replace_request(limit_price)
         return await asyncio.to_thread(self.trading.replace_order_by_id, order_id, req)
 
     async def cancel_order(self, order_id: str) -> None:
