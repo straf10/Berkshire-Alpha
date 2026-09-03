@@ -1,6 +1,6 @@
 "use client";
 
-import { MessagesSquare } from "lucide-react";
+import { ChevronLeft, ChevronRight, MessagesSquare } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { DataTableSection } from "@/components/DataTableSection";
 import { DecisionCard } from "@/components/DecisionCard";
@@ -34,6 +34,11 @@ const POLL_MS = 15_000;
 // shrink the feed back to 50 rows, or cost 212 KB to avoid doing so.
 const POLL_LIMIT = 50;
 
+// The table region gets a fixed height and paginates rather than letting a
+// 200-row session push the whole Decisions tab thousands of pixels tall.
+const PAGE_SIZE = 25;
+const TABLE_HEIGHT = "640px";
+
 // Time and quantity read newest/largest first; the rest are names, which read
 // A-Z first.
 const DESCENDING_FIRST: ReadonlySet<SortKey> = new Set<SortKey>(["ts_utc", "qty"]);
@@ -42,6 +47,51 @@ function mergeById(existing: Decision[], fresh: Decision[]): Decision[] {
   const byId = new Map(existing.map((d) => [d.id, d]));
   for (const d of fresh) byId.set(d.id, d);
   return [...byId.values()].sort((a, b) => b.id - a.id);
+}
+
+function PaginationBar({
+  page,
+  pageCount,
+  total,
+  onPage,
+}: {
+  page: number;
+  pageCount: number;
+  total: number;
+  onPage: (page: number) => void;
+}) {
+  const start = total === 0 ? 0 : page * PAGE_SIZE + 1;
+  const end = Math.min((page + 1) * PAGE_SIZE, total);
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-3 py-2">
+      <span className="text-caption tabular-nums text-muted-foreground">
+        {start}–{end} of {total}
+      </span>
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => onPage(page - 1)}
+          disabled={page <= 0}
+          className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground disabled:pointer-events-none disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+        >
+          <ChevronLeft className="size-3.5" />
+          Prev
+        </button>
+        <span className="px-1 text-caption tabular-nums text-muted-foreground">
+          Page {total === 0 ? 0 : page + 1} of {pageCount}
+        </span>
+        <button
+          type="button"
+          onClick={() => onPage(page + 1)}
+          disabled={page >= pageCount - 1}
+          className="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground disabled:pointer-events-none disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+        >
+          Next
+          <ChevronRight className="size-3.5" />
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function sessionLabel(decisions: readonly Decision[]): string | null {
@@ -61,10 +111,10 @@ function sessionLabel(decisions: readonly Decision[]): string | null {
 // That distribution used to be the sixth column of grey text.
 //
 // Polls independently of LiveRefresh's 60s full-page router.refresh() (which
-// re-runs page.tsx's 14 parallel fetches): this feed only needs the one
-// lightweight /decisions endpoint, so it gets its own faster interval
+// re-runs page.tsx's dozen-odd parallel fetches): this feed only needs the
+// one lightweight /decisions endpoint, so it gets its own faster interval
 // instead of dragging the whole page's poll down to match and multiplying
-// Railway API load 14x for it.
+// Railway API load for it.
 export function ReasoningFeed({
   decisions,
   walkCapFraction,
@@ -91,6 +141,28 @@ export function ReasoningFeed({
       : emptySelection()
   );
   const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
+  // 0-indexed. Clamped at render time against the current filtered count
+  // (below) rather than reset via an effect -- a filter that shrinks the
+  // set below the stored page just falls back to the last real page instead
+  // of needing a synchronized reset.
+  //
+  // An in-window ?decision= link (unlike `pinned` below, which only covers
+  // OUT-of-window rows) still has to land on the page that actually
+  // contains it, or pagination silently hides it -- so the lazy initializer
+  // replays the same first-render filter/sort ONCE, over the SSR-fetched
+  // `decisions` prop, to find it. A later poll or filter change must not
+  // yank the user back to it, which is exactly what a lazy initializer (and
+  // not an effect + setState) guarantees.
+  const [page, setPage] = useState(() => {
+    if (initialDecisionId == null) return 0;
+    const initialSelection =
+      initialGates && initialGates.length > 0
+        ? withFacetValues(emptySelection(), "outcome", initialGates)
+        : emptySelection();
+    const initialVisible = sortDecisions(applyFilters(decisions, initialSelection), DEFAULT_SORT);
+    const idx = initialVisible.findIndex((d) => d.id === initialDecisionId);
+    return idx >= 0 ? Math.floor(idx / PAGE_SIZE) : 0;
+  });
 
   // A ?decision= link is meant to survive: the debate worth sharing is not
   // necessarily in the newest 200 rows, and a link that lands on "not here"
@@ -131,7 +203,15 @@ export function ReasoningFeed({
   );
 
   const pinned = !inWindow && linked !== null && linked !== "missing" ? linked : null;
-  const rows = pinned ? [pinned, ...visible] : visible;
+  // The pinned deep-linked row is always shown, on every page -- it is
+  // outside the fetched window by definition (that's why it's pinned), so
+  // it can never collide with a page of `visible`. Only `visible` itself is
+  // paginated, 25 at a time, inside a fixed-height scroll region.
+  const pageCount = Math.max(1, Math.ceil(visible.length / PAGE_SIZE));
+  const clampedPage = Math.min(page, pageCount - 1);
+  const pageStart = clampedPage * PAGE_SIZE;
+  const pageRows = visible.slice(pageStart, pageStart + PAGE_SIZE);
+  const rows = pinned ? [pinned, ...pageRows] : pageRows;
   const activeFilters = selectionSize(selection);
 
   // ?gate= is the shareable half of the deep link: a slide or a demo script
@@ -186,10 +266,10 @@ export function ReasoningFeed({
         <Card>
           <CardContent className="pt-6">
             <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              <h2 className="text-subheadline font-semibold uppercase tracking-wide text-muted-foreground">
                 Every reason the agent refused to trade
               </h2>
-              <p className="text-[11px] text-muted-foreground">
+              <p className="text-caption tabular-nums text-muted-foreground">
                 {live.length} decisions{session ? ` · ${session}` : ""} · filtered client-side
               </p>
             </div>
@@ -199,7 +279,7 @@ export function ReasoningFeed({
                 of {live.length} entered
               </span>
             </p>
-            <p aria-live="polite" className="text-[11px] text-muted-foreground">
+            <p aria-live="polite" className="text-caption tabular-nums text-muted-foreground">
               {activeFilters > 0
                 ? `Showing ${visible.length} of ${live.length} rows — ${activeFilters} filter${activeFilters === 1 ? "" : "s"} on.`
                 : "Every row below is one candidate the agent looked at and wrote a reason for."}
@@ -247,6 +327,12 @@ export function ReasoningFeed({
               {banner}
             </p>
           ) : undefined
+        }
+        scrollHeight={TABLE_HEIGHT}
+        footer={
+          visible.length > 0 && (
+            <PaginationBar page={clampedPage} pageCount={pageCount} total={visible.length} onPage={setPage} />
+          )
         }
       >
         <Table className="min-w-[820px]">

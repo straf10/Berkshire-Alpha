@@ -10,7 +10,6 @@ import {
   MessagesSquare,
   Server,
   Settings,
-  Workflow,
 } from "lucide-react";
 import Image from "next/image";
 import { useState } from "react";
@@ -19,7 +18,6 @@ import { AgentConfigPanel } from "@/components/AgentConfigPanel";
 import { AssignmentPanel } from "@/components/AssignmentPanel";
 import { CycleTheatre } from "@/components/CycleTheatre";
 import { FeaturedWalk } from "@/components/FeaturedWalk";
-import { Funnel } from "@/components/Funnel";
 import { GreeksGauges } from "@/components/GreeksGauges";
 import { HealthStrip } from "@/components/HealthStrip";
 import { LiveRefresh } from "@/components/LiveRefresh";
@@ -30,14 +28,10 @@ import { ReasoningFeed } from "@/components/ReasoningFeed";
 import { Reflection } from "@/components/Reflection";
 import { StatusBar } from "@/components/StatusBar";
 import { MarkGapPanel } from "@/components/MarkGapPanel";
-import { Section } from "@/components/Section";
-import { SystemFlow } from "@/components/SystemFlow";
-import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToolUsage } from "@/components/ToolUsage";
 import { TradeHistoryTable } from "@/components/TradeHistoryTable";
 import { formatDateTime } from "@/lib/format";
-import { STAGES } from "@/lib/pipeline";
 import { VALID_TABS, type TabId } from "@/lib/tabs";
 import type {
   AccountState,
@@ -45,7 +39,6 @@ import type {
   AssignmentEvent,
   Decision,
   EquityPoint,
-  FunnelResponse,
   GreeksSnapshot,
   HealthBucket,
   HealthResponse,
@@ -71,7 +64,7 @@ function BuildSha() {
   const body = (
     <>
       <GitCommitHorizontal className="size-3.5" />
-      <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70">Build</span>
+      <span className="text-caption-2 uppercase tracking-wide text-muted-foreground/70">Build</span>
       {sha}
     </>
   );
@@ -119,20 +112,20 @@ function Footer({
           @stanimeros
         </a>
       </span>
-      <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-1 border-t border-border/40 pt-3 text-xs">
+      <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-1 border-t border-border/40 pt-3 text-xs tabular-nums">
         <span className="flex items-center gap-1.5" title="Last time this page fetched fresh data from the API">
           <Globe className="size-3.5" />
-          <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70">UI</span>
+          <span className="text-caption-2 uppercase tracking-wide text-muted-foreground/70">UI</span>
           {formatDateTime(frontendLastUpdated)}
         </span>
         <span className="flex items-center gap-1.5" title="Last completed backend trading-loop cycle">
           <Server className="size-3.5" />
-          <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70">Agent</span>
+          <span className="text-caption-2 uppercase tracking-wide text-muted-foreground/70">Agent</span>
           {backendLastUpdated ? formatDateTime(backendLastUpdated) : "—"}
         </span>
         <span className="flex items-center gap-1.5" title="Timestamp of the most recent decision written to the database">
           <Database className="size-3.5" />
-          <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70">Data</span>
+          <span className="text-caption-2 uppercase tracking-wide text-muted-foreground/70">Data</span>
           {dbLastUpdated ? formatDateTime(dbLastUpdated) : "—"}
         </span>
         <BuildSha />
@@ -153,7 +146,6 @@ export function Dashboard({
   equityHistory,
   greeksLatest,
   openPositions,
-  funnel,
   trades,
   llmUsage,
   toolUsage,
@@ -174,7 +166,6 @@ export function Dashboard({
   equityHistory: EquityPoint[] | null;
   greeksLatest: GreeksSnapshot | null;
   openPositions: OpenPosition[] | null;
-  funnel: FunnelResponse | null;
   trades: Trade[] | null;
   llmUsage: LlmUsageResponse | null;
   toolUsage: ToolUsageResponse | null;
@@ -204,30 +195,41 @@ export function Dashboard({
   }
 
   return (
-    <main className="mx-auto w-full max-w-7xl p-4 font-mono text-base sm:p-8">
+    <main className="mx-auto w-full max-w-7xl p-4 text-base sm:p-8">
       {/* Layout rule: prose and chrome read at max-w-5xl, data gets the full
           max-w-7xl `main` allows -- applied per section, not per region, so a
           wide table can breathe while a paragraph never runs to 1280px. The
           header and footer are chrome; the Reflector's argument is prose;
-          account, greeks, funnel, tables and the graph are data. */}
+          account, greeks, and tables are data. */}
       <div className="mx-auto w-full max-w-5xl">
         <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-3">
             <Image src="/logo.png" alt="" width={64} height={64} className="rounded-lg" />
-            <h1 className="text-xl font-semibold sm:text-2xl">Autonomous Debate Trading Agent</h1>
+            <h1 className="text-title-2">Autonomous Debate Trading Agent</h1>
           </div>
-          <span className="text-sm text-muted-foreground">
+          <span className="text-caption tabular-nums text-muted-foreground">
             <LiveRefresh />
           </span>
         </div>
-        <StatusBar status={status} />
+      </div>
 
+      {/* Material tier 1: the only blur on the page. A translucent sticky
+          band so the halt/scan state and the countdown stay on screen while
+          a judge scrolls a long tab -- everything else (cards, table rows)
+          stays flat tonal elevation, never blurred. */}
+      <div className="sticky top-0 z-10 -mx-4 border-b border-hairline bg-background/75 px-4 pb-3 pt-2 backdrop-blur-md sm:-mx-8 sm:px-8">
+        <div className="mx-auto w-full max-w-5xl">
+          <StatusBar status={status} />
+        </div>
+      </div>
+
+      <div className="mx-auto mt-4 w-full max-w-5xl">
         {/* Alert-like and reference material stay outside the tabs -- an
             assignment event matters regardless of which tab a judge is on. */}
         <AssignmentPanel events={assignments} />
       </div>
 
-      <Tabs value={tab} onValueChange={handleTabChange}>
+      <Tabs value={tab} onValueChange={handleTabChange} className="mt-6">
         <TabsList variant="line" className="mb-6 w-full">
           <TabsTrigger value="overview" className="gap-1.5">
             <LayoutDashboard className="size-3.5" />
@@ -245,10 +247,6 @@ export function Dashboard({
             <Coins className="size-3.5" />
             Usage
           </TabsTrigger>
-          <TabsTrigger value="flow" className="gap-1.5">
-            <Workflow className="size-3.5" />
-            Pipeline
-          </TabsTrigger>
           <TabsTrigger value="config" className="gap-1.5">
             <Settings className="size-3.5" />
             Config
@@ -256,8 +254,8 @@ export function Dashboard({
         </TabsList>
 
         {/* Overview: glanceable totals only -- account state, risk gauges,
-            system health, and the entry-screening funnel. No raw rows here;
-            drill-down content (decisions, trades) lives in its own tab. */}
+            and system health. No raw rows here; drill-down content
+            (decisions, trades) lives in its own tab. */}
         <TabsContent value="overview" className="flex flex-col gap-4">
           <AccountVitals account={account} history={equityHistory} sessionDate={status.session_date} />
           {/* The architecture argument is the second thing a judge sees, not
@@ -270,27 +268,8 @@ export function Dashboard({
             status={status}
             health={health}
             walkCapFraction={walkCap}
-            onOpenPipeline={() => handleTabChange("flow")}
           />
-          {/* Sits directly under the account hero because it is a statement
-              ABOUT that hero: the equity above is cash plus the broker's mark,
-              and this is how far that mark strays from what the strikes allow. */}
-          <MarkGapPanel markgap={markgap} />
-          {/* Greeks and funnel side by side because they describe one event:
-              the delta breach is why the funnel's last two stages are zero.
-              Stacked full-width, nothing connected them. */}
-          <div className="grid gap-4 md:grid-cols-2">
-            <GreeksGauges snapshot={greeksLatest} />
-            <Funnel funnel={funnel} />
-          </div>
-          {/* Prose: a paragraph of argument, held to reading width. */}
-          <div className="mx-auto w-full max-w-5xl">
-            <Reflection
-              reflection={reflection}
-              variant="overview"
-              onOpenDecisions={() => handleTabChange("decisions")}
-            />
-          </div>
+          <GreeksGauges snapshot={greeksLatest} />
           <HealthStrip buckets={healthHistory} status={status} />
         </TabsContent>
 
@@ -321,48 +300,16 @@ export function Dashboard({
         </TabsContent>
 
         {/* Usage: cost and reliability only -- "is the agent healthy" lives in
-            Overview's HealthStrip, not here. */}
+            Overview's HealthStrip, not here. Cost leads: what every call
+            actually cost, then the routing table that explains why. */}
         <TabsContent value="usage" className="flex flex-col gap-4">
-          {/* The routing table leads: it is correct, it is live from /config,
-              and it is the claim the aggregate below can only partly show --
-              most of those calls predate per-node routing. */}
-          <ModelEnsemble config={config} />
           <LlmUsage
             usage={llmUsage}
             ordersSent={trades?.length ?? 0}
             nodeModels={config?.llm.node_models}
           />
+          <ModelEnsemble config={config} />
           <ToolUsage usage={toolUsage} />
-        </TabsContent>
-
-        {/* Same component, same STAGE_DEFS, higher detail -- one dataset, two
-            presentations, so the two can never drift apart. Two datasets is
-            exactly the trap that produced the eight points of content drift
-            this rebuild fixes. */}
-        <TabsContent value="flow" className="flex flex-col gap-4">
-          <Section
-            icon={Workflow}
-            title="Pipeline"
-            note="— every stage, every way a candidate can end"
-            meta="drawn from agent/main.py, pipeline.py, gates.py and order_manager.py"
-          >
-            <SystemFlow detail="full" />
-          </Section>
-          <Card>
-            <CardContent>
-              <p className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-                Where each claim comes from
-              </p>
-              <ul className="grid gap-x-6 gap-y-1 text-xs text-muted-foreground sm:grid-cols-2">
-                {STAGES.map((stage) => (
-                  <li key={stage.key} className="flex justify-between gap-3">
-                    <span className="text-foreground/80">{stage.title}</span>
-                    <code className="text-right">{stage.source}</code>
-                  </li>
-                ))}
-              </ul>
-            </CardContent>
-          </Card>
         </TabsContent>
 
         <TabsContent value="config" className="flex flex-col gap-4">

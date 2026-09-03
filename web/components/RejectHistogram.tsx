@@ -75,7 +75,7 @@ export function RejectHistogram({
         })}
       </ul>
       {tail.length > 0 && (
-        <p className="mt-2 px-1 text-[11px] text-muted-foreground">
+        <p className="mt-2 px-1 text-caption tabular-nums text-muted-foreground">
           + {tail.length} further reason{tail.length === 1 ? "" : "s"} across {tailCount} decision
           {tailCount === 1 ? "" : "s"} — all of them are in the Outcome chips.
         </p>

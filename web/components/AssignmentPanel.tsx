@@ -10,7 +10,7 @@ export function AssignmentPanel({ events }: { events: AssignmentEvent[] }) {
         <TriangleAlert className="size-3.5" />
         Assignment reconciliation ({events.length})
       </p>
-      <ul className="space-y-1">
+      <ul className="space-y-1 tabular-nums">
         {events.map((e) => (
           <li key={e.id} className="text-foreground/70">
             {formatDateTime(e.ts_utc)} — {e.symbol} {e.reason} equity {e.equity_qty > 0 ? "+" : ""}

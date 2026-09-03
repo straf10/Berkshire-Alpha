@@ -23,7 +23,7 @@ export function GreeksGauges({ snapshot }: { snapshot: GreeksSnapshot | null }) 
   return (
     <Card>
       <CardHeader className="flex-row items-center justify-between gap-2 pb-2">
-        <CardTitle className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+        <CardTitle className="flex items-center gap-1.5 text-subheadline font-semibold uppercase tracking-wide text-muted-foreground">
           <Activity className="size-3.5" />
           Portfolio greeks
         </CardTitle>
@@ -45,7 +45,7 @@ export function GreeksGauges({ snapshot }: { snapshot: GreeksSnapshot | null }) 
             ever priced.
           </p>
         )}
-        <p className="text-[11px] text-muted-foreground">
+        <p className="text-caption tabular-nums text-muted-foreground">
           As of {formatDateTime(snapshot.ts_utc, { seconds: true })} — the tick on each track is the
           limit; anything past it is a breach.
         </p>

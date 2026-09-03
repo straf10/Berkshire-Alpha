@@ -13,7 +13,7 @@ function ConfigRow({
   return (
     <div className="flex justify-between gap-4 py-1">
       <span className="text-muted-foreground">{label}</span>
-      <span className="text-right font-semibold">{value}</span>
+      <span className="text-right font-mono font-semibold tabular-nums">{value}</span>
     </div>
   );
 }
@@ -27,7 +27,7 @@ function ConfigGroup({
 }) {
   return (
     <div className="rounded-md border border-border p-3">
-      <p className="mb-1 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+      <p className="mb-1 text-subheadline font-semibold uppercase tracking-wide text-muted-foreground">
         {title}
       </p>
       <div className="divide-y divide-border/50">{children}</div>
@@ -40,7 +40,7 @@ export function AgentConfigPanel({ config }: { config: AgentConfig | null }) {
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+        <CardTitle className="flex items-center gap-1.5 text-subheadline font-semibold uppercase tracking-wide text-muted-foreground">
           <Settings className="size-3.5" />
           Agent configuration
         </CardTitle>

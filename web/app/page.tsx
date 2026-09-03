@@ -8,7 +8,6 @@ import type {
   AssignmentEvent,
   Decision,
   EquityPoint,
-  FunnelResponse,
   GreeksSnapshot,
   HealthBucket,
   HealthResponse,
@@ -90,7 +89,6 @@ export default async function Page({
     equityHistory,
     greeksLatest,
     openPositions,
-    funnel,
     trades,
     llmUsage,
     toolUsage,
@@ -104,7 +102,6 @@ export default async function Page({
     fetchJson<EquityPoint[]>(`${base}/equity/history?limit=500`),
     fetchJson<GreeksSnapshot>(`${base}/greeks/latest`),
     fetchJson<OpenPosition[]>(`${base}/positions/open`),
-    fetchJson<FunnelResponse>(`${base}/funnel`),
     fetchJson<Trade[]>(`${base}/trades?limit=100`),
     fetchJson<LlmUsageResponse>(`${base}/llm/usage`),
     fetchJson<ToolUsageResponse>(`${base}/tools/usage`),
@@ -127,7 +124,6 @@ export default async function Page({
       equityHistory={equityHistory}
       greeksLatest={greeksLatest}
       openPositions={openPositions}
-      funnel={funnel}
       trades={trades}
       llmUsage={llmUsage}
       toolUsage={toolUsage}

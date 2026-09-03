@@ -1,6 +1,6 @@
 "use client";
 
-import { Area, AreaChart } from "recharts";
+import { CartesianGrid, Line, LineChart } from "recharts";
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
 import { formatDateTime } from "@/lib/format";
 import type { EquityPoint } from "@/lib/types";
@@ -9,6 +9,10 @@ const chartConfig = {
   equity: { label: "Equity", color: "var(--chart-1)" },
 } satisfies ChartConfig;
 
+// Same treatment as WalkTimelineChart -- a plain line with a dashed grid,
+// not a gradient-filled area. The area fill implied a "zero" baseline that
+// isn't meaningful for equity (it never actually approaches zero), and
+// invited reading its shaded mass as a magnitude the way a bar chart's does.
 export function EquitySparkline({ points }: { points: EquityPoint[] }) {
   if (points.length < 2) {
     return <div className="flex h-16 items-center text-sm text-muted-foreground">Not enough history yet.</div>;
@@ -26,15 +30,10 @@ export function EquitySparkline({ points }: { points: EquityPoint[] }) {
       config={chartConfig}
       role="img"
       aria-label={`Account equity over ${points.length} samples: ${money(first.equity)} on ${formatDateTime(first.ts_utc)} to ${money(last.equity)} on ${formatDateTime(last.ts_utc)}, ${change >= 0 ? "up" : "down"} ${money(Math.abs(change))}.`}
-      className="aspect-auto h-16 w-full"
+      className="aspect-auto h-16 w-full font-mono tabular-nums"
     >
-      <AreaChart data={points} margin={{ top: 4, right: 4, bottom: 0, left: 4 }}>
-        <defs>
-          <linearGradient id="equityFill" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="var(--chart-1)" stopOpacity={0.4} />
-            <stop offset="100%" stopColor="var(--chart-1)" stopOpacity={0.02} />
-          </linearGradient>
-        </defs>
+      <LineChart data={points} margin={{ top: 4, right: 4, bottom: 0, left: 4 }}>
+        <CartesianGrid strokeDasharray="2 4" vertical={false} />
         <ChartTooltip
           cursor={false}
           content={
@@ -47,15 +46,15 @@ export function EquitySparkline({ points }: { points: EquityPoint[] }) {
             />
           }
         />
-        <Area
+        <Line
           type="monotone"
           dataKey="equity"
           stroke="var(--chart-1)"
           strokeWidth={1.5}
-          fill="url(#equityFill)"
+          dot={false}
           isAnimationActive={false}
         />
-      </AreaChart>
+      </LineChart>
     </ChartContainer>
   );
 }

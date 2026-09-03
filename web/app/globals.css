@@ -7,7 +7,7 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
+  --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
   --font-heading: var(--font-sans);
   --color-sidebar-ring: var(--sidebar-ring);
@@ -52,39 +52,83 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+
+  /*
+   * HIG type scale, as Tailwind utilities (text-large-title, text-title-2,
+   * text-subheadline, text-caption, text-caption-2). Four of these are the
+   * roles the brief names explicitly (Large Title / Title 2 / Subheadline /
+   * Caption); Caption 2 is added because the dashboard's densest surfaces
+   * (pipeline diagram nodes, transcript timestamps) already ran a full step
+   * smaller than Caption 1 and need their own named rung rather than another
+   * ad hoc text-[9px]. Ordinary body/table copy stays on Tailwind's stock
+   * text-sm/text-base -- there was nothing ad hoc about it, only the
+   * headings and hero numbers were drifting.
+   *
+   * --text-large-title is 52px, not the iOS-literal 34pt: this is a wide
+   * desktop surface, not a phone, and the one number on this dashboard that
+   * gets Large Title treatment (Overview's equity) needs to read from across
+   * a room. Title 2 keeps to the 22pt HIG value so every OTHER section hero
+   * (mark integrity, the featured walk) recedes a full step behind it.
+   */
+  --text-large-title: 3.25rem;
+  --text-large-title--line-height: 1.05;
+  --text-large-title--font-weight: 700;
+  --text-title-2: 1.375rem;
+  --text-title-2--line-height: 1.25;
+  --text-title-2--font-weight: 600;
+  --text-subheadline: 0.8125rem;
+  --text-subheadline--line-height: 1.35;
+  --text-subheadline--font-weight: 600;
+  --text-caption: 0.6875rem;
+  --text-caption--line-height: 1.3;
+  --text-caption-2: 0.625rem;
+  --text-caption-2--line-height: 1.25;
 }
 
 /*
- * The dark "2050" dashboard aesthetic of docs/plan.md:451: near-black
- * background, thin neon cyan/violet accent, monospace numerals. This is a
- * demo-only surface, so the dark palette is the ONLY palette --
- * :root carries it directly rather than gating it behind .dark/prefers-color-scheme.
+ * Second pass: off dark-mode-first onto a clean white ground with a muted,
+ * earthy pastel palette -- both :root and .dark still carry the same values
+ * (single hardcoded theme, no toggle exists), only now it's the light one.
+ *
+ * Every semantic token keeps its ROLE from the HIG restyle -- --pos/--neg
+ * P&L sign only, --accent the Reflector's voice only, --warn a risk state,
+ * --primary the agent's own action -- only the hues moved, from Apple's
+ * system colours to an earthy family (clay red, terracotta, ochre, sage,
+ * dusty plum). The pastel *tint* a "premium" earthy palette calls for was
+ * never a second set of tokens: every component already reaches for these
+ * at low opacity (bg-pos/10, border-warn/30, ...), and a muted ink colour
+ * at 10% over white composites into exactly that soft pastel fill on its
+ * own -- so the ink values below are chosen dark/saturated enough to clear
+ * WCAG AA as TEXT (4.5:1 on both white and --card, all five land between
+ * 5.2:1 and 6.9:1 -- see the restyle write-up for the full measured table),
+ * and the pastel look falls out of the existing /10, /30, /40 usage for
+ * free.
  */
 :root {
-  color-scheme: dark;
-  --background: oklch(0.12 0.01 265);
-  --foreground: oklch(0.95 0.01 265);
-  --card: oklch(0.16 0.015 265);
-  --card-foreground: oklch(0.95 0.01 265);
-  --popover: oklch(0.16 0.015 265);
-  --popover-foreground: oklch(0.95 0.01 265);
-  --primary: oklch(0.78 0.16 195); /* cyan */
-  --primary-foreground: oklch(0.12 0.01 265);
-  --secondary: oklch(0.22 0.02 265);
-  --secondary-foreground: oklch(0.95 0.01 265);
-  --muted: oklch(0.2 0.015 265);
-  --muted-foreground: oklch(0.65 0.02 265);
-  --accent: oklch(0.7 0.18 305); /* violet */
-  --accent-foreground: oklch(0.98 0.01 265);
-  --destructive: oklch(0.65 0.22 25);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 12%);
-  --ring: oklch(0.78 0.16 195 / 50%);
-  --chart-1: oklch(0.78 0.16 195); /* cyan */
-  --chart-2: oklch(0.7 0.18 305); /* violet */
-  --chart-3: oklch(0.75 0.19 150); /* green */
-  --chart-4: oklch(0.75 0.18 70); /* amber */
-  --chart-5: oklch(0.65 0.22 25); /* red */
+  color-scheme: light;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.24 0.014 45); /* warm espresso ink, not pure black */
+  --card: oklch(0.97 0.009 60);
+  --card-foreground: oklch(0.24 0.014 45);
+  --popover: oklch(0.97 0.009 60);
+  --popover-foreground: oklch(0.24 0.014 45);
+  --primary: oklch(0.5 0.115 48); /* terracotta / rust -- the agent's own action */
+  --primary-foreground: oklch(0.98 0.006 60);
+  --secondary: oklch(0.93 0.015 60);
+  --secondary-foreground: oklch(0.24 0.014 45);
+  --muted: oklch(0.935 0.014 58);
+  --muted-foreground: oklch(0.5 0.014 45);
+  --accent: oklch(0.48 0.1 322); /* dusty plum/heather -- the Reflector, and nothing else */
+  --accent-foreground: oklch(0.98 0.006 60);
+  --destructive: oklch(0.5 0.145 22); /* same red as --neg: one "danger" in the interface */
+  --border: oklch(0.24 0.014 45 / 12%);
+  --input: oklch(0.24 0.014 45 / 16%);
+  --ring: oklch(0.5 0.115 48 / 45%);
+  --chart-1: oklch(0.5 0.115 48);
+  --chart-2: oklch(0.48 0.1 322);
+  --chart-3: oklch(0.48 0.105 142);
+  --chart-4: oklch(0.52 0.125 78);
+  --chart-5: oklch(0.5 0.145 22);
 
   /*
    * Semantic colour. --chart-1..5 were being applied decoratively -- the
@@ -101,63 +145,67 @@
    *   --idle     "ran as designed, nothing to see" -- a closed market, an
    *              unlit pipeline stage. Absence, not a problem.
    */
-  --pos: oklch(0.75 0.19 150);
-  --neg: oklch(0.65 0.22 25);
-  --warn: oklch(0.75 0.18 70);
-  --idle: oklch(0.45 0.02 265);
+  --pos: oklch(0.48 0.105 142); /* sage / olive green */
+  --neg: oklch(0.5 0.145 22); /* clay red */
+  --warn: oklch(0.52 0.125 78); /* ochre / mustard */
+  --idle: oklch(0.62 0.014 55);
   /* Second elevation, so the page has two planes instead of one, and an
      in-card rule lighter than --border for dividing content inside a plane. */
-  --surface-2: oklch(0.195 0.015 265);
-  --hairline: oklch(1 0 0 / 6%);
-  --radius: 0.5rem;
-  --sidebar: oklch(0.14 0.015 265);
-  --sidebar-foreground: oklch(0.95 0.01 265);
-  --sidebar-primary: oklch(0.78 0.16 195);
-  --sidebar-primary-foreground: oklch(0.12 0.01 265);
-  --sidebar-accent: oklch(0.22 0.02 265);
-  --sidebar-accent-foreground: oklch(0.95 0.01 265);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.78 0.16 195 / 50%);
+  --surface-2: oklch(0.955 0.011 58);
+  --hairline: oklch(0.24 0.014 45 / 8%);
+  /* Continuous corner radii: one token cascades through the @theme calc
+     chain above to every card, button, badge and tab. 14px reads as a soft,
+     generous HIG corner at desktop card sizes (CSS has no true squircle --
+     this is the closest approximation without faking one with SVG masks). */
+  --radius: 0.875rem;
+  --sidebar: oklch(0.97 0.009 60);
+  --sidebar-foreground: oklch(0.24 0.014 45);
+  --sidebar-primary: oklch(0.5 0.115 48);
+  --sidebar-primary-foreground: oklch(0.98 0.006 60);
+  --sidebar-accent: oklch(0.93 0.015 60);
+  --sidebar-accent-foreground: oklch(0.24 0.014 45);
+  --sidebar-border: oklch(0.24 0.014 45 / 12%);
+  --sidebar-ring: oklch(0.5 0.115 48 / 45%);
 }
 
 .dark {
-  --background: oklch(0.12 0.01 265);
-  --foreground: oklch(0.95 0.01 265);
-  --card: oklch(0.16 0.015 265);
-  --card-foreground: oklch(0.95 0.01 265);
-  --popover: oklch(0.16 0.015 265);
-  --popover-foreground: oklch(0.95 0.01 265);
-  --primary: oklch(0.78 0.16 195);
-  --primary-foreground: oklch(0.12 0.01 265);
-  --secondary: oklch(0.22 0.02 265);
-  --secondary-foreground: oklch(0.95 0.01 265);
-  --muted: oklch(0.2 0.015 265);
-  --muted-foreground: oklch(0.65 0.02 265);
-  --accent: oklch(0.7 0.18 305);
-  --accent-foreground: oklch(0.98 0.01 265);
-  --destructive: oklch(0.65 0.22 25);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 12%);
-  --ring: oklch(0.78 0.16 195 / 50%);
-  --chart-1: oklch(0.78 0.16 195);
-  --chart-2: oklch(0.7 0.18 305);
-  --chart-3: oklch(0.75 0.19 150);
-  --chart-4: oklch(0.75 0.18 70);
-  --chart-5: oklch(0.65 0.22 25);
-  --pos: oklch(0.75 0.19 150);
-  --neg: oklch(0.65 0.22 25);
-  --warn: oklch(0.75 0.18 70);
-  --idle: oklch(0.45 0.02 265);
-  --surface-2: oklch(0.195 0.015 265);
-  --hairline: oklch(1 0 0 / 6%);
-  --sidebar: oklch(0.14 0.015 265);
-  --sidebar-foreground: oklch(0.95 0.01 265);
-  --sidebar-primary: oklch(0.78 0.16 195);
-  --sidebar-primary-foreground: oklch(0.12 0.01 265);
-  --sidebar-accent: oklch(0.22 0.02 265);
-  --sidebar-accent-foreground: oklch(0.95 0.01 265);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.78 0.16 195 / 50%);
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.24 0.014 45);
+  --card: oklch(0.97 0.009 60);
+  --card-foreground: oklch(0.24 0.014 45);
+  --popover: oklch(0.97 0.009 60);
+  --popover-foreground: oklch(0.24 0.014 45);
+  --primary: oklch(0.5 0.115 48);
+  --primary-foreground: oklch(0.98 0.006 60);
+  --secondary: oklch(0.93 0.015 60);
+  --secondary-foreground: oklch(0.24 0.014 45);
+  --muted: oklch(0.935 0.014 58);
+  --muted-foreground: oklch(0.5 0.014 45);
+  --accent: oklch(0.48 0.1 322);
+  --accent-foreground: oklch(0.98 0.006 60);
+  --destructive: oklch(0.5 0.145 22);
+  --border: oklch(0.24 0.014 45 / 12%);
+  --input: oklch(0.24 0.014 45 / 16%);
+  --ring: oklch(0.5 0.115 48 / 45%);
+  --chart-1: oklch(0.5 0.115 48);
+  --chart-2: oklch(0.48 0.1 322);
+  --chart-3: oklch(0.48 0.105 142);
+  --chart-4: oklch(0.52 0.125 78);
+  --chart-5: oklch(0.5 0.145 22);
+  --pos: oklch(0.48 0.105 142);
+  --neg: oklch(0.5 0.145 22);
+  --warn: oklch(0.52 0.125 78);
+  --idle: oklch(0.62 0.014 55);
+  --surface-2: oklch(0.955 0.011 58);
+  --hairline: oklch(0.24 0.014 45 / 8%);
+  --sidebar: oklch(0.97 0.009 60);
+  --sidebar-foreground: oklch(0.24 0.014 45);
+  --sidebar-primary: oklch(0.5 0.115 48);
+  --sidebar-primary-foreground: oklch(0.98 0.006 60);
+  --sidebar-accent: oklch(0.93 0.015 60);
+  --sidebar-accent-foreground: oklch(0.24 0.014 45);
+  --sidebar-border: oklch(0.24 0.014 45 / 12%);
+  --sidebar-ring: oklch(0.5 0.115 48 / 45%);
 }
 
 @layer base {

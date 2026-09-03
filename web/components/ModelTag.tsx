@@ -7,7 +7,7 @@ import type { LlmCall } from "@/lib/types";
 export function ModelTag({ call }: { call: LlmCall | undefined }) {
   if (!call) return null;
   return (
-    <span className="whitespace-nowrap text-[11px] font-normal text-muted-foreground">
+    <span className="whitespace-nowrap text-caption font-normal tabular-nums text-muted-foreground">
       {formatModelName(call.model)} · {call.latency_ms.toLocaleString()}ms · {formatCost(call.est_cost_usd)}
     </span>
   );

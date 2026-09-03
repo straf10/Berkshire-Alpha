@@ -61,7 +61,7 @@ export function ModelEnsemble({ config }: { config: AgentConfig | null }) {
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+        <CardTitle className="flex items-center gap-1.5 text-subheadline font-semibold uppercase tracking-wide text-muted-foreground">
           <Network className="size-3.5" />
           Model ensemble — who thinks with what
         </CardTitle>

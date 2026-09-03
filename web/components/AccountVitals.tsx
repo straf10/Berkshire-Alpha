@@ -90,7 +90,7 @@ export function AccountVitals({
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+        <CardTitle className="flex items-center gap-1.5 text-subheadline font-semibold uppercase tracking-wide text-muted-foreground">
           <Wallet className="size-3.5" />
           Account
         </CardTitle>
@@ -98,7 +98,11 @@ export function AccountVitals({
       <CardContent>
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <div className="text-2xl font-semibold tabular-nums">
+            {/* The single largest number on the site -- HIG Large Title,
+                per Section.tsx's SectionHero size="page" token, applied
+                directly here since this hero has its own two-line layout
+                SectionHero's single value+suffix shape doesn't fit. */}
+            <div className="text-large-title font-semibold tabular-nums">
               {equity !== null ? formatMoney(equity) : "—"}
             </div>
             {known ? (
@@ -116,7 +120,7 @@ export function AccountVitals({
             ) : (
               <div className="text-base text-muted-foreground">day P&amp;L — {pnl.reason}</div>
             )}
-            <div className="mt-2 flex gap-4 text-sm text-muted-foreground">
+            <div className="mt-2 flex gap-4 text-sm tabular-nums text-muted-foreground">
               <span>Buying power {account.buying_power ? formatMoney(account.buying_power) : "—"}</span>
               <span>Cash {account.cash ? formatMoney(account.cash) : "—"}</span>
             </div>

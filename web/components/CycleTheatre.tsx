@@ -243,7 +243,7 @@ export function CycleTheatre({
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
             <div className="min-w-0">
               {stale && (
-                <p className="mb-1 text-sm text-warn">
+                <p className="mb-1 text-sm tabular-nums text-warn">
                   The market is open but the last cycle was {formatDateTime(health!.last_cycle_utc!)} —
                   more than two management ticks ago. Something is wrong, and this panel is not
                   hiding it.
@@ -265,7 +265,7 @@ export function CycleTheatre({
                 </p>
               )}
               {source && cursor >= 0 && (
-                <p className="text-sm text-foreground/80">
+                <p className="text-sm tabular-nums text-foreground/80">
                   Event {cursor + 1} of {source.events.length}
                   {finished && " — complete"}
                 </p>
