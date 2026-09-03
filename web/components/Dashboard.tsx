@@ -4,6 +4,7 @@ import {
   ArrowLeftRight,
   Coins,
   Database,
+  GitCommitHorizontal,
   Globe,
   LayoutDashboard,
   MessagesSquare,
@@ -50,6 +51,46 @@ import type {
   Trade,
 } from "@/lib/types";
 
+const REPO_URL = "https://github.com/straf10/Autonomous-Debate-Trading-Agent";
+
+// The commit this bundle was built from, baked in by next.config.ts's `env`
+// block. Deploys go out through CI to Vercel, which nobody here can inspect
+// directly -- rendering the sha makes "did my commit actually ship?" answerable
+// from the page itself. Links to the commit unless the build had no git
+// context at all, in which case gitSha() yields "unknown" and there is nothing
+// to link to.
+function BuildSha() {
+  const sha = process.env.BUILD_SHA ?? "unknown";
+  const body = (
+    <>
+      <GitCommitHorizontal className="size-3.5" />
+      <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70">Build</span>
+      {sha}
+    </>
+  );
+  const className = "flex items-center gap-1.5";
+  const title = "Git commit this dashboard was built from";
+
+  if (sha === "unknown") {
+    return (
+      <span className={className} title={title}>
+        {body}
+      </span>
+    );
+  }
+  return (
+    <a
+      className={`${className} hover:text-foreground`}
+      title={title}
+      href={`${REPO_URL}/commit/${sha}`}
+      target="_blank"
+      rel="noreferrer"
+    >
+      {body}
+    </a>
+  );
+}
+
 function Footer({
   backendLastUpdated,
   dbLastUpdated,
@@ -87,6 +128,7 @@ function Footer({
           <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70">Data</span>
           {dbLastUpdated ? formatDateTime(dbLastUpdated) : "—"}
         </span>
+        <BuildSha />
       </div>
     </footer>
   );
