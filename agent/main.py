@@ -60,6 +60,7 @@ from agent.schemas.execution import (
 from agent.session import (
     SessionPlan,
     current_or_next_session,
+    is_entry_frozen,
     is_unwind_triggered,
     minute_bar_window,
     seconds_until_next_boundary,
@@ -876,11 +877,17 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
         # separate key from reduce_only (management_tick's greeks-breach
         # fail-safe) so neither can clobber the other -- OR them together at
         # the one read site the gate actually consults.
+        now_utc = deps.clock.now()
         reduce_only = (
             bool(await _read_state_value(conn, "reduce_only") or False)
             or await _entries_halted(conn, session.session_date.isoformat())
+            # docs/markgap_plan.md P0-B: the final session is reduce-only by
+            # construction. Folded in here rather than as its own GateReason
+            # so the one read site the gate consults stays the one read site;
+            # /status publishes `entries_frozen` separately so a freeze is
+            # never invisible just because it shares REDUCE_ONLY's label.
+            or is_entry_frozen(now_utc)
         )
-        now_utc = deps.clock.now()
         past_entry_cutoff = now_utc >= session.cutoff_utc
         day_pnl_pct = float((account.equity - account.last_equity) / account.last_equity) if account.last_equity else 0.0
         drawdown_pct = float((account.equity - ACCOUNT_START_EQUITY) / ACCOUNT_START_EQUITY)
@@ -1339,6 +1346,10 @@ async def _publish_status(conn: aiosqlite.Connection, deps: Deps, session: Sessi
         # see is a halt nobody can clear. Cleared only by redeploy or a
         # future operator action -- the API stays GET-only by design.
         "entries_halted": entries_halted,
+        # docs/markgap_plan.md P0-B. Distinct from entries_halted: that one is
+        # a fail-safe an operator must clear, this one is a planned, dated
+        # stand-down on the final session.
+        "entries_frozen": is_entry_frozen(now_utc),
     })
 
 

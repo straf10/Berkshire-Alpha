@@ -127,6 +127,15 @@ DEBIT_STOP_LOSS_PCT: Final[Decimal] = Decimal("0.50")    # 50% of debit paid
 UNWIND_DATE: Final[date] = date(2026, 9, 3)
 UNWIND_ET_HOUR: Final[int] = 15
 UNWIND_ET_MINUTE: Final[int] = 30
+# docs/markgap_plan.md P0-B (2026-09-03). No NEW entries from this ET date on.
+# On UNWIND_DATE the book must be flat by UNWIND_ET_HOUR:UNWIND_ET_MINUTE, so
+# a spread opened that morning is a 2-4 hour round trip on a 3-7 DTE thesis
+# (DTE_MIN is 3): it pays the bid/ask twice and gets none of the horizon it
+# was sized for, plus a stranding risk if the close does not fill. This is the
+# risk budget going to zero as the horizon closes, expressed as a calendar
+# date rather than a taper -- with one session left there is nothing to taper.
+# Deliberately keyed to UNWIND_DATE so the two can never drift apart.
+FREEZE_ENTRIES_FROM: Final[date] = UNWIND_DATE
 MAX_RISK_PER_TRADE_PCT: Final[float] = 0.02
 MAX_AGGREGATE_RISK_PCT: Final[float] = 0.10
 MAX_CONCURRENT_POSITIONS: Final[int] = 6
@@ -192,6 +201,23 @@ WALK_CAP_MAX_FRACTION_OF_WIDTH: Final[Decimal] = Decimal("0.60")
 # is the same arbitrage bound: never pay more than the spread can possibly be
 # worth, i.e. never above `width` itself.
 WALK_CAP_MAX_FRACTION_OF_WIDTH_CLOSING: Final[Decimal] = Decimal("1.00")
+# P0 remediation (docs/markgap_plan.md P0-A, 2026-09-03). The sign floor
+# shared by the two "never cross zero" walk rules. Opening a credit structure
+# must collect a credit (the original docs/review.md P0-3 rule, previously a
+# bare literal at its point of use). CLOSING a LONG vertical must ALSO collect
+# a credit: its value is bounded below by zero, so paying to exit is an
+# arbitrage-certain giveaway no matter what the chain says. That second case
+# had no bound at all -- the width clamp above is guarded on `mid > 0` and the
+# sign floor was guarded on `not is_closing`, so a closing credit order fell
+# between them. Measured on the live book the morning this was written: trade
+# 8 (LLY 1160/1165 bear put vertical) priced its close at a -2.03 credit
+# against a +5.15 natural, giving cap = -2.03 + 0.70*7.18 = +3.00 -- the walk
+# was authorised to PAY 3.00 per spread to dispose of a vertical whose
+# intrinsic was its full 5.00 width.
+# One cent rather than zero: the walk's terminating comparison is
+# `limit + WALK_STEP > cap`, so a zero cap would still let a zero-price exit
+# through on a structure that has value.
+WALK_CAP_CREDIT_SIGN_FLOOR: Final[Decimal] = Decimal("-0.01")
 # P0 remediation (docs/audit_report_v2.md §4). `_is_usable` (market_data.py)
 # previously rejected only null/zero IV, all-zero greeks, and non-positive or
 # inverted quotes -- there was NO bid-ask width check anywhere in the

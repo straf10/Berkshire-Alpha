@@ -8,6 +8,7 @@ import pytz
 from agent.config import (
     CLOSED_SLEEP_CEILING_S,
     ENTRY_CUTOFF_OFFSET_MIN,
+    FREEZE_ENTRIES_FROM,
     SCAN_OFFSETS_MIN,
     UNWIND_DATE,
     UNWIND_ET_HOUR,
@@ -113,6 +114,16 @@ def minute_bar_window(session: SessionPlan, now_utc: datetime) -> tuple[datetime
 
 
 _UNWIND_UTC = _to_utc(datetime(UNWIND_DATE.year, UNWIND_DATE.month, UNWIND_DATE.day, UNWIND_ET_HOUR, UNWIND_ET_MINUTE))
+
+
+def is_entry_frozen(now_utc: datetime) -> bool:
+    """True from FREEZE_ENTRIES_FROM (== UNWIND_DATE) onward -- no NEW entries
+    on the final session, see that constant's config.py comment.
+
+    Compared on the ET calendar date, never the UTC one: after 20:00 ET the
+    UTC date is already tomorrow, so a UTC comparison would freeze the final
+    evening of the PRECEDING session a full day early."""
+    return now_utc.astimezone(_ET).date() >= FREEZE_ENTRIES_FROM
 
 
 def is_unwind_triggered(now_utc: datetime) -> bool:
