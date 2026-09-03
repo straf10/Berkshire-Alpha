@@ -947,19 +947,36 @@ async def test_scan_slots_fire_once_each_then_stop_after_cutoff(tmp_path, monkey
 
     monkeypatch.setattr(main_module, "current_or_next_session", fake_session)
 
+    class _LoopStopped(Exception):
+        """The loop's terminator. trading_loop never returns on its own, and
+        the clock is the only thing that can tell it the run is over."""
+
     class _AdvancingClock:
         """now() advances by the requested sleep duration -- lets the loop
         fast-forward through a whole session without any real wall-clock
-        wait, while still yielding control each iteration."""
+        wait, while still yielding control each iteration.
 
-        def __init__(self, start: datetime) -> None:
+        Raises out of sleep() once SIMULATED time reaches stop_at. That is
+        what makes this test deterministic: it previously stopped the loop
+        with a 2s asyncio.wait_for() while the loop's own clock was
+        simulated, so the assertion below was really asking "how many
+        iterations does this machine manage in two seconds?" -- it passed
+        locally and failed CI at 2 of 4 slots. Nothing about scheduling had
+        changed; the runner had. Firing all four slots takes 63 iterations of
+        the 300s management interval, each doing a SQLite connect and a
+        status write, so the margin was always thinner than it looked."""
+
+        def __init__(self, start: datetime, stop_at: datetime) -> None:
             self._now = start
+            self._stop_at = stop_at
 
         def now(self) -> datetime:
             return self._now
 
         async def sleep(self, seconds: float) -> None:
             self._now += timedelta(seconds=seconds)
+            if self._now >= self._stop_at:
+                raise _LoopStopped
             await asyncio.sleep(0)
 
     call_count = 0
@@ -984,27 +1001,27 @@ async def test_scan_slots_fire_once_each_then_stop_after_cutoff(tmp_path, monkey
         management_ticks += 1
 
     monkeypatch.setattr(main_module, "scan_cycle", fake_scan_cycle)
-    # This test is about SLOT SCHEDULING, and its stop condition is a
-    # wall-clock timeout while the loop's own clock is simulated -- so every
-    # real millisecond the loop spends on anything else is a millisecond of
-    # scheduling it does not get to prove. management_tick is the expensive
+    # This test is about SLOT SCHEDULING. management_tick is the expensive
     # branch (CLI account + positions, greeks, exits, mark integrity) and runs
-    # on every non-scan iteration between 13:30 and the cutoff. Left real, the
-    # assertion below silently becomes a benchmark of the runner: it passed
-    # locally and failed on CI at 2 of 4 slots the moment management_tick grew
-    # a markgap publish. It has its own tests; stub it here.
+    # on every non-scan iteration across the window; it has its own tests, so
+    # stub it and keep this one to seconds. Correctness no longer depends on
+    # that -- the clock terminates the loop now, not a stopwatch -- but the
+    # runtime does.
     monkeypatch.setattr(main_module, "management_tick", fake_management_tick)
 
     clients = FakeClients()
     broker = MockBroker([])
-    clock = _AdvancingClock(datetime(2026, 8, 31, 13, 30, tzinfo=timezone.utc))
+    clock = _AdvancingClock(
+        datetime(2026, 8, 31, 13, 30, tzinfo=timezone.utc),
+        # Past the last scan slot (18:45) and past the cutoff (19:00), still
+        # inside the session (close is 20:00), so the loop has to have gone to
+        # management_tick rather than scanning again.
+        stop_at=datetime(2026, 8, 31, 19, 30, tzinfo=timezone.utc),
+    )
     deps = _deps(db_path, clients, broker, clock)
 
-    # Run well past the last scan slot (18:45) and past cutoff (19:00), into
-    # management_tick territory (close is 20:00) -- bounded by a wall-clock
-    # timeout since trading_loop never exits on its own.
-    with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(main_module.trading_loop(deps), timeout=3.0)
+    with pytest.raises(_LoopStopped):
+        await main_module.trading_loop(deps)
 
     assert call_count == len(_SCAN_OFFSETS_MIN)
     # The other half of "then stop": the loop kept running past the cutoff and
