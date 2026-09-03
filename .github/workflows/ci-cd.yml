@@ -51,13 +51,21 @@ jobs:
     needs: changes
     if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
-    # 5 was under the real cost of this job and it had been failing as a coin
-    # flip: `npm ci` on this dependency tree (Next 16 + Tailwind 4 + base-ui,
-    # ~20 direct deps) runs close to five minutes on a cold runner all by
-    # itself, before lint and build get a turn. Every frontend-touching merge
-    # since 33736898502 shows as "cancelled" -- that is this cap firing, not a
-    # test failing, and because deploy-frontend `needs` this job, each one also
-    # silently skipped the Vercel deploy.
+    # Raised from 5. NOT because this job costs five minutes -- it does not.
+    # Measured on run 33816289384: `npm ci` 11s, whole job 44s. The failure
+    # mode is `npm ci` STALLING outright, with no error of its own, right
+    # after the eslint deprecation warning. It did that twice in a row on run
+    # 33815166397 and on every frontend-touching merge back to 33736898502
+    # (33745523654, 33749531077, 33755233725), all of which read as
+    # "cancelled" -- this cap firing, not a test failing.
+    #
+    # So the cap is not sized to the work, it is sized to absorb a transient
+    # registry stall. That matters because deploy-frontend `needs` this job:
+    # under a 5-minute cap a stall does not just redden a badge, it silently
+    # skips the Vercel deploy and lets main and the live dashboard drift apart
+    # on exactly the merges that changed the dashboard.
+    #
+    # Do not "fix" this by trimming dependencies. The tree is not the problem.
     timeout-minutes: 20
     defaults:
       run:
