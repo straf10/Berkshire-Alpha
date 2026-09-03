@@ -1,8 +1,8 @@
 import { Swords, TrendingDown, TrendingUp } from "lucide-react";
 import { ModelTag } from "@/components/ModelTag";
 import { Badge } from "@/components/ui/badge";
-import { docActionVariant, safeJsonParse } from "@/lib/format";
-import { callsByNode } from "@/lib/llmCalls";
+import { docActionVariant, formatModelName, safeJsonParse } from "@/lib/format";
+import { callsByNode, lastOkCall } from "@/lib/llmCalls";
 import type { DebateSummary, DebateTurn, LlmCall } from "@/lib/types";
 
 function Turn({ turn, call }: { turn: DebateTurn; call: LlmCall | undefined }) {
@@ -87,13 +87,24 @@ export function DebateThread({
   }
   const rounds = [...byRound.keys()].sort((a, b) => a - b);
   const hasBothPersonas = turns.some((t) => t.persona === "BULL") && turns.some((t) => t.persona === "BEAR");
+  // Read the claim off this decision's own calls instead of asserting it.
+  // Per-node routing (agent/config.py LLM_NODE_MODELS) puts Bull and Bear on
+  // different vendors, but rows written before it landed have both personas
+  // on the single default model -- and an unconditional "different model
+  // families" line over two identical model tags is the one thing on this
+  // page a judge can catch out.
+  const bullModel = lastOkCall(byNode.get("DEBATE_BULL"))?.model;
+  const bearModel = lastOkCall(byNode.get("DEBATE_BEAR"))?.model;
+  const heterogeneous = Boolean(bullModel && bearModel && bullModel !== bearModel);
 
   return (
     <div>
       {header}
       {hasBothPersonas && (
         <p className="mb-2 text-[11px] italic text-muted-foreground">
-          Bull and Bear ran on different model families — agreement is evidence, not shared priors.
+          {heterogeneous
+            ? `Bull ran ${formatModelName(bullModel!)} and Bear ran ${formatModelName(bearModel!)} — agreement is evidence, not shared priors.`
+            : `Both personas ran ${formatModelName(bullModel ?? bearModel ?? "the default model")} on this decision; per-node routing splits them across vendors from the next session on.`}
         </p>
       )}
       <div className="space-y-2">

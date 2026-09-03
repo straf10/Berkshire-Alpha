@@ -27,7 +27,7 @@ export function ToolUsage({ usage }: { usage: ToolUsageResponse | null }) {
           <StatTile label="Total calls" value={totals.calls.toLocaleString()} />
           <StatTile label="Failures" value={totals.failures.toLocaleString()} />
         </div>
-        <div className="overflow-x-auto rounded-md border border-border">
+        <div className="rounded-md border border-border">
           <Table>
             <TableHeader>
               <TableRow>
