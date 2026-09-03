@@ -71,6 +71,7 @@ from agent.strategy.macro import classify, tuning
 from agent.strategy.regime import select
 from agent.strategy.spread_builder import BuildFailure, build
 from agent.strategy.ticker_screener import assign_regimes, shortlist, skew_threshold
+from agent.tools import markgap
 from agent.tools.llm import LlmBudget, LlmClient, LlmPort, LlmUnavailable, load_budget
 from agent.tools.market_data import ChainCache, fetch_leg_snapshots, fetch_universe_bars
 from agent.tools.news import Headline, fetch_headlines
@@ -1217,9 +1218,54 @@ async def management_tick(deps: Deps, session: SessionPlan) -> None:
             "buying_power": str(account.buying_power), "cash": str(account.cash),
         })
         await storage_write.put_state(conn, "positions", [p.symbol for p in positions])
+        await _publish_markgap(conn, positions, spots)
         await storage_write.insert_health_sample(
             conn, storage_write.HealthSampleRow(ts_utc=datetime.now(timezone.utc).isoformat(), ok=True)
         )
+
+
+def _position_view(pos: cli_bridge.CliPosition) -> markgap.PositionView | None:
+    """CliPosition carries no per-contract mark, only the position's total
+    market_value -- so derive it: market_value = qty * price * 100 for an
+    option. None for a zero-qty row (the broker should never send one, but a
+    division is not the place to find out) or a non-option, which has no
+    strike-based bound to test in the first place."""
+    if pos.qty == 0 or pos.asset_class != "us_option":
+        return None
+    return markgap.PositionView(
+        qty=pos.qty,
+        market_value=pos.market_value,
+        mark=pos.market_value / (pos.qty * Decimal("100")),
+    )
+
+
+async def _publish_markgap(
+    conn: aiosqlite.Connection, positions: list[cli_bridge.CliPosition], spots: dict[str, float]
+) -> None:
+    """Mark integrity for the open book -> agent_state, for /markgap.
+
+    Runs AFTER exit_tick deliberately: a spread closed on this tick has no
+    open markgap to report, and reporting one would contradict the positions
+    list written beside it. Adds one DB read and no Alpaca call -- `positions`
+    and `spots` are already in hand.
+
+    `spots` is the last entry scan's snapshot, so `intrinsic` can lag the tape
+    by up to a scan interval. The band and the markgap itself need no spot."""
+    views = {p.symbol: v for p in positions if (v := _position_view(p)) is not None}
+    spreads = [
+        markgap.SpreadInput(
+            trade_id=t.trade_id, symbol=t.symbol, structure=t.structure.value,
+            structure_is_credit=STRUCTURE_IS_CREDIT[t.structure], qty=t.qty,
+            legs=tuple(
+                markgap.LegView(occ_symbol=leg.occ_symbol, side=leg.side, right=leg.right, strike=leg.strike)
+                for leg in t.legs
+            ),
+        )
+        for t in await _open_trades(conn)
+    ]
+    await storage_write.put_state(conn, "markgap", markgap.book_markgap(
+        spreads, views, spots, computed_at=datetime.now(timezone.utc).isoformat(),
+    ))
 
 
 async def _reflection_exists(conn: aiosqlite.Connection, session_date: str) -> bool:

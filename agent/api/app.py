@@ -97,6 +97,20 @@ async def greeks_history(limit: int = 500, conn: aiosqlite.Connection = Depends(
     return await read.greeks_history(conn, min(limit, 2000))
 
 
+@app.get("/markgap")
+async def markgap(conn: aiosqlite.Connection = Depends(get_conn)) -> dict[str, Any]:
+    """Mark integrity for the open book: what the broker says each spread is
+    worth against what its own strikes permit it to be worth. Published by
+    management_tick; empty until the loop has run once, like every other
+    agent_state key.
+
+    `asof` is the row's own write time, which matters here in a way it does
+    not for /status: after the end-of-competition unwind the book is flat and
+    the panel needs to say WHEN the last non-zero reading was taken."""
+    state = await read.get_state(conn, "markgap")
+    return {"value": state["value_json"], "asof": state["ts_utc"]} if state else {}
+
+
 @app.get("/positions/open")
 async def positions_open(conn: aiosqlite.Connection = Depends(get_conn)) -> list[dict[str, Any]]:
     return await read.open_positions(conn)
