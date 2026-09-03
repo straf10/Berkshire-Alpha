@@ -1,6 +1,7 @@
 import { History } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { DataTableSection } from "@/components/DataTableSection";
+import { SectionEmpty } from "@/components/SectionEmpty";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { compactLegs, formatDateTime, formatSignedMoney } from "@/lib/format";
 import {
@@ -38,7 +39,15 @@ function OutcomeLegend() {
 }
 
 export function TradeHistoryTable({ trades }: { trades: Trade[] | null }) {
-  if (trades === null || trades.length === 0) return null;
+  if (trades === null || trades.length === 0) {
+    return (
+      <SectionEmpty
+        icon={History}
+        title="Trade history"
+        reason="No orders sent yet. Every order the agent submits lands here with its limit walk and its outcome; until one passes the risk gate, the Decisions tab is where the reason lives."
+      />
+    );
+  }
 
   return (
     <DataTableSection icon={History} title="Trade history" aside={<OutcomeLegend />}>

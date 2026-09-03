@@ -137,6 +137,7 @@ function Footer({
 export function Dashboard({
   initialTab,
   initialDecisionId,
+  initialGates,
   status,
   decisions,
   assignments,
@@ -156,6 +157,7 @@ export function Dashboard({
 }: {
   initialTab: TabId;
   initialDecisionId: number | null;
+  initialGates: string[];
   status: Status;
   decisions: Decision[];
   assignments: AssignmentEvent[];
@@ -182,8 +184,13 @@ export function Dashboard({
   function handleTabChange(value: unknown) {
     const next = (VALID_TABS as readonly string[]).includes(value as string) ? (value as TabId) : "overview";
     setTab(next);
-    const url = next === "overview" ? window.location.pathname : `${window.location.pathname}?tab=${next}`;
-    window.history.replaceState(null, "", url);
+    // Only the tab param is rewritten -- ?decision= and ?gate= are the deep
+    // link and have to survive a tab switch, which this used to discard by
+    // rebuilding the whole query string from scratch.
+    const url = new URL(window.location.href);
+    if (next === "overview") url.searchParams.delete("tab");
+    else url.searchParams.set("tab", next);
+    window.history.replaceState(null, "", `${url.pathname}${url.search}`);
   }
 
   return (
@@ -246,12 +253,10 @@ export function Dashboard({
           {/* Greeks and funnel side by side because they describe one event:
               the delta breach is why the funnel's last two stages are zero.
               Stacked full-width, nothing connected them. */}
-          {(greeksLatest || funnel) && (
-            <div className="mb-6 grid gap-4 md:grid-cols-2">
-              <GreeksGauges snapshot={greeksLatest} />
-              <Funnel funnel={funnel} />
-            </div>
-          )}
+          <div className="mb-6 grid gap-4 md:grid-cols-2">
+            <GreeksGauges snapshot={greeksLatest} />
+            <Funnel funnel={funnel} />
+          </div>
           {/* Prose: a paragraph of argument, held to reading width. */}
           <div className="mx-auto w-full max-w-5xl">
             <Reflection
@@ -276,15 +281,13 @@ export function Dashboard({
             decisions={decisions}
             walkCapFraction={config ? Number(config.execution_guardrails.walk_cap_fraction) : null}
             initialDecisionId={initialDecisionId}
+            initialGates={initialGates}
           />
         </TabsContent>
 
         <TabsContent value="trades">
           <OpenPositionsTable positions={openPositions} assignments={assignments} />
           <TradeHistoryTable trades={trades} />
-          {!openPositions?.length && !trades?.length && (
-            <p className="text-muted-foreground">No open positions or trade history yet.</p>
-          )}
         </TabsContent>
 
         {/* Usage: cost and reliability only -- "is the agent healthy" lives in
@@ -300,9 +303,6 @@ export function Dashboard({
             nodeModels={config?.llm.node_models}
           />
           <ToolUsage usage={toolUsage} />
-          {!llmUsage?.totals.calls && !toolUsage?.totals.calls && (
-            <p className="text-muted-foreground">No usage data recorded yet this deploy.</p>
-          )}
         </TabsContent>
 
         <TabsContent value="flow">

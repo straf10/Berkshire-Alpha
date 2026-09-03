@@ -1,7 +1,7 @@
 import { Wrench } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { StatTile } from "@/components/StatTile";
+import { SectionEmpty } from "@/components/SectionEmpty";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { ToolUsageResponse } from "@/lib/types";
 
@@ -9,10 +9,18 @@ import type { ToolUsageResponse } from "@/lib/types";
 // CLI, News) -- these aren't metered per-call like LLM tokens, so this is
 // the counts-and-reliability counterpart to LlmUsage's cost table.
 export function ToolUsage({ usage }: { usage: ToolUsageResponse | null }) {
-  if (usage === null) return null;
+  if (usage === null || usage.totals.calls === 0) {
+    return (
+      <SectionEmpty
+        icon={Wrench}
+        title="Tool API calls"
+        reason="No tool calls recorded yet on this deploy. Every non-LLM request the agent makes — Alpaca market data, the Alpaca CLI, the news feed — is counted here from the first scan onwards."
+      />
+    );
+  }
 
   const { totals, by_tool_endpoint } = usage;
-  if (totals.calls === 0) return null;
+  const clean = totals.failures === 0;
 
   return (
     <Card className="mb-6">
@@ -23,10 +31,24 @@ export function ToolUsage({ usage }: { usage: ToolUsageResponse | null }) {
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="mb-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
-          <StatTile label="Total calls" value={totals.calls.toLocaleString()} />
-          <StatTile label="Failures" value={totals.failures.toLocaleString()} />
-        </div>
+        {/* The reliability record is the headline, not a footnote. It used to
+            be two StatTiles in a four-column grid, which read as "some
+            numbers about tools" -- the actual claim is that several hundred
+            live broker and market-data calls went out with nothing failing,
+            and that only lands if the two numbers are set next to each other
+            in one sentence. */}
+        <p className="text-2xl font-semibold tabular-nums">
+          {totals.calls.toLocaleString()} calls
+          <span className="px-2 font-normal text-muted-foreground">·</span>
+          <span className={clean ? "text-emerald-400" : "text-red-400"}>
+            {totals.failures.toLocaleString()} failure{totals.failures === 1 ? "" : "s"}
+          </span>
+        </p>
+        <p className="mb-4 text-xs text-muted-foreground">
+          Every non-LLM request the agent has made, across {by_tool_endpoint.length} endpoint
+          {by_tool_endpoint.length === 1 ? "" : "s"}
+          {clean ? " — none of them failed." : "."}
+        </p>
         <div className="rounded-md border border-border">
           <Table>
             <TableHeader>

@@ -1,11 +1,30 @@
 "use client";
 
 import { MessagesSquare } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { DataTableSection } from "@/components/DataTableSection";
 import { DecisionCard } from "@/components/DecisionCard";
+import { FilterChips } from "@/components/FilterChips";
+import { RejectHistogram } from "@/components/RejectHistogram";
+import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { apiBase, fetchJson } from "@/lib/api";
+import {
+  DEFAULT_SORT,
+  SORT_COLUMNS,
+  applyFilters,
+  buildFacets,
+  emptySelection,
+  enteredCount,
+  rejectDistribution,
+  selectionSize,
+  sortDecisions,
+  toggleFacetValue,
+  withFacetValues,
+  type FacetId,
+  type SortKey,
+  type SortState,
+} from "@/lib/decisionFacets";
 import type { Decision, DecisionChain } from "@/lib/types";
 
 const POLL_MS = 15_000;
@@ -15,16 +34,31 @@ const POLL_MS = 15_000;
 // shrink the feed back to 50 rows, or cost 212 KB to avoid doing so.
 const POLL_LIMIT = 50;
 
+// Time and quantity read newest/largest first; the rest are names, which read
+// A-Z first.
+const DESCENDING_FIRST: ReadonlySet<SortKey> = new Set<SortKey>(["ts_utc", "qty"]);
+
 function mergeById(existing: Decision[], fresh: Decision[]): Decision[] {
   const byId = new Map(existing.map((d) => [d.id, d]));
   for (const d of fresh) byId.set(d.id, d);
   return [...byId.values()].sort((a, b) => b.id - a.id);
 }
 
+function sessionLabel(decisions: readonly Decision[]): string | null {
+  const sessions = [...new Set(decisions.map((d) => d.session_date))].sort();
+  if (sessions.length === 0) return null;
+  if (sessions.length === 1) return `session ${sessions[0]}`;
+  return `sessions ${sessions[0]} → ${sessions[sessions.length - 1]}`;
+}
+
 // The centerpiece per docs/plan.md:455 -- "our strongest asset for
 // Presentation & Explainability". A plain scannable table whose every row is
 // clickable and lazy-fetches its full chain on first expand (DecisionCard),
 // fixing the old page's eager N+1 verdict fetch.
+//
+// Above it, the argument the table is evidence for: this agent refuses far
+// more often than it trades, and every refusal names the rule that fired.
+// That distribution used to be the sixth column of grey text.
 //
 // Polls independently of LiveRefresh's 60s full-page router.refresh() (which
 // re-runs page.tsx's 14 parallel fetches): this feed only needs the one
@@ -35,16 +69,28 @@ export function ReasoningFeed({
   decisions,
   walkCapFraction,
   initialDecisionId,
+  initialGates,
 }: {
   decisions: Decision[];
   walkCapFraction: number | null;
   /** From ?decision=<id> -- expand and scroll to that row on load. */
   initialDecisionId?: number | null;
+  /** From ?gate=REDUCE_ONLY(,...) -- pre-applied Outcome chips. */
+  initialGates?: readonly string[];
 }) {
   // null until the first poll lands -- falls back to the SSR-fetched prop
   // until then, and to the merged window after.
   const [polled, setPolled] = useState<Decision[] | null>(null);
   const live = polled ?? decisions;
+
+  // Filtering and sorting are state, not a query: both operate over the rows
+  // already in memory. Nothing here refetches.
+  const [selection, setSelection] = useState(() =>
+    initialGates && initialGates.length > 0
+      ? withFacetValues(emptySelection(), "outcome", initialGates)
+      : emptySelection()
+  );
+  const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
 
   // A ?decision= link is meant to survive: the debate worth sharing is not
   // necessarily in the newest 200 rows, and a link that lands on "not here"
@@ -65,9 +111,6 @@ export function ReasoningFeed({
     };
   }, [initialDecisionId, decisions]);
 
-  const pinned = !inWindow && linked !== null && linked !== "missing" ? linked : null;
-  const rows = pinned ? [pinned, ...live] : live;
-
   useEffect(() => {
     const id = setInterval(async () => {
       const fresh = await fetchJson<Decision[]>(`${apiBase()}/decisions?limit=${POLL_LIMIT}`);
@@ -76,15 +119,56 @@ export function ReasoningFeed({
     return () => clearInterval(id);
   }, [decisions]);
 
+  // Counts, facets and the histogram are all derived from the FULL window --
+  // never from the filtered rows. A chip whose count reacted to the other
+  // chips would fall to zero and disappear the moment you used it.
+  const facets = useMemo(() => buildFacets(live, selection), [live, selection]);
+  const rejects = useMemo(() => rejectDistribution(live), [live]);
+  const entered = useMemo(() => enteredCount(live), [live]);
+  const visible = useMemo(
+    () => sortDecisions(applyFilters(live, selection), sort),
+    [live, selection, sort]
+  );
+
+  const pinned = !inWindow && linked !== null && linked !== "missing" ? linked : null;
+  const rows = pinned ? [pinned, ...visible] : visible;
+  const activeFilters = selectionSize(selection);
+
+  // ?gate= is the shareable half of the deep link: a slide or a demo script
+  // can point at "the 28 rows the delta limit stopped" rather than at
+  // "scroll down and click around". Written through the History API for the
+  // same reason Dashboard writes ?tab= that way -- it must not re-run the
+  // page's fetch.
+  const gateParam = [...selection.outcome].sort().join(",");
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (gateParam) url.searchParams.set("gate", gateParam);
+    else url.searchParams.delete("gate");
+    const next = `${url.pathname}${url.search}`;
+    if (next !== `${window.location.pathname}${window.location.search}`) {
+      window.history.replaceState(null, "", next);
+    }
+  }, [gateParam]);
+
   // Keep the URL current as rows open and close, so the address bar is always
-  // a link to what is on screen -- which is the point of ?decision=. Written
-  // through the History API directly, matching Dashboard's ?tab= handling, so
-  // it never re-runs the page's fetch.
+  // a link to what is on screen -- which is the point of ?decision=.
   function handleToggle(decisionId: number, open: boolean) {
     const url = new URL(window.location.href);
     if (open) url.searchParams.set("decision", String(decisionId));
     else url.searchParams.delete("decision");
     window.history.replaceState(null, "", `${url.pathname}${url.search}`);
+  }
+
+  function handleFacetToggle(facet: FacetId, value: string) {
+    setSelection((prev) => toggleFacetValue(prev, facet, value));
+  }
+
+  function handleSort(key: SortKey) {
+    setSort((prev) =>
+      prev.key === key
+        ? { key, dir: prev.dir === "asc" ? "desc" : "asc" }
+        : { key, dir: DESCENDING_FIRST.has(key) ? "desc" : "asc" }
+    );
   }
 
   let banner: string | null = null;
@@ -94,44 +178,115 @@ export function ReasoningFeed({
     banner = `Decision ${initialDecisionId} could not be found.`;
   }
 
+  const session = sessionLabel(live);
+
   return (
-    <DataTableSection
-      icon={MessagesSquare}
-      title="Reasoning feed"
-      isEmpty={rows.length === 0}
-      emptyMessage="No decisions yet."
-      aside={
-        banner ? (
-          <p className="mb-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs text-amber-400">
-            {banner}
-          </p>
-        ) : undefined
-      }
-    >
-      <Table className="min-w-[820px]">
-        <TableHeader>
-          <TableRow>
-            <TableHead>Time (UTC)</TableHead>
-            <TableHead>Symbol</TableHead>
-            <TableHead>Mode</TableHead>
-            <TableHead>Regime</TableHead>
-            <TableHead>Action</TableHead>
-            <TableHead>Gate outcome</TableHead>
-            <TableHead>Qty</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {rows.map((d) => (
-            <DecisionCard
-              key={d.id}
-              decision={d}
-              walkCapFraction={walkCapFraction}
-              defaultOpen={d.id === initialDecisionId}
-              onToggle={handleToggle}
-            />
-          ))}
-        </TableBody>
-      </Table>
-    </DataTableSection>
+    <>
+      {live.length > 0 && (
+        <Card className="mb-6">
+          <CardContent className="pt-6">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                Every reason the agent refused to trade
+              </h2>
+              <p className="text-[11px] text-muted-foreground">
+                {live.length} decisions{session ? ` · ${session}` : ""} · filtered client-side
+              </p>
+            </div>
+            <p className="mt-1 text-2xl font-semibold tabular-nums">
+              {entered}{" "}
+              <span className="text-lg font-normal text-muted-foreground">
+                of {live.length} entered
+              </span>
+            </p>
+            <p aria-live="polite" className="text-[11px] text-muted-foreground">
+              {activeFilters > 0
+                ? `Showing ${visible.length} of ${live.length} rows — ${activeFilters} filter${activeFilters === 1 ? "" : "s"} on.`
+                : "Every row below is one candidate the agent looked at and wrote a reason for."}
+            </p>
+
+            <div className="mt-4 grid gap-4 md:grid-cols-2">
+              <div>
+                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Reject distribution
+                </h3>
+                <RejectHistogram
+                  bars={rejects}
+                  total={live.length}
+                  selected={selection.outcome}
+                  onSelect={(reason) => handleFacetToggle("outcome", reason)}
+                />
+              </div>
+              <div>
+                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Filters
+                </h3>
+                <FilterChips
+                  facets={facets}
+                  selection={selection}
+                  onToggle={handleFacetToggle}
+                  onClear={() => setSelection(emptySelection())}
+                  activeCount={activeFilters}
+                />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      <DataTableSection
+        icon={MessagesSquare}
+        title="Reasoning feed"
+        isEmpty={rows.length === 0}
+        emptyMessage={
+          activeFilters > 0 ? "No decisions match these filters." : "No decisions yet."
+        }
+        aside={
+          banner ? (
+            <p className="mb-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs text-amber-400">
+              {banner}
+            </p>
+          ) : undefined
+        }
+      >
+        <Table className="min-w-[820px]">
+          <TableHeader>
+            <TableRow>
+              {SORT_COLUMNS.map((col) => {
+                const active = sort.key === col.key;
+                return (
+                  <TableHead
+                    key={col.key}
+                    aria-sort={active ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => handleSort(col.key)}
+                      className="flex items-center gap-1 rounded-sm hover:text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+                    >
+                      {col.label}
+                      <span aria-hidden className={active ? "text-primary" : "text-muted-foreground/60"}>
+                        {active ? (sort.dir === "asc" ? "▲" : "▼") : "↕"}
+                      </span>
+                    </button>
+                  </TableHead>
+                );
+              })}
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((d) => (
+              <DecisionCard
+                key={d.id}
+                decision={d}
+                walkCapFraction={walkCapFraction}
+                defaultOpen={d.id === initialDecisionId}
+                onToggle={handleToggle}
+              />
+            ))}
+          </TableBody>
+        </Table>
+      </DataTableSection>
+    </>
   );
 }

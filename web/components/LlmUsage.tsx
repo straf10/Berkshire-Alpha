@@ -1,5 +1,6 @@
 import { Coins } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { SectionEmpty } from "@/components/SectionEmpty";
 import { StatTile } from "@/components/StatTile";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatCost } from "@/lib/format";
@@ -19,10 +20,17 @@ export function LlmUsage({
   /** The live routing table, to date-stamp rows that predate it. */
   nodeModels?: Record<string, string>;
 }) {
-  if (usage === null) return null;
+  if (usage === null || usage.totals.calls === 0) {
+    return (
+      <SectionEmpty
+        icon={Coins}
+        title="LLM usage & cost"
+        reason="No LLM calls recorded yet on this deploy. Every model call is metered per node and per model as it happens — the first entry scan of the session fills this in."
+      />
+    );
+  }
 
   const { totals, by_node_model } = usage;
-  if (totals.calls === 0) return null;
 
   // One RISK_NEUTRAL call per risk-team run, so this counts candidates that
   // went the whole way -- analyst -> debate -> proposal -> risk vote -- rather

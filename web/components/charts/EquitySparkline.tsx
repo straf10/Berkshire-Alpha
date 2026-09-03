@@ -2,6 +2,7 @@
 
 import { Area, AreaChart } from "recharts";
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
+import { formatDateTime } from "@/lib/format";
 import type { EquityPoint } from "@/lib/types";
 
 const chartConfig = {
@@ -13,8 +14,20 @@ export function EquitySparkline({ points }: { points: EquityPoint[] }) {
     return <div className="flex h-16 items-center text-sm text-muted-foreground">Not enough history yet.</div>;
   }
 
+  // A sparkline is the one chart on this page with no axis labels at all, so
+  // without this it is literally unreadable to anyone not looking at it.
+  const first = points[0];
+  const last = points[points.length - 1];
+  const change = last.equity - first.equity;
+  const money = (n: number) => `$${Math.round(n).toLocaleString()}`;
+
   return (
-    <ChartContainer config={chartConfig} className="aspect-auto h-16 w-full">
+    <ChartContainer
+      config={chartConfig}
+      role="img"
+      aria-label={`Account equity over ${points.length} samples: ${money(first.equity)} on ${formatDateTime(first.ts_utc)} to ${money(last.equity)} on ${formatDateTime(last.ts_utc)}, ${change >= 0 ? "up" : "down"} ${money(Math.abs(change))}.`}
+      className="aspect-auto h-16 w-full"
+    >
       <AreaChart data={points} margin={{ top: 4, right: 4, bottom: 0, left: 4 }}>
         <defs>
           <linearGradient id="equityFill" x1="0" y1="0" x2="0" y2="1">

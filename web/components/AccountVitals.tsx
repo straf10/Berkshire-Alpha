@@ -1,6 +1,7 @@
 import { Wallet } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EquitySparkline } from "@/components/charts/EquitySparkline";
+import { SectionEmpty } from "@/components/SectionEmpty";
 import { formatMoney, formatPct, formatSignedMoney } from "@/lib/format";
 import type { AccountState, EquityPoint } from "@/lib/types";
 
@@ -65,7 +66,20 @@ export function AccountVitals({
   history: EquityPoint[] | null;
   sessionDate: string | undefined;
 }) {
-  if (account === null) return null;
+  if (account === null) {
+    return (
+      <SectionEmpty
+        icon={Wallet}
+        title="Account"
+        reason={
+          <>
+            No account snapshot yet. The agent writes <code>state/account</code> from the broker on
+            its first management tick, which runs within five minutes of the market opening.
+          </>
+        }
+      />
+    );
+  }
 
   const equity = account.equity ? Number(account.equity) : null;
   const pnl = dayPnl(account, history, sessionDate);
