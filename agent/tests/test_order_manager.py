@@ -383,3 +383,73 @@ async def test_legged_close_refuses_anything_that_is_not_a_1x1_vertical() -> Non
 def test_alpaca_structural_reject_code_maps_to_malformed_order() -> None:
     assert classify_reject(422, '{"code":42210000,"message":"unable to process order"}') == RejectCode.MALFORMED_ORDER
     assert RejectCode.MALFORMED_ORDER in STRUCTURAL_CLOSE_REJECTS
+
+
+# ---------------------------------------------------------------------------
+# The 2026-09-03 credit-side walk outage. Two independent defects, one
+# incident: the SDK's own validator killed every negative-limit replace, and
+# the blanket except then left the submitted order RESTING, which reserves
+# the position quantity and blocks every subsequent close.
+# ---------------------------------------------------------------------------
+
+
+def test_replace_request_accepts_a_net_credit_limit() -> None:
+    """A negative limit is a net CREDIT under this project's sign convention,
+    and is the only correct price for closing a long vertical. The SDK's
+    ReplaceOrderRequest validator rejects it at construction; build_replace_request
+    must not."""
+    from agent.execution.alpaca_client import build_replace_request
+
+    assert build_replace_request(Decimal("-4.39")).to_request_fields() == {"limit_price": -4.39}
+    # A positive limit still goes through the validated path, unchanged.
+    assert build_replace_request(Decimal("2.06")).to_request_fields() == {"limit_price": 2.06}
+
+
+async def test_crashed_walk_cancels_the_order_it_left_resting() -> None:
+    """A walk that raises after submitting must not leave the order on the
+    book: Alpaca reserves the position's qty behind it, and every later close
+    is then refused before an order record exists -- silently."""
+    class ReplaceExplodes(MockBroker):
+        async def replace_order(self, order_id, limit):
+            raise ValueError("limit_price must be greater than 0")
+
+    broker = ReplaceExplodes([_state("o1", OrderStatus.NEW), _state("o1", OrderStatus.NEW)])
+    result = await walk_to_fill(broker, _credit_plan("-0.90", "-0.75"), 6, clock=FakeClock())
+
+    assert result.status == "REJECTED"
+    assert result.reject_code == RejectCode.UNKNOWN
+    assert result.order_id == "o1"                      # reported, not swallowed
+    assert broker.cancelled == ["o1"]                # and actually released
+    assert result.events[-1].action == "CANCEL"
+
+
+async def test_crashed_walk_with_no_live_order_cancels_nothing() -> None:
+    """If the submit itself raised, there is no resting order to cancel and
+    the cancel path must not invent one."""
+    class SubmitExplodes(MockBroker):
+        async def submit_mleg(self, plan, qty, limit):
+            raise RuntimeError("boom")
+
+    broker = SubmitExplodes([])
+    result = await walk_to_fill(broker, _credit_plan("-0.90", "-0.75"), 6, clock=FakeClock())
+
+    assert result.status == "REJECTED"
+    assert result.order_id is None
+    assert broker.cancelled == []
+
+
+async def test_failed_cancel_of_a_stranded_order_still_returns_rejected() -> None:
+    """Nothing further can be done from inside the walk if the cancel also
+    fails -- it must be logged and reported, never raised."""
+    class Hostile(MockBroker):
+        async def replace_order(self, order_id, limit):
+            raise ValueError("limit_price must be greater than 0")
+
+        async def cancel_order(self, order_id):
+            raise RuntimeError("cancel endpoint down")
+
+    broker = Hostile([_state("o1", OrderStatus.NEW), _state("o1", OrderStatus.NEW)])
+    result = await walk_to_fill(broker, _credit_plan("-0.90", "-0.75"), 6, clock=FakeClock())
+
+    assert result.status == "REJECTED"
+    assert result.order_id == "o1"

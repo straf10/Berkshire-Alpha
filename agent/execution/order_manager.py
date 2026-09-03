@@ -93,10 +93,59 @@ async def walk_to_fill(
             "walk_to_fill crashed for %s %s qty=%d -- returning REJECTED/UNKNOWN",
             plan.symbol, plan.structure, qty,
         )
+        stranded = await _cancel_stranded(broker, clock, events)
         return WalkResult(
-            status="REJECTED", order_id=None, final_limit=None, fill_price=None,
+            status="REJECTED", order_id=stranded, final_limit=None, fill_price=None,
             filled_qty=0, steps=0, reject_code=RejectCode.UNKNOWN, events=tuple(events),
         )
+
+
+def _live_order_id(events: list[WalkEvent]) -> str | None:
+    """The order actually resting at the broker when the walk died -- the most
+    recent SUBMIT or REPLACE, since a replace mints a new id and retires the
+    old one."""
+    for event in reversed(events):
+        if event.action in ("SUBMIT", "REPLACE") and event.order_id:
+            return event.order_id
+    return None
+
+
+async def _cancel_stranded(broker: BrokerPort, clock: ClockPort, events: list[WalkEvent]) -> str | None:
+    """Cancel the order a crashed walk left live. This is what makes the
+    blanket except above safe to have.
+
+    Catching every exception keeps the trading loop alive, which is right.
+    But an exception raised AFTER the order is on the book left it RESTING,
+    and Alpaca reserves the position quantity behind a resting closing order
+    -- `qty_available` drops to 0. Every later attempt to close that spread
+    is then refused by the broker BEFORE an order record exists, so nothing
+    is logged, no row is written, and the failure is invisible: the loop
+    looks healthy while the position cannot be closed at all. That is
+    exactly how one failed replace became a three-session inability to exit
+    (memory.md, 2026-09-03).
+
+    A walk is allowed to fail. It is not allowed to leave the book locked
+    behind it. If the cancel ITSELF fails there is nothing further we can do
+    from here, so it is logged loudly -- an operator must clear it, and the
+    position stays unclosable until they do."""
+    order_id = _live_order_id(events)
+    if order_id is None:
+        return None
+    step = events[-1].step if events else 0
+    try:
+        await broker.cancel_order(order_id)
+    except Exception:  # noqa: BLE001 -- the caller is already handling a failure
+        logger.exception(
+            "could not cancel stranded order %s -- the position's qty stays "
+            "RESERVED and no further close can be submitted until an operator "
+            "cancels it by hand", order_id,
+        )
+        return order_id
+    events.append(
+        WalkEvent(ts=clock.now(), step=step, action="CANCEL", order_id=order_id, limit=None, status=None)
+    )
+    logger.warning("cancelled stranded order %s after a failed walk -- qty released", order_id)
+    return order_id
 
 
 async def _emit_order_id(on_order_id: OrderIdSink | None, order_id: str, step: int) -> None:
