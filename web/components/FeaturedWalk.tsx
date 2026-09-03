@@ -147,7 +147,7 @@ export function FeaturedWalk({
             )}
           </div>
           {capWouldHaveStopped && (
-            <p className="mt-3 text-[11px] text-muted-foreground">
+            <p className="mt-3 text-caption tabular-nums text-muted-foreground">
               This order ran <em>before</em> the walk-cap clamp landed. Under today&apos;s rule it
               would have cancelled at {money(cap)} rather than reaching {money(endPrice)} — which is
               what the agent now does:{" "}

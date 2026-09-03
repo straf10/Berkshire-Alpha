@@ -1,14 +1,13 @@
 import { Dashboard } from "@/components/Dashboard";
 import { ServiceDown } from "@/components/ServiceDown";
 import { apiBase, fetchJson } from "@/lib/api";
-import { VALID_TABS, type TabId } from "@/lib/tabs";
+import { DEFAULT_TAB, VALID_TABS, type TabId } from "@/lib/tabs";
 import type {
   AccountState,
   AgentConfig,
   AssignmentEvent,
   Decision,
   EquityPoint,
-  FunnelResponse,
   GreeksSnapshot,
   HealthBucket,
   HealthResponse,
@@ -31,7 +30,7 @@ export const dynamic = "force-dynamic";
 const DECISIONS_LIMIT = 200;
 
 function toTabId(value: string | undefined): TabId {
-  return (VALID_TABS as readonly string[]).includes(value ?? "") ? (value as TabId) : "overview";
+  return (VALID_TABS as readonly string[]).includes(value ?? "") ? (value as TabId) : DEFAULT_TAB;
 }
 
 function toDecisionId(value: string | undefined): number | null {
@@ -90,7 +89,6 @@ export default async function Page({
     equityHistory,
     greeksLatest,
     openPositions,
-    funnel,
     trades,
     llmUsage,
     toolUsage,
@@ -104,7 +102,6 @@ export default async function Page({
     fetchJson<EquityPoint[]>(`${base}/equity/history?limit=500`),
     fetchJson<GreeksSnapshot>(`${base}/greeks/latest`),
     fetchJson<OpenPosition[]>(`${base}/positions/open`),
-    fetchJson<FunnelResponse>(`${base}/funnel`),
     fetchJson<Trade[]>(`${base}/trades?limit=100`),
     fetchJson<LlmUsageResponse>(`${base}/llm/usage`),
     fetchJson<ToolUsageResponse>(`${base}/tools/usage`),
@@ -127,7 +124,6 @@ export default async function Page({
       equityHistory={equityHistory}
       greeksLatest={greeksLatest}
       openPositions={openPositions}
-      funnel={funnel}
       trades={trades}
       llmUsage={llmUsage}
       toolUsage={toolUsage}

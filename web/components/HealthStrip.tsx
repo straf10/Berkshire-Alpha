@@ -66,11 +66,11 @@ export function HealthStrip({ buckets, status }: { buckets: HealthBucket[] | nul
   return (
     <div>
       <div className="mb-2 flex flex-wrap items-center justify-between gap-1.5">
-        <p className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+        <p className="flex items-center gap-1.5 text-subheadline font-semibold uppercase tracking-wide text-muted-foreground">
           <Activity className="size-3.5" />
           Agent uptime — market hours
         </p>
-        <span className="text-sm text-foreground/70">
+        <span className="text-sm tabular-nums text-foreground/70">
           {uptimePct}% up over {covered.length} market hours ({failedChecks} failed{" "}
           {failedChecks === 1 ? "check" : "checks"}
           {gaps > 0 && `, ${gaps}h with no sample`})
@@ -96,7 +96,7 @@ export function HealthStrip({ buckets, status }: { buckets: HealthBucket[] | nul
           />
         ))}
       </div>
-      <div className="mt-1 flex flex-wrap justify-between gap-x-3 text-[11px] text-muted-foreground">
+      <div className="mt-1 flex flex-wrap justify-between gap-x-3 text-caption tabular-nums text-muted-foreground">
         <span>{formatDateTime(covered[0].bucket_start_utc)} — first health sample</span>
         {/* The legend only appears when there is something to explain: with a
             clean run the strip is one colour and needs no key. */}

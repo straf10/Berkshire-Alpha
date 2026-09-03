@@ -111,7 +111,7 @@ export function MarkGapPanel({ markgap }: { markgap: MarkGapResponse | null }) {
         </div>
       )}
 
-      <p className="mt-3 text-[11px] text-muted-foreground">
+      <p className="mt-3 text-caption tabular-nums text-muted-foreground">
         Intrinsic is computed from the {intrinsic_spot_source}&apos;s spot, so it lags the
         tape; the band and the gap need no spot at all.
         {omitted > 0 && (

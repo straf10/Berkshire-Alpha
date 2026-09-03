@@ -51,7 +51,7 @@ export function LlmUsage({
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+        <CardTitle className="flex items-center gap-1.5 text-subheadline font-semibold uppercase tracking-wide text-muted-foreground">
           <Coins className="size-3.5" />
           LLM usage &amp; cost
         </CardTitle>
@@ -69,7 +69,7 @@ export function LlmUsage({
           <StatTile label="Prompt tokens" value={totals.prompt_tokens.toLocaleString()} />
           <StatTile label="Completion tokens" value={totals.completion_tokens.toLocaleString()} />
         </div>
-        <p className="mb-4 text-xs text-muted-foreground">
+        <p className="mb-4 text-xs tabular-nums text-muted-foreground">
           Every LLM call this agent has ever made — {totals.calls.toLocaleString()} of them, across{" "}
           {deliberated > 0 ? `${deliberated} fully-deliberated candidates and ` : ""}
           {ordersSent} orders sent — cost {formatCost(totals.cost_usd)} in total.

@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
-// Three section archetypes, not one.
+// Two section archetypes, not one.
 //
 // Before this, every section on the page was the same object: a <Card>, an
 // uppercase muted title, and one widget. The treatment appeared in thirteen
@@ -13,12 +13,10 @@ import { cn } from "@/lib/utils";
 //   card   bordered, one elevation up from the page. For data you read.
 //   bare   no chrome at all. For things that should feel like the page
 //          rather than an object on it -- the pipeline graph, hero strips.
-//   quote  --surface-2 plus an accent rule. For the one place on this
-//          dashboard where a different voice is speaking: the Reflector.
 //
 // Every section still shares the same header, so the archetypes read as one
-// family rather than three unrelated components.
-export type SectionVariant = "card" | "bare" | "quote";
+// family rather than unrelated components.
+export type SectionVariant = "card" | "bare";
 
 export function SectionHeader({
   icon: Icon,
@@ -35,12 +33,12 @@ export function SectionHeader({
 }) {
   return (
     <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-      <p className="flex flex-wrap items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+      <p className="flex flex-wrap items-center gap-1.5 text-subheadline uppercase tracking-wide text-muted-foreground">
         {Icon && <Icon className="size-3.5" />}
         {title}
         {note && <span className="normal-case">{note}</span>}
       </p>
-      {meta && <span className="text-[11px] text-muted-foreground">{meta}</span>}
+      {meta && <span className="text-caption tabular-nums text-muted-foreground">{meta}</span>}
     </div>
   );
 }
@@ -74,8 +72,12 @@ export function SectionHero({
   return (
     <p
       className={cn(
-        "font-semibold tabular-nums leading-none",
-        size === "page" ? "text-[52px]" : "text-[34px]",
+        "font-semibold tabular-nums",
+        // page = HIG Large Title, reserved for the single largest number on
+        // the site (Overview's equity). section = Title 2, a full step down
+        // so every other section hero visibly recedes behind it rather than
+        // competing at the same size.
+        size === "page" ? "text-large-title" : "text-title-2",
         TONE[tone],
         className
       )}
@@ -112,20 +114,6 @@ export function Section({
   if (variant === "bare") {
     return (
       <section className={className}>
-        <div className="mb-2">{header}</div>
-        {children}
-      </section>
-    );
-  }
-
-  if (variant === "quote") {
-    return (
-      <section
-        className={cn(
-          "rounded-lg border border-l-2 border-hairline border-l-accent bg-surface-2 p-4",
-          className
-        )}
-      >
         <div className="mb-2">{header}</div>
         {children}
       </section>

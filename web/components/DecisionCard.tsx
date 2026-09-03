@@ -69,7 +69,7 @@ function Section({
 }) {
   return (
     <div className="border-t border-border/60 pt-2">
-      <p className="mb-1 flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+      <p className="mb-1 flex items-center gap-1.5 text-subheadline font-semibold uppercase tracking-wide text-muted-foreground">
         <Icon className="size-3.5" />
         {title}
       </p>

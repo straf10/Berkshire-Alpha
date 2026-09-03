@@ -29,7 +29,7 @@ export function SectionEmpty({
   return (
     <Card className={className}>
       <CardHeader className="pb-2">
-        <CardTitle className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+        <CardTitle className="flex items-center gap-1.5 text-subheadline font-semibold uppercase tracking-wide text-muted-foreground">
           <Icon className="size-3.5" />
           {title}
         </CardTitle>

@@ -1,6 +1,6 @@
 "use client";
 
-import { BrainCircuit, CalendarOff, Clock, OctagonAlert } from "lucide-react";
+import { BrainCircuit, CalendarOff, OctagonAlert } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { formatCountdown, formatTimeUtc } from "@/lib/format";
@@ -37,7 +37,7 @@ function SessionSchedule({ status }: { status: Status }) {
       : null;
 
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm tabular-nums text-muted-foreground">
       {window && <span>{window}</span>}
       <span
         className="flex items-center gap-1.5"
@@ -79,9 +79,37 @@ export function StatusBar({ status }: { status: Status }) {
   const known = status.next_action !== undefined && status.next_action_utc !== undefined;
   const live = status.live === true;
   const copy = known ? actionCopy(status.next_action!) : null;
+  // The one thing that honestly means "the loop is live right now" -- drives
+  // the ambient dot below. Not a fabricated heartbeat: no field distinguishes
+  // "scanning" from "executing" mid-cycle, so the dot doesn't pretend to.
+  const active = status.is_open === true;
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-2.5">
+      {/* Ambient state, not decoration -- entries_halted is a fail-safe an
+          operator has to clear, not a routine notice, so while it holds it
+          is the loudest thing on this page: full-width, its own glow, ahead
+          of every other status element. --warn, not --neg -- this is a risk
+          state the agent is obeying, not a P&L sign or a failure. */}
+      {status.entries_halted && (
+        <div className="flex items-start gap-2.5 rounded-lg border border-warn/40 bg-warn/10 px-3 py-2.5 shadow-[0_0_28px_-10px_var(--warn)]">
+          <span className="relative mt-0.5 flex size-2.5 shrink-0">
+            <span className="absolute inset-0 animate-ping rounded-full bg-warn opacity-75 motion-reduce:hidden" />
+            <span className="relative block size-2.5 rounded-full bg-warn" />
+          </span>
+          <div className="min-w-0">
+            <p className="flex items-center gap-1.5 text-subheadline uppercase tracking-wide text-warn">
+              <OctagonAlert className="size-3.5" />
+              Entries halted
+            </p>
+            <p className="mt-0.5 text-caption text-foreground/80">
+              New entries are blocked for the rest of this session. Position management and exits still
+              run.
+            </p>
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center gap-3 text-base">
         <Badge
           variant="outline"
@@ -100,19 +128,6 @@ export function StatusBar({ status }: { status: Status }) {
             LLM {status.llm_enabled ? "on" : "off"}
           </span>
         )}
-        {/* Published by the backend since the pre-market hardening pass and
-            typed nowhere until now -- a halt nobody can see is a halt nobody
-            can clear. */}
-        {status.entries_halted && (
-          <Badge
-            variant="outline"
-            className="gap-1.5 border-warn/30 bg-warn/10 text-warn"
-            title="New entries are blocked for the rest of this session. Position management and exits still run."
-          >
-            <OctagonAlert className="size-3" />
-            ENTRIES HALTED
-          </Badge>
-        )}
         {/* The planned, dated stand-down on the final session
             (agent/config.py FREEZE_ENTRIES_FROM), distinct from the halt
             above: that one is a fail-safe an operator has to clear, this one
@@ -130,10 +145,23 @@ export function StatusBar({ status }: { status: Status }) {
           </Badge>
         )}
         {known && copy ? (
-          <span className="text-foreground/80">
-            <Clock className="mr-1 inline size-3.5 align-[-2px]" />
+          <span className="flex items-center gap-1.5 text-foreground/80">
+            {/* Ambient loop indicator, not ornament: pulses only while
+                status.is_open is true -- the one field that actually means
+                the trading loop is live right now. Dim and static the rest
+                of the time, same as the market it tracks. */}
+            <span className="relative flex size-2 shrink-0" aria-hidden>
+              {active && (
+                <span className="absolute inset-0 animate-ping rounded-full bg-primary opacity-75 motion-reduce:hidden" />
+              )}
+              <span
+                className={`relative block size-2 rounded-full ${
+                  active ? "bg-primary shadow-[0_0_6px_var(--primary)]" : "bg-idle"
+                }`}
+              />
+            </span>
             {status.is_open ? "market open" : "market closed"} — next: {copy.label} in{" "}
-            <span className="font-semibold text-primary whitespace-nowrap" suppressHydrationWarning>
+            <span className="font-semibold tabular-nums text-primary whitespace-nowrap" suppressHydrationWarning>
               {formatCountdown(status.next_action_utc!, now)}
             </span>
             {copy.hint && <span className="text-muted-foreground"> · {copy.hint}</span>}

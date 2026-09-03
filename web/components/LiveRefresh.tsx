@@ -28,7 +28,7 @@ export function LiveRefresh({ intervalMs = 60_000 }: { intervalMs?: number }) {
   }, [router, intervalMs]);
 
   return (
-    <span suppressHydrationWarning>
+    <span suppressHydrationWarning className="tabular-nums">
       {lastUpdated ? `last updated ${lastUpdated.toLocaleTimeString()}` : "—"}
     </span>
   );

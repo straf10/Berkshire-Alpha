@@ -25,7 +25,7 @@ export function ToolUsage({ usage }: { usage: ToolUsageResponse | null }) {
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+        <CardTitle className="flex items-center gap-1.5 text-subheadline font-semibold uppercase tracking-wide text-muted-foreground">
           <Wrench className="size-3.5" />
           Tool API calls
         </CardTitle>
@@ -44,7 +44,7 @@ export function ToolUsage({ usage }: { usage: ToolUsageResponse | null }) {
             {totals.failures.toLocaleString()} failure{totals.failures === 1 ? "" : "s"}
           </span>
         </p>
-        <p className="mb-4 text-xs text-muted-foreground">
+        <p className="mb-4 text-xs tabular-nums text-muted-foreground">
           Every non-LLM request the agent has made, across {by_tool_endpoint.length} endpoint
           {by_tool_endpoint.length === 1 ? "" : "s"}
           {clean ? " — none of them failed." : "."}

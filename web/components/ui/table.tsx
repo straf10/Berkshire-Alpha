@@ -12,7 +12,12 @@ function Table({ className, ...props }: React.ComponentProps<"table">) {
     >
       <table
         data-slot="table"
-        className={cn("w-full caption-bottom text-sm", className)}
+        // Every table on this dashboard is a dense data grid -- HIG-native
+        // choice: prose stays sans, data goes mono. font-mono here plus
+        // tabular-nums (belt-and-braces against digit-width jitter on a
+        // 15s poll) cascades to every cell in every table in one place,
+        // rather than a per-cell audit across six table components.
+        className={cn("w-full caption-bottom text-sm font-mono tabular-nums", className)}
         {...props}
       />
     </div>
