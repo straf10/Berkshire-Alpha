@@ -2341,3 +2341,64 @@ async def test_maybe_reflect_skips_when_budget_exhausted(tmp_path) -> None:
         cur = await conn.execute("SELECT COUNT(*) FROM llm_calls")
         # Still just the one seeded call -- the reflector made none of its own.
         assert (await cur.fetchone())[0] == 1
+
+
+async def test_frozen_final_session_approves_nothing(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """docs/markgap_plan.md P0-B, at the level that matters: not "the
+    predicate returns True" (test_session covers that) but "a scan on the
+    final session approves nothing and places nothing".
+
+    The clock, not the session fixture, is what freezes: is_entry_frozen reads
+    deps.clock.now() against FREEZE_ENTRIES_FROM, so the same committed
+    calendar fixture every other scan test uses is reused here with the clock
+    moved past the freeze date."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    _patch_cli(monkeypatch, positions=FAKE_POSITIONS)
+
+    clients = FakeClients()
+    broker = MockBroker([])
+    frozen_clock = _FastClock(datetime(2026, 9, 3, 14, 0, tzinfo=timezone.utc))  # 10:00 ET, freeze day
+    deps = _deps(db_path, clients, broker, frozen_clock)
+
+    session = await main_module.current_or_next_session(clients)
+    result = await main_module.scan_cycle(deps, session, dry_run=True)
+
+    # scan_cycle returns every gate decision, rejects included -- so the
+    # assertion is that none of them approved, not that none were made.
+    assert result, "the scan still ran; it just must not approve anything"
+    assert not any(d.approved for d in result), [d.reason for d in result if d.approved]
+    assert broker.submitted == [], "a frozen session must place no orders"
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT DISTINCT gate_reason FROM decisions")
+        reasons = {r[0] for r in await cur.fetchall()}
+    assert "APPROVED" not in reasons, reasons
+    assert "REDUCE_ONLY" in reasons, reasons
+
+
+async def test_management_tick_publishes_markgap_on_a_flat_book(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """docs/markgap_plan.md P1's integration seam: the CliPosition ->
+    PositionView adaptation, book_markgap, and the agent_state write. A flat
+    book is the case that has to work after the unwind, and it is the one a
+    panel is most likely to get wrong."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    _patch_cli(monkeypatch, positions=[])
+
+    clients = FakeClients()
+    broker = MockBroker([])
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.management_tick(deps, session)
+
+    async with storage_db.connect(db_path) as conn:
+        published = await main_module._read_state_value(conn, "markgap")
+    assert published is not None, "management_tick must publish a markgap reading every tick"
+    assert published["total_markgap"] == "0.00"
+    assert published["spreads"] == []
+    assert published["omitted"] == 0
+    assert published["computed_at"]

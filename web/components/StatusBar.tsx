@@ -1,6 +1,6 @@
 "use client";
 
-import { BrainCircuit, Clock, OctagonAlert } from "lucide-react";
+import { BrainCircuit, CalendarOff, Clock, OctagonAlert } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { formatCountdown, formatTimeUtc } from "@/lib/format";
@@ -111,6 +111,22 @@ export function StatusBar({ status }: { status: Status }) {
           >
             <OctagonAlert className="size-3" />
             ENTRIES HALTED
+          </Badge>
+        )}
+        {/* The planned, dated stand-down on the final session
+            (agent/config.py FREEZE_ENTRIES_FROM), distinct from the halt
+            above: that one is a fail-safe an operator has to clear, this one
+            is a decision the agent was built to make. Shown separately for
+            the same reason the halt is shown at all -- a stand-down nobody
+            can see reads as an agent that has stopped working. */}
+        {status.entries_frozen && (
+          <Badge
+            variant="outline"
+            className="gap-1.5 border-hairline bg-surface-2 text-foreground/80"
+            title="Final session: no new entries. The book has to be flat before the horizon, so a 3-7 DTE entry opened now would be a round trip with none of the horizon it was sized for. Exits and position management still run."
+          >
+            <CalendarOff className="size-3" />
+            ENTRIES FROZEN
           </Badge>
         )}
         {known && copy ? (
