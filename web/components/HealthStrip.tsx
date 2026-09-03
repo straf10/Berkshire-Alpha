@@ -1,46 +1,66 @@
 import { Activity } from "lucide-react";
 import { formatDateTime } from "@/lib/format";
-import type { HealthBucket } from "@/lib/types";
+import { isMarketHour } from "@/lib/marketHours";
+import type { HealthBucket, Status } from "@/lib/types";
 
 const STATUS_CLASS: Record<HealthBucket["status"], string> = {
   up: "bg-emerald-500/70",
   down: "bg-red-500/80",
-  no_data: "bg-muted",
+  no_data: "bg-amber-500/70",
 };
 
 const STATUS_LABEL: Record<HealthBucket["status"], string> = {
-  up: "up",
-  down: "down",
-  no_data: "no data (market closed)",
+  up: "checks passed",
+  down: "a check failed",
+  no_data: "no health sample in this market hour",
 };
 
-// One thin bar per hour bucket (agent/storage/read.py's health_history),
-// oldest first left to right -- a status-page-style strip (status.cursor.com
-// pattern) scoped to the last ~90 hours instead of 90 days, since this agent
-// has run days not months. no_data hours (market closed -- management_tick
-// only runs while open) render as a neutral gray, never red, so closed
-// overnight/weekend hours don't read as incidents.
-export function HealthStrip({ buckets }: { buckets: HealthBucket[] | null }) {
+// One thin bar per hour, status-page style -- but over MARKET hours only.
+//
+// The old strip painted all 90 wall-clock hours and rendered 71 of them grey,
+// because health_samples are only written inside management_tick and
+// management_tick only runs while the market is open (agent/main.py:1213,
+// trading_loop). So a closed hour was structurally "no data": the strip read
+// as a mostly-dead service with "100.0% up" floating over it, which looks
+// like either a broken widget or spin. Neither is true -- the agent was idle
+// exactly when it was designed to be idle.
+//
+// Two rules make it honest and green at the same time:
+//   1. Closed hours are not drawn at all. An hour the agent was never meant
+//      to run in is not uptime data.
+//   2. The window starts at the first health sample. Market hours before the
+//      agent was first deployed are "not running yet", not "down" -- the same
+//      convention every status page uses.
+// Everything left is a market hour the agent was live for, so a gap here is a
+// real gap and paints amber, and a failed check paints red.
+export function HealthStrip({ buckets, status }: { buckets: HealthBucket[] | null; status: Status }) {
   if (buckets === null || buckets.length === 0) return null;
 
-  const withData = buckets.filter((b) => b.status !== "no_data");
-  const upCount = withData.filter((b) => b.status === "up").length;
-  const uptimePct = withData.length > 0 ? ((upCount / withData.length) * 100).toFixed(1) : "—";
-  const noDataCount = buckets.length - withData.length;
+  const marketHours = buckets.filter((b) => isMarketHour(b.bucket_start_utc, status.open_utc, status.close_utc));
+  const firstSample = marketHours.findIndex((b) => b.total_count > 0);
+  if (firstSample === -1) return null;
+
+  const covered = marketHours.slice(firstSample);
+  const upCount = covered.filter((b) => b.status === "up").length;
+  const failedChecks = covered.reduce((sum, b) => sum + (b.total_count - b.ok_count), 0);
+  const gaps = covered.filter((b) => b.status === "no_data").length;
+  const uptimePct = ((upCount / covered.length) * 100).toFixed(1);
 
   return (
     <div className="mb-6">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-1.5">
         <p className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           <Activity className="size-3.5" />
-          Agent uptime
+          Agent uptime — market hours
         </p>
         <span className="text-sm text-foreground/70">
-          {uptimePct}% up over last {buckets.length}h ({withData.length} checked, {noDataCount}h no data)
+          {uptimePct}% up over {covered.length} market hours ({failedChecks} failed{" "}
+          {failedChecks === 1 ? "check" : "checks"}
+          {gaps > 0 && `, ${gaps}h with no sample`})
         </span>
       </div>
       <div className="flex h-7 w-full gap-[2px]">
-        {buckets.map((b) => (
+        {covered.map((b) => (
           <div
             key={b.bucket_start_utc}
             title={`${formatDateTime(b.bucket_start_utc)} — ${STATUS_LABEL[b.status]}${
@@ -50,8 +70,26 @@ export function HealthStrip({ buckets }: { buckets: HealthBucket[] | null }) {
           />
         ))}
       </div>
-      <div className="mt-1 flex justify-between text-[11px] text-muted-foreground">
-        <span>{buckets.length}h ago</span>
+      <div className="mt-1 flex flex-wrap justify-between gap-x-3 text-[11px] text-muted-foreground">
+        <span>{formatDateTime(covered[0].bucket_start_utc)} — first health sample</span>
+        {/* The legend only appears when there is something to explain: with a
+            clean run the strip is one colour and needs no key. */}
+        {(gaps > 0 || failedChecks > 0) && (
+          <span className="flex items-center gap-3">
+            {gaps > 0 && (
+              <span className="flex items-center gap-1">
+                <span className="size-2 rounded-sm bg-amber-500/70" />
+                no sample
+              </span>
+            )}
+            {failedChecks > 0 && (
+              <span className="flex items-center gap-1">
+                <span className="size-2 rounded-sm bg-red-500/80" />
+                check failed
+              </span>
+            )}
+          </span>
+        )}
         <span>now</span>
       </div>
     </div>

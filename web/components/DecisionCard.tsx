@@ -1,7 +1,7 @@
 "use client";
 
 import { Bot, Calculator, FileSignature, Gavel, Repeat, ShieldCheck, Users } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ComponentType } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -213,20 +213,48 @@ function ExpandedChain({ chain, walkCapFraction }: { chain: DecisionChain; walkC
 export function DecisionCard({
   decision,
   walkCapFraction,
+  defaultOpen = false,
+  onToggle,
 }: {
   decision: Decision;
   walkCapFraction: number | null;
+  /** Deep-linked via ?decision=<id>: expand and scroll to this row on mount. */
+  defaultOpen?: boolean;
+  onToggle?: (id: number, open: boolean) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const id = decision.id;
+  const [open, setOpen] = useState(defaultOpen);
   const [chain, setChain] = useState<DecisionChain | null>(null);
-  const [loading, setLoading] = useState(false);
+  // Seeded true for a deep-linked row so the skeleton is on screen from the
+  // first paint -- the effect below only has to report the result, never to
+  // setState synchronously on mount.
+  const [loading, setLoading] = useState(defaultOpen);
+  const rowRef = useRef<HTMLTableRowElement>(null);
+
+  // The deep-linked row opens before anyone clicks it, so its chain fetch and
+  // its scroll have to happen here rather than in handleClick. Runs once:
+  // defaultOpen and the id are both fixed for the life of the row.
+  useEffect(() => {
+    if (!defaultOpen) return;
+    rowRef.current?.scrollIntoView({ block: "center" });
+    let cancelled = false;
+    void fetchJson<DecisionChain>(`${apiBase()}/decisions/${id}`).then((data) => {
+      if (cancelled) return;
+      setChain(data);
+      setLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [defaultOpen, id]);
 
   async function handleClick() {
     const next = !open;
     setOpen(next);
+    onToggle?.(id, next);
     if (next && chain === null && !loading) {
       setLoading(true);
-      const data = await fetchJson<DecisionChain>(`${apiBase()}/decisions/${decision.id}`);
+      const data = await fetchJson<DecisionChain>(`${apiBase()}/decisions/${id}`);
       setChain(data);
       setLoading(false);
     }
@@ -234,7 +262,12 @@ export function DecisionCard({
 
   return (
     <>
-      <TableRow className="cursor-pointer select-none" onClick={handleClick} aria-expanded={open}>
+      <TableRow
+        ref={rowRef}
+        className="cursor-pointer select-none"
+        onClick={handleClick}
+        aria-expanded={open}
+      >
         <TableCell className="whitespace-nowrap text-foreground/70">{formatDateTime(decision.ts_utc)}</TableCell>
         <TableCell className="font-semibold">{decision.symbol}</TableCell>
         <TableCell>{modeLabel(decision.mode)}</TableCell>

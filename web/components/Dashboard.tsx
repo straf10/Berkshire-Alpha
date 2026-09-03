@@ -22,6 +22,7 @@ import { GreeksGauges } from "@/components/GreeksGauges";
 import { HealthStrip } from "@/components/HealthStrip";
 import { LiveRefresh } from "@/components/LiveRefresh";
 import { LlmUsage } from "@/components/LlmUsage";
+import { ModelEnsemble } from "@/components/ModelEnsemble";
 import { OpenPositionsTable } from "@/components/OpenPositionsTable";
 import { ReasoningFeed } from "@/components/ReasoningFeed";
 import { Reflection } from "@/components/Reflection";
@@ -135,6 +136,7 @@ function Footer({
 
 export function Dashboard({
   initialTab,
+  initialDecisionId,
   status,
   decisions,
   assignments,
@@ -153,6 +155,7 @@ export function Dashboard({
   frontendLastUpdated,
 }: {
   initialTab: TabId;
+  initialDecisionId: number | null;
   status: Status;
   decisions: Decision[];
   assignments: AssignmentEvent[];
@@ -185,10 +188,11 @@ export function Dashboard({
 
   return (
     <main className="mx-auto w-full max-w-7xl p-4 font-mono text-base sm:p-8">
-      {/* Header locked to the same max-w-5xl as the footer -- only the tabs/
-          content region below is allowed to use the wider max-w-7xl `main`
-          gives it, so a wide table can breathe without the header/footer
-          stretching to match. */}
+      {/* Layout rule: prose and chrome read at max-w-5xl, data gets the full
+          max-w-7xl `main` allows -- applied per section, not per region, so a
+          wide table can breathe while a paragraph never runs to 1280px. The
+          header and footer are chrome; the Reflector's argument is prose;
+          account, greeks, funnel, tables and the graph are data. */}
       <div className="mx-auto w-full max-w-5xl">
         <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-3">
@@ -248,12 +252,15 @@ export function Dashboard({
               <Funnel funnel={funnel} />
             </div>
           )}
-          <Reflection
-            reflection={reflection}
-            variant="overview"
-            onOpenDecisions={() => handleTabChange("decisions")}
-          />
-          <HealthStrip buckets={healthHistory} />
+          {/* Prose: a paragraph of argument, held to reading width. */}
+          <div className="mx-auto w-full max-w-5xl">
+            <Reflection
+              reflection={reflection}
+              variant="overview"
+              onOpenDecisions={() => handleTabChange("decisions")}
+            />
+          </div>
+          <HealthStrip buckets={healthHistory} status={status} />
         </TabsContent>
 
         {/* Decisions: the reasoning feed is the whole tab. It previously sat
@@ -268,6 +275,7 @@ export function Dashboard({
           <ReasoningFeed
             decisions={decisions}
             walkCapFraction={config ? Number(config.execution_guardrails.walk_cap_fraction) : null}
+            initialDecisionId={initialDecisionId}
           />
         </TabsContent>
 
@@ -282,7 +290,15 @@ export function Dashboard({
         {/* Usage: cost and reliability only -- "is the agent healthy" lives in
             Overview's HealthStrip, not here. */}
         <TabsContent value="usage">
-          <LlmUsage usage={llmUsage} />
+          {/* The routing table leads: it is correct, it is live from /config,
+              and it is the claim the aggregate below can only partly show --
+              most of those calls predate per-node routing. */}
+          <ModelEnsemble config={config} />
+          <LlmUsage
+            usage={llmUsage}
+            ordersSent={trades?.length ?? 0}
+            nodeModels={config?.llm.node_models}
+          />
           <ToolUsage usage={toolUsage} />
           {!llmUsage?.totals.calls && !toolUsage?.totals.calls && (
             <p className="text-muted-foreground">No usage data recorded yet this deploy.</p>

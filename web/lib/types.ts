@@ -266,7 +266,8 @@ export interface AgentConfig {
   };
   llm: {
     provider: string;
-    model: string;
+    model: string; // the default; node_models overrides it per node
+    node_models: Record<string, string>;
     timeout_s: number;
     max_tokens: number;
     temperature: number;

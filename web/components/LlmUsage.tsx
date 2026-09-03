@@ -8,11 +8,37 @@ import type { LlmUsageResponse } from "@/lib/types";
 // One row per (node, model) pair -- node is the agent role (analyst/debate
 // persona/trader/risk-manager) that made the call, so this answers "which
 // stage cost how much" rather than showing a single opaque total.
-export function LlmUsage({ usage }: { usage: LlmUsageResponse | null }) {
+export function LlmUsage({
+  usage,
+  ordersSent,
+  nodeModels,
+}: {
+  usage: LlmUsageResponse | null;
+  /** Orders the agent actually sent, for the cost-per-order stat. */
+  ordersSent: number;
+  /** The live routing table, to date-stamp rows that predate it. */
+  nodeModels?: Record<string, string>;
+}) {
   if (usage === null) return null;
 
   const { totals, by_node_model } = usage;
   if (totals.calls === 0) return null;
+
+  // One RISK_NEUTRAL call per risk-team run, so this counts candidates that
+  // went the whole way -- analyst -> debate -> proposal -> risk vote -- rather
+  // than every symbol the scanner looked at.
+  const deliberated = by_node_model
+    .filter((r) => r.node === "RISK_NEUTRAL")
+    .reduce((sum, r) => sum + r.calls, 0);
+
+  // Rows whose model is not the one this node is routed to today were made
+  // before per-node routing landed. Computed, not asserted, so it stops
+  // reporting a discrepancy the moment the next session runs.
+  const preRouting = nodeModels
+    ? by_node_model
+        .filter((r) => nodeModels[r.node] && nodeModels[r.node] !== r.model)
+        .reduce((sum, r) => sum + r.calls, 0)
+    : 0;
 
   return (
     <Card className="mb-6">
@@ -23,13 +49,24 @@ export function LlmUsage({ usage }: { usage: LlmUsageResponse | null }) {
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="mb-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <div className="mb-2 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
           <StatTile label="Total cost" value={formatCost(totals.cost_usd)} />
+          {ordersSent > 0 && (
+            <StatTile label="Per order sent" value={formatCost(totals.cost_usd / ordersSent)} />
+          )}
+          {deliberated > 0 && (
+            <StatTile label="Per deliberated candidate" value={formatCost(totals.cost_usd / deliberated)} />
+          )}
           <StatTile label="API calls" value={totals.calls.toLocaleString()} />
           <StatTile label="Prompt tokens" value={totals.prompt_tokens.toLocaleString()} />
           <StatTile label="Completion tokens" value={totals.completion_tokens.toLocaleString()} />
         </div>
-        <div className="overflow-x-auto rounded-md border border-border">
+        <p className="mb-4 text-xs text-muted-foreground">
+          Every LLM call this agent has ever made — {totals.calls.toLocaleString()} of them, across{" "}
+          {deliberated > 0 ? `${deliberated} fully-deliberated candidates and ` : ""}
+          {ordersSent} orders sent — cost {formatCost(totals.cost_usd)} in total.
+        </p>
+        <div className="rounded-md border border-border">
           <Table>
             <TableHeader>
               <TableRow>
@@ -55,6 +92,13 @@ export function LlmUsage({ usage }: { usage: LlmUsageResponse | null }) {
             </TableBody>
           </Table>
         </div>
+        {preRouting > 0 && (
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            {preRouting.toLocaleString()} of {totals.calls.toLocaleString()} calls above ran on a
+            model that node is no longer routed to — they predate per-node routing. The ensemble
+            table is the routing in force now.
+          </p>
+        )}
       </CardContent>
     </Card>
   );

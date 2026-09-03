@@ -6,9 +6,20 @@ import { DataTableSection } from "@/components/DataTableSection";
 import { DecisionCard } from "@/components/DecisionCard";
 import { Table, TableBody, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { apiBase, fetchJson } from "@/lib/api";
-import type { Decision } from "@/lib/types";
+import type { Decision, DecisionChain } from "@/lib/types";
 
 const POLL_MS = 15_000;
+// The page loads 200 rows (a full session). The poll only has to catch what
+// landed in the last 15s, so it asks for a fraction of that and is merged
+// into the window rather than replacing it -- otherwise every poll would
+// shrink the feed back to 50 rows, or cost 212 KB to avoid doing so.
+const POLL_LIMIT = 50;
+
+function mergeById(existing: Decision[], fresh: Decision[]): Decision[] {
+  const byId = new Map(existing.map((d) => [d.id, d]));
+  for (const d of fresh) byId.set(d.id, d);
+  return [...byId.values()].sort((a, b) => b.id - a.id);
+}
 
 // The centerpiece per docs/plan.md:455 -- "our strongest asset for
 // Presentation & Explainability". A plain scannable table whose every row is
@@ -23,31 +34,79 @@ const POLL_MS = 15_000;
 export function ReasoningFeed({
   decisions,
   walkCapFraction,
+  initialDecisionId,
 }: {
   decisions: Decision[];
   walkCapFraction: number | null;
+  /** From ?decision=<id> -- expand and scroll to that row on load. */
+  initialDecisionId?: number | null;
 }) {
   // null until the first poll lands -- falls back to the SSR-fetched prop
-  // until then, and to itself after (the 15s poll is always as fresh or
-  // fresher than the page's 60s refresh, so once it's running there's
-  // nothing useful left to sync back from `decisions`).
+  // until then, and to the merged window after.
   const [polled, setPolled] = useState<Decision[] | null>(null);
   const live = polled ?? decisions;
 
+  // A ?decision= link is meant to survive: the debate worth sharing is not
+  // necessarily in the newest 200 rows, and a link that lands on "not here"
+  // is worse than no link. When the id is outside the window, fetch that one
+  // decision by id and pin it above the feed.
+  const [linked, setLinked] = useState<Decision | "missing" | null>(null);
+  const inWindow = initialDecisionId != null && live.some((d) => d.id === initialDecisionId);
+
+  useEffect(() => {
+    if (initialDecisionId == null) return;
+    if (decisions.some((d) => d.id === initialDecisionId)) return;
+    let cancelled = false;
+    void fetchJson<DecisionChain>(`${apiBase()}/decisions/${initialDecisionId}`).then((chain) => {
+      if (!cancelled) setLinked(chain?.decision ?? "missing");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [initialDecisionId, decisions]);
+
+  const pinned = !inWindow && linked !== null && linked !== "missing" ? linked : null;
+  const rows = pinned ? [pinned, ...live] : live;
+
   useEffect(() => {
     const id = setInterval(async () => {
-      const fresh = await fetchJson<Decision[]>(`${apiBase()}/decisions?limit=50`);
-      if (fresh) setPolled(fresh);
+      const fresh = await fetchJson<Decision[]>(`${apiBase()}/decisions?limit=${POLL_LIMIT}`);
+      if (fresh) setPolled((prev) => mergeById(prev ?? decisions, fresh));
     }, POLL_MS);
     return () => clearInterval(id);
-  }, []);
+  }, [decisions]);
+
+  // Keep the URL current as rows open and close, so the address bar is always
+  // a link to what is on screen -- which is the point of ?decision=. Written
+  // through the History API directly, matching Dashboard's ?tab= handling, so
+  // it never re-runs the page's fetch.
+  function handleToggle(decisionId: number, open: boolean) {
+    const url = new URL(window.location.href);
+    if (open) url.searchParams.set("decision", String(decisionId));
+    else url.searchParams.delete("decision");
+    window.history.replaceState(null, "", `${url.pathname}${url.search}`);
+  }
+
+  let banner: string | null = null;
+  if (pinned) {
+    banner = `Decision ${initialDecisionId} is from ${pinned.session_date}, outside the ${live.length} most recent rows below — pinned to the top so the link still works.`;
+  } else if (!inWindow && linked === "missing") {
+    banner = `Decision ${initialDecisionId} could not be found.`;
+  }
 
   return (
     <DataTableSection
       icon={MessagesSquare}
       title="Reasoning feed"
-      isEmpty={live.length === 0}
+      isEmpty={rows.length === 0}
       emptyMessage="No decisions yet."
+      aside={
+        banner ? (
+          <p className="mb-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs text-amber-400">
+            {banner}
+          </p>
+        ) : undefined
+      }
     >
       <Table className="min-w-[820px]">
         <TableHeader>
@@ -62,8 +121,14 @@ export function ReasoningFeed({
           </TableRow>
         </TableHeader>
         <TableBody>
-          {live.map((d) => (
-            <DecisionCard key={d.id} decision={d} walkCapFraction={walkCapFraction} />
+          {rows.map((d) => (
+            <DecisionCard
+              key={d.id}
+              decision={d}
+              walkCapFraction={walkCapFraction}
+              defaultOpen={d.id === initialDecisionId}
+              onToggle={handleToggle}
+            />
           ))}
         </TableBody>
       </Table>

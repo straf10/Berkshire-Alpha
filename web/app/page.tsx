@@ -22,8 +22,21 @@ import type {
 
 export const dynamic = "force-dynamic";
 
+// One session is 200 decisions (50 names x 4 scan slots, agent/config.py
+// SCAN_OFFSETS_MIN). At the old limit of 50 the feed showed a quarter of a
+// session while the funnel above it counted "screened 200", and a
+// ?decision=<id> deep link into anything but the newest rows missed.
+// Measured payload: 50 rows = 53 KB, so 200 is ~212 KB on load.
+const DECISIONS_LIMIT = 200;
+
 function toTabId(value: string | undefined): TabId {
   return (VALID_TABS as readonly string[]).includes(value ?? "") ? (value as TabId) : "overview";
+}
+
+function toDecisionId(value: string | undefined): number | null {
+  if (value === undefined) return null;
+  const id = Number(value);
+  return Number.isInteger(id) && id > 0 ? id : null;
 }
 
 // Everything the dashboard needs is fetched exactly once here, on load (and
@@ -31,14 +44,22 @@ function toTabId(value: string | undefined): TabId {
 // switching tabs afterwards is purely client-side state in <Dashboard>, no
 // per-tab navigation or refetch. The active tab only round-trips through
 // the URL (?tab=...) so a reload lands back where you were.
-export default async function Page({ searchParams }: { searchParams: Promise<{ tab?: string }> }) {
-  const { tab } = await searchParams;
+export default async function Page({
+  searchParams,
+}: {
+  searchParams: Promise<{ tab?: string; decision?: string }>;
+}) {
+  const { tab, decision } = await searchParams;
   const base = apiBase();
+  // ?decision=149 on its own is a link to one debate, so it implies the tab
+  // that shows debates -- an explicit ?tab= still wins.
+  const initialDecisionId = toDecisionId(decision);
+  const initialTab = tab === undefined && initialDecisionId !== null ? "decisions" : toTabId(tab);
 
   // Core requests: if any of these three are down, the page has nothing
   // meaningful to show at all -- global ServiceDown fallback.
   const [decisionsRes, statusRes, assignmentsRes] = await Promise.all([
-    fetchJson<Decision[]>(`${base}/decisions?limit=50`),
+    fetchJson<Decision[]>(`${base}/decisions?limit=${DECISIONS_LIMIT}`),
     fetchJson<Status>(`${base}/status`),
     fetchJson<AssignmentEvent[]>(`${base}/assignments?limit=20`),
   ]);
@@ -79,7 +100,8 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ t
 
   return (
     <Dashboard
-      initialTab={toTabId(tab)}
+      initialTab={initialTab}
+      initialDecisionId={initialDecisionId}
       status={statusRes}
       decisions={decisionsRes}
       assignments={assignmentsRes}
