@@ -119,13 +119,14 @@ export const POSITION_TIP: Record<PositionOutcome, string> = {
   "Never opened": "No contracts filled, so no position was ever created.",
 };
 
-// Badge styling per tone. `capped` and `partial` deliberately use amber rather
-// than the destructive variant -- they are outcomes the agent chose, not
-// failures. Matches the amber treatment already used by StatusBar.tsx.
+// Badge styling per tone. `capped` and `partial` use --warn, not
+// --destructive: they are outcomes the agent CHOSE -- it hit its own price cap
+// and cancelled -- not failures. That distinction is exactly what --warn was
+// added for, and it is why these are not red.
 export const TONE_CLASS: Record<TradeTone, string> = {
   filled: "",
-  capped: "border-amber-500/30 bg-amber-500/10 text-amber-400",
-  partial: "border-amber-500/30 bg-amber-500/10 text-amber-400",
+  capped: "border-warn/30 bg-warn/10 text-warn",
+  partial: "border-warn/30 bg-warn/10 text-warn",
   rejected: "",
   unknown: "",
 };

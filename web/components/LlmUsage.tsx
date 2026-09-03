@@ -49,7 +49,7 @@ export function LlmUsage({
     : 0;
 
   return (
-    <Card className="mb-6">
+    <Card>
       <CardHeader className="pb-2">
         <CardTitle className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           <Coins className="size-3.5" />

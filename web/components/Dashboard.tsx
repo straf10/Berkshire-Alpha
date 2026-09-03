@@ -17,6 +17,8 @@ import { useState } from "react";
 import { AccountVitals } from "@/components/AccountVitals";
 import { AgentConfigPanel } from "@/components/AgentConfigPanel";
 import { AssignmentPanel } from "@/components/AssignmentPanel";
+import { CycleTheatre } from "@/components/CycleTheatre";
+import { FeaturedWalk } from "@/components/FeaturedWalk";
 import { Funnel } from "@/components/Funnel";
 import { GreeksGauges } from "@/components/GreeksGauges";
 import { HealthStrip } from "@/components/HealthStrip";
@@ -27,11 +29,14 @@ import { OpenPositionsTable } from "@/components/OpenPositionsTable";
 import { ReasoningFeed } from "@/components/ReasoningFeed";
 import { Reflection } from "@/components/Reflection";
 import { StatusBar } from "@/components/StatusBar";
+import { Section } from "@/components/Section";
 import { SystemFlow } from "@/components/SystemFlow";
+import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToolUsage } from "@/components/ToolUsage";
 import { TradeHistoryTable } from "@/components/TradeHistoryTable";
 import { formatDateTime } from "@/lib/format";
+import { STAGES } from "@/lib/pipeline";
 import { VALID_TABS, type TabId } from "@/lib/tabs";
 import type {
   AccountState,
@@ -176,6 +181,7 @@ export function Dashboard({
   frontendLastUpdated: string;
 }) {
   const [tab, setTab] = useState<TabId>(initialTab);
+  const walkCap = config ? Number(config.execution_guardrails.walk_cap_fraction) : null;
 
   // Tab switches never navigate -- everything was already fetched once on
   // load. Only the URL's ?tab= is updated (via the History API directly,
@@ -237,7 +243,7 @@ export function Dashboard({
           </TabsTrigger>
           <TabsTrigger value="flow" className="gap-1.5">
             <Workflow className="size-3.5" />
-            How it works
+            Pipeline
           </TabsTrigger>
           <TabsTrigger value="config" className="gap-1.5">
             <Settings className="size-3.5" />
@@ -248,12 +254,24 @@ export function Dashboard({
         {/* Overview: glanceable totals only -- account state, risk gauges,
             system health, and the entry-screening funnel. No raw rows here;
             drill-down content (decisions, trades) lives in its own tab. */}
-        <TabsContent value="overview">
+        <TabsContent value="overview" className="flex flex-col gap-4">
           <AccountVitals account={account} history={equityHistory} sessionDate={status.session_date} />
+          {/* The architecture argument is the second thing a judge sees, not
+              something they have to find on a tab called "How it works" -- and
+              it earns the position by DOING something rather than documenting:
+              it replays the last full cycle through itself. */}
+          <CycleTheatre
+            decisions={decisions}
+            trades={trades}
+            status={status}
+            health={health}
+            walkCapFraction={walkCap}
+            onOpenPipeline={() => handleTabChange("flow")}
+          />
           {/* Greeks and funnel side by side because they describe one event:
               the delta breach is why the funnel's last two stages are zero.
               Stacked full-width, nothing connected them. */}
-          <div className="mb-6 grid gap-4 md:grid-cols-2">
+          <div className="grid gap-4 md:grid-cols-2">
             <GreeksGauges snapshot={greeksLatest} />
             <Funnel funnel={funnel} />
           </div>
@@ -272,27 +290,30 @@ export function Dashboard({
             under a "Decisions log" table that rendered the same seven columns
             from the same array with none of the expand behaviour -- a strict
             subset, so it is gone. */}
-        <TabsContent value="decisions">
+        <TabsContent value="decisions" className="flex flex-col gap-4">
           {/* The Reflector leads: it is the session's thesis, and the feed
               below it is the evidence. It used to be the last card under a
               fifty-row table. */}
           <Reflection reflection={reflection} />
           <ReasoningFeed
             decisions={decisions}
-            walkCapFraction={config ? Number(config.execution_guardrails.walk_cap_fraction) : null}
+            walkCapFraction={walkCap}
             initialDecisionId={initialDecisionId}
             initialGates={initialGates}
           />
         </TabsContent>
 
-        <TabsContent value="trades">
+        <TabsContent value="trades" className="flex flex-col gap-4">
+          {/* The best single proof of execution engineering was three clicks
+              deep inside an expanded table row. */}
+          <FeaturedWalk trades={trades} walkCapFraction={walkCap} />
           <OpenPositionsTable positions={openPositions} assignments={assignments} />
           <TradeHistoryTable trades={trades} />
         </TabsContent>
 
         {/* Usage: cost and reliability only -- "is the agent healthy" lives in
             Overview's HealthStrip, not here. */}
-        <TabsContent value="usage">
+        <TabsContent value="usage" className="flex flex-col gap-4">
           {/* The routing table leads: it is correct, it is live from /config,
               and it is the claim the aggregate below can only partly show --
               most of those calls predate per-node routing. */}
@@ -305,11 +326,37 @@ export function Dashboard({
           <ToolUsage usage={toolUsage} />
         </TabsContent>
 
-        <TabsContent value="flow">
-          <SystemFlow />
+        {/* Same component, same STAGE_DEFS, higher detail -- one dataset, two
+            presentations, so the two can never drift apart. Two datasets is
+            exactly the trap that produced the eight points of content drift
+            this rebuild fixes. */}
+        <TabsContent value="flow" className="flex flex-col gap-4">
+          <Section
+            icon={Workflow}
+            title="Pipeline"
+            note="— every stage, every way a candidate can end"
+            meta="drawn from agent/main.py, pipeline.py, gates.py and order_manager.py"
+          >
+            <SystemFlow detail="full" />
+          </Section>
+          <Card>
+            <CardContent>
+              <p className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                Where each claim comes from
+              </p>
+              <ul className="grid gap-x-6 gap-y-1 text-xs text-muted-foreground sm:grid-cols-2">
+                {STAGES.map((stage) => (
+                  <li key={stage.key} className="flex justify-between gap-3">
+                    <span className="text-foreground/80">{stage.title}</span>
+                    <code className="text-right">{stage.source}</code>
+                  </li>
+                ))}
+              </ul>
+            </CardContent>
+          </Card>
         </TabsContent>
 
-        <TabsContent value="config">
+        <TabsContent value="config" className="flex flex-col gap-4">
           <AgentConfigPanel config={config} />
         </TabsContent>
       </Tabs>

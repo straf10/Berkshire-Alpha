@@ -68,7 +68,7 @@ export function LimitMeter({
         <div className="absolute inset-y-0 w-px bg-foreground/80" style={{ left: `${tick}%` }} />
       </div>
       <div className="mt-1 flex flex-wrap items-baseline justify-between gap-x-3 text-[11px] text-muted-foreground">
-        <span className={headroom < 0 ? "font-semibold text-red-400" : undefined}>
+        <span className={headroom < 0 ? "font-semibold text-neg" : undefined}>
           {formatPctOfLimit(pct)} of limit · {headroomText}
         </span>
         <span>limit ±{formatExposure(limit)}</span>

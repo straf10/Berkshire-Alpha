@@ -5,9 +5,9 @@ import { isMarketHour } from "@/lib/marketHours";
 import type { HealthBucket, Status } from "@/lib/types";
 
 const STATUS_CLASS: Record<HealthBucket["status"], string> = {
-  up: "bg-emerald-500/70",
-  down: "bg-red-500/80",
-  no_data: "bg-amber-500/70",
+  up: "bg-pos/70",
+  down: "bg-neg/80",
+  no_data: "bg-warn/70",
 };
 
 const STATUS_LABEL: Record<HealthBucket["status"], string> = {
@@ -64,7 +64,7 @@ export function HealthStrip({ buckets, status }: { buckets: HealthBucket[] | nul
   const uptimePct = ((upCount / covered.length) * 100).toFixed(1);
 
   return (
-    <div className="mb-6">
+    <div>
       <div className="mb-2 flex flex-wrap items-center justify-between gap-1.5">
         <p className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           <Activity className="size-3.5" />
@@ -104,13 +104,13 @@ export function HealthStrip({ buckets, status }: { buckets: HealthBucket[] | nul
           <span className="flex items-center gap-3">
             {gaps > 0 && (
               <span className="flex items-center gap-1">
-                <span className="size-2 rounded-sm bg-amber-500/70" />
+                <span className="size-2 rounded-sm bg-warn/70" />
                 no sample
               </span>
             )}
             {failedChecks > 0 && (
               <span className="flex items-center gap-1">
-                <span className="size-2 rounded-sm bg-red-500/80" />
+                <span className="size-2 rounded-sm bg-neg/80" />
                 check failed
               </span>
             )}

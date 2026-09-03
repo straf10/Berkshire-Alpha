@@ -17,7 +17,7 @@ export function SectionEmpty({
   icon: Icon,
   title,
   reason,
-  className = "mb-6",
+  className,
 }: {
   icon: LucideIcon;
   /** The section's own heading -- unchanged from when it has data. */

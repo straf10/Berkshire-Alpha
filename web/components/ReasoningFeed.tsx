@@ -183,7 +183,7 @@ export function ReasoningFeed({
   return (
     <>
       {live.length > 0 && (
-        <Card className="mb-6">
+        <Card>
           <CardContent className="pt-6">
             <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
@@ -243,7 +243,7 @@ export function ReasoningFeed({
         }
         aside={
           banner ? (
-            <p className="mb-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-xs text-amber-400">
+            <p className="mb-2 rounded-md border border-warn/30 bg-warn/10 px-2 py-1 text-xs text-warn">
               {banner}
             </p>
           ) : undefined

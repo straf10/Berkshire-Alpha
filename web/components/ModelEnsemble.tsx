@@ -59,7 +59,7 @@ export function ModelEnsemble({ config }: { config: AgentConfig | null }) {
   const vendors = new Set(entries.map(([, m]) => vendorOf(m)));
 
   return (
-    <Card className="mb-6">
+    <Card>
       <CardHeader className="pb-2">
         <CardTitle className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           <Network className="size-3.5" />

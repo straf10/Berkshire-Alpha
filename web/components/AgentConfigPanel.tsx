@@ -38,7 +38,7 @@ function ConfigGroup({
 export function AgentConfigPanel({ config }: { config: AgentConfig | null }) {
   if (config === null) return null;
   return (
-    <Card className="mb-6">
+    <Card>
       <CardHeader className="pb-2">
         <CardTitle className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           <Settings className="size-3.5" />

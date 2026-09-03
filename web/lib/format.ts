@@ -82,9 +82,13 @@ export function daysToExpiry(expiry: string, from: Date = new Date()): number {
   return Math.round((exp.getTime() - today.getTime()) / 86_400_000);
 }
 
+// ENTER is --primary, not green: it is the agent's own action, which is the
+// one thing --primary is reserved for. --pos/--neg are P&L sign only, and an
+// entry is not a profit. HALT is --destructive because something stopped the
+// agent, and NO_TRADE is --idle: it ran as designed and chose not to trade.
 export function actionColor(action: string): string {
-  if (action === "ENTER") return "text-emerald-400";
-  if (action === "HALT") return "text-red-400";
+  if (action === "ENTER") return "text-primary";
+  if (action === "HALT") return "text-destructive";
   return "text-muted-foreground";
 }
 

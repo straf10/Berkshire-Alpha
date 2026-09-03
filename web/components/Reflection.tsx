@@ -1,6 +1,7 @@
 import { ArrowRight, Brain } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Section } from "@/components/Section";
 import { SectionEmpty } from "@/components/SectionEmpty";
 import { formatDateTime, verdictVariant } from "@/lib/format";
 import type { Reflection as ReflectionShape } from "@/lib/types";
@@ -50,18 +51,18 @@ export function Reflection({
 
   if (variant === "overview") {
     return (
-      /* Violet left rule: the Reflector is the one place on the page where a
-         different voice is speaking -- the agent about itself, not the agent
-         about the market. */
-      <Card className="mb-6 border-l-2 border-l-accent">
-        <CardHeader className="pb-2">
-          <CardTitle className="flex flex-wrap items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-            <Brain className="size-3.5" />
-            Reflector
-            <span className="normal-case">— the agent&apos;s own read on {reflection.session_date}</span>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
+      /* The `quote` archetype -- --surface-2 and a violet rule -- exists for
+         exactly this one section: the Reflector is the only place on the page
+         where a different voice is speaking, the agent about itself rather
+         than the agent about the market. That is also the only thing --accent
+         is still allowed to mean. */
+      <Section
+        variant="quote"
+        icon={Brain}
+        title="Reflector"
+        note={<>— the agent&apos;s own read on {reflection.session_date}</>}
+      >
+        <div className="space-y-3">
           <blockquote className="border-l-2 border-accent/40 pl-3 text-base leading-relaxed text-foreground/90">
             {reflection.ok ? reflection.argument : UNAVAILABLE}
           </blockquote>
@@ -78,13 +79,13 @@ export function Reflection({
               </button>
             )}
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </Section>
     );
   }
 
   return (
-    <Card className="mb-6">
+    <Card>
       <CardHeader className="pb-2">
         <CardTitle className="flex flex-wrap items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
           <Brain className="size-3.5" />
