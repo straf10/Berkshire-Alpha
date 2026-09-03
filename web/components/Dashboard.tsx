@@ -239,8 +239,20 @@ export function Dashboard({
             drill-down content (decisions, trades) lives in its own tab. */}
         <TabsContent value="overview">
           <AccountVitals account={account} history={equityHistory} sessionDate={status.session_date} />
-          <GreeksGauges snapshot={greeksLatest} />
-          <Funnel funnel={funnel} />
+          {/* Greeks and funnel side by side because they describe one event:
+              the delta breach is why the funnel's last two stages are zero.
+              Stacked full-width, nothing connected them. */}
+          {(greeksLatest || funnel) && (
+            <div className="mb-6 grid gap-4 md:grid-cols-2">
+              <GreeksGauges snapshot={greeksLatest} />
+              <Funnel funnel={funnel} />
+            </div>
+          )}
+          <Reflection
+            reflection={reflection}
+            variant="overview"
+            onOpenDecisions={() => handleTabChange("decisions")}
+          />
           <HealthStrip buckets={healthHistory} />
         </TabsContent>
 
@@ -249,11 +261,14 @@ export function Dashboard({
             from the same array with none of the expand behaviour -- a strict
             subset, so it is gone. */}
         <TabsContent value="decisions">
+          {/* The Reflector leads: it is the session's thesis, and the feed
+              below it is the evidence. It used to be the last card under a
+              fifty-row table. */}
+          <Reflection reflection={reflection} />
           <ReasoningFeed
             decisions={decisions}
             walkCapFraction={config ? Number(config.execution_guardrails.walk_cap_fraction) : null}
           />
-          <Reflection reflection={reflection} />
         </TabsContent>
 
         <TabsContent value="trades">
