@@ -1,6 +1,7 @@
 import { Layers } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { DataTableSection } from "@/components/DataTableSection";
+import { SectionEmpty } from "@/components/SectionEmpty";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { compactLegs, daysToExpiry } from "@/lib/format";
 import { TONE_CLASS, TONE_VARIANT, tradeOutcome } from "@/lib/tradeStatus";
@@ -21,7 +22,15 @@ export function OpenPositionsTable({
   positions: OpenPosition[] | null;
   assignments: AssignmentEvent[];
 }) {
-  if (positions === null || positions.length === 0) return null;
+  if (positions === null || positions.length === 0) {
+    return (
+      <SectionEmpty
+        icon={Layers}
+        title="Open positions"
+        reason="No open positions. Filled spreads appear here with their live legs, net greeks and days to expiry until an exit rule closes them."
+      />
+    );
+  }
 
   const assignedSymbols = new Set(assignments.map((a) => a.symbol));
 

@@ -1,6 +1,7 @@
 import { ArrowRight, Brain } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { SectionEmpty } from "@/components/SectionEmpty";
 import { formatDateTime, verdictVariant } from "@/lib/format";
 import type { Reflection as ReflectionShape } from "@/lib/types";
 
@@ -37,7 +38,15 @@ export function Reflection({
   variant?: "section" | "overview";
   onOpenDecisions?: () => void;
 }) {
-  if (reflection === null) return null;
+  if (reflection === null) {
+    return (
+      <SectionEmpty
+        icon={Brain}
+        title="Reflector"
+        reason="No reflection yet. The Reflector runs once the market closes, on the session that just ended — it reads that session's decisions and trades and names the constraint that bound the agent."
+      />
+    );
+  }
 
   if (variant === "overview") {
     return (

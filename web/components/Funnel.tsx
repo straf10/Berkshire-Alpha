@@ -1,5 +1,7 @@
 import { ArrowRight, Filter } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { SectionEmpty } from "@/components/SectionEmpty";
+import { REASON_GLOSS } from "@/lib/rejectReasons";
 import type { FunnelResponse, FunnelStage } from "@/lib/types";
 
 const STAGE_LABELS: Record<FunnelStage["name"], string> = {
@@ -10,34 +12,6 @@ const STAGE_LABELS: Record<FunnelStage["name"], string> = {
   entered: "Entered",
 };
 
-// One clause per reject code, so a judge does not have to know the codebase to
-// read the funnel. The raw code is always shown next to it -- it greps to a
-// real constant (agent/risk/gates.py GateReason, agent/storage/read.py's
-// screen/build reject sets) and that traceability is the point.
-const REASON_GLOSS: Record<string, string> = {
-  NO_CHAIN: "no options chain came back for the symbol",
-  NO_EXPIRY_IN_WINDOW: "no expiry inside the DTE window",
-  DEGENERATE_CHAIN: "chain too thin to build a defined-risk spread",
-  NO_REGIME: "no tradable regime signal",
-  DEBIT_NO_MOMENTUM_CONFIRMATION: "debit setup without momentum confirmation",
-  DATA_NOT_OK: "market data failed its freshness check",
-  INSUFFICIENT_BARS: "not enough price history",
-  NOT_SHORTLISTED: "ranked out of the shortlist",
-  REDUCE_ONLY: "portfolio greeks over limit, so new entries are blocked",
-  ENTRY_CUTOFF_PASSED: "past the session's entry cutoff",
-  LLM_BUDGET_CEILING: "the session's LLM budget was spent",
-  NEGATIVE_EDGE: "priced edge came out negative",
-  LOW_CONVICTION: "debate conviction below the entry threshold",
-  MAX_AGGREGATE_RISK: "open defined risk already at the cap",
-  MAX_RISK_PER_TRADE: "position would exceed the per-trade risk cap",
-  QTY_FLOORS_TO_ZERO: "risk sizing floored the quantity to zero",
-  INSUFFICIENT_BUYING_POWER: "not enough options buying power",
-  MAX_CONCURRENT_POSITIONS: "already at the concurrent-position cap",
-  MAX_POSITIONS_PER_UNDERLYING: "already at the per-underlying cap",
-  EARNINGS_BLACKOUT: "inside the earnings blackout window",
-  EARNINGS_UNVERIFIED: "earnings date could not be verified",
-  DTE_OUT_OF_WINDOW: "expiry outside the DTE window",
-};
 
 // What happened between this stage and the next. The API gives one
 // top_reject_reason per stage, meaning "the most common reason for the rows
@@ -84,7 +58,16 @@ function DropRow({ stage, drop }: { stage: FunnelStage; drop: number }) {
 // rendered inline rather than hidden in a chart tooltip -- they are the whole
 // argument, and a tooltip is invisible in the screenshot a judge takes.
 export function Funnel({ funnel }: { funnel: FunnelResponse | null }) {
-  if (funnel === null || funnel.stages.length === 0) return null;
+  if (funnel === null || funnel.stages.length === 0) {
+    return (
+      <SectionEmpty
+        icon={Filter}
+        title="Entry funnel"
+        className=""
+        reason="No completed session yet, so there is no funnel to draw. It counts one full session of entry scans — screened, shortlisted, built, debated, entered — and appears once the first session closes."
+      />
+    );
+  }
 
   const first = funnel.stages[0];
   const last = funnel.stages[funnel.stages.length - 1];

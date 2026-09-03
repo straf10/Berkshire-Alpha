@@ -82,10 +82,12 @@ function StageNode({ data }: NodeProps<Node<StageData>>) {
       </div>
       <Badge className={`w-fit ${MODE_BADGE[data.mode]}`}>{MODE_LABEL[data.mode]}</Badge>
       <p className="text-[11px] leading-snug text-muted-foreground">{data.description}</p>
+      {/* The reject list is the most interesting thing in the node, and it
+          used to be truncated to one line with the full text in a native
+          `title` -- not keyboard-reachable, absent on touch, unreliable to a
+          screen reader. It wraps in the node body instead. */}
       {data.reject && (
-        <p className="mt-auto truncate text-[10px] leading-tight text-destructive/80" title={data.reject}>
-          reject: {data.reject}
-        </p>
+        <p className="mt-auto text-[10px] leading-tight text-destructive/80">reject: {data.reject}</p>
       )}
       <Handle type="source" position={Position.Right} className="!bg-muted-foreground/50" />
       {data.rejects && (

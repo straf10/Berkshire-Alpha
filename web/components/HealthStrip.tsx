@@ -1,4 +1,5 @@
 import { Activity } from "lucide-react";
+import { SectionEmpty } from "@/components/SectionEmpty";
 import { formatDateTime } from "@/lib/format";
 import { isMarketHour } from "@/lib/marketHours";
 import type { HealthBucket, Status } from "@/lib/types";
@@ -34,11 +35,27 @@ const STATUS_LABEL: Record<HealthBucket["status"], string> = {
 // Everything left is a market hour the agent was live for, so a gap here is a
 // real gap and paints amber, and a failed check paints red.
 export function HealthStrip({ buckets, status }: { buckets: HealthBucket[] | null; status: Status }) {
-  if (buckets === null || buckets.length === 0) return null;
+  if (buckets === null || buckets.length === 0) {
+    return (
+      <SectionEmpty
+        icon={Activity}
+        title="Agent uptime — market hours"
+        reason="No health samples yet. The management tick writes one every five minutes while the market is open; this strip draws one bar per market hour from the first sample onwards."
+      />
+    );
+  }
 
   const marketHours = buckets.filter((b) => isMarketHour(b.bucket_start_utc, status.open_utc, status.close_utc));
   const firstSample = marketHours.findIndex((b) => b.total_count > 0);
-  if (firstSample === -1) return null;
+  if (firstSample === -1) {
+    return (
+      <SectionEmpty
+        icon={Activity}
+        title="Agent uptime — market hours"
+        reason="No health sample has landed inside a market hour yet. Closed hours are not drawn at all — an hour the agent was never meant to run in is not uptime data — so the strip appears with the first sample after the opening bell."
+      />
+    );
+  }
 
   const covered = marketHours.slice(firstSample);
   const upCount = covered.filter((b) => b.status === "up").length;
@@ -59,7 +76,16 @@ export function HealthStrip({ buckets, status }: { buckets: HealthBucket[] | nul
           {gaps > 0 && `, ${gaps}h with no sample`})
         </span>
       </div>
-      <div className="flex h-7 w-full gap-[2px]">
+      {/* role="img" with the reading spelled out: the per-bar detail is
+          otherwise only in a native `title`, which never appears on touch and
+          is not announced reliably. The summary line above carries the same
+          numbers as real text, so nothing here is the sole source of anything
+          -- the label just gives the bars themselves a non-visual equivalent. */}
+      <div
+        role="img"
+        aria-label={`Uptime by market hour since ${formatDateTime(covered[0].bucket_start_utc)}: ${upCount} of ${covered.length} hours passed every check, ${failedChecks} failed check${failedChecks === 1 ? "" : "s"}, ${gaps} hour${gaps === 1 ? "" : "s"} with no sample.`}
+        className="flex h-7 w-full gap-[2px]"
+      >
         {covered.map((b) => (
           <div
             key={b.bucket_start_utc}

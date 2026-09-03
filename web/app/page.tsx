@@ -39,6 +39,16 @@ function toDecisionId(value: string | undefined): number | null {
   return Number.isInteger(id) && id > 0 ? id : null;
 }
 
+// ?gate=REDUCE_ONLY, or a comma-separated list. Not validated against an enum
+// on purpose: the vocabulary spans three stages and includes codes no current
+// enum lists (CLI_UNAVAILABLE, the retired DEBATE_UNRESOLVED), so a name that
+// matches nothing in the window renders as a chip at count 0 that can be
+// clicked off, rather than being silently dropped here.
+function toGates(value: string | undefined): string[] {
+  if (value === undefined) return [];
+  return [...new Set(value.split(",").map((g) => g.trim()).filter(Boolean))].slice(0, 20);
+}
+
 // Everything the dashboard needs is fetched exactly once here, on load (and
 // again whenever LiveRefresh's poll triggers a full page refresh) --
 // switching tabs afterwards is purely client-side state in <Dashboard>, no
@@ -47,14 +57,17 @@ function toDecisionId(value: string | undefined): number | null {
 export default async function Page({
   searchParams,
 }: {
-  searchParams: Promise<{ tab?: string; decision?: string }>;
+  searchParams: Promise<{ tab?: string; decision?: string; gate?: string }>;
 }) {
-  const { tab, decision } = await searchParams;
+  const { tab, decision, gate } = await searchParams;
   const base = apiBase();
-  // ?decision=149 on its own is a link to one debate, so it implies the tab
-  // that shows debates -- an explicit ?tab= still wins.
+  // ?decision=149 is a link to one debate and ?gate=REDUCE_ONLY is a link to
+  // one class of refusal -- either on its own implies the tab that shows
+  // decisions. An explicit ?tab= still wins.
   const initialDecisionId = toDecisionId(decision);
-  const initialTab = tab === undefined && initialDecisionId !== null ? "decisions" : toTabId(tab);
+  const initialGates = toGates(gate);
+  const deepLinked = initialDecisionId !== null || initialGates.length > 0;
+  const initialTab = tab === undefined && deepLinked ? "decisions" : toTabId(tab);
 
   // Core requests: if any of these three are down, the page has nothing
   // meaningful to show at all -- global ServiceDown fallback.
@@ -102,6 +115,7 @@ export default async function Page({
     <Dashboard
       initialTab={initialTab}
       initialDecisionId={initialDecisionId}
+      initialGates={initialGates}
       status={statusRes}
       decisions={decisionsRes}
       assignments={assignmentsRes}

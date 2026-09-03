@@ -260,15 +260,40 @@ export function DecisionCard({
     }
   }
 
+  // The toggle is a real <button> in the first cell, owning aria-expanded and
+  // aria-controls. It used to be `<TableRow onClick aria-expanded>`: no
+  // tabIndex, no key handler, and aria-expanded on a <tr> with no interactive
+  // role means nothing to a screen reader -- so the expandable centerpiece of
+  // this dashboard was unreachable without a mouse. The row keeps its own
+  // onClick purely as a convenience for mouse users.
+  const detailId = `decision-${id}-detail`;
+
   return (
     <>
-      <TableRow
-        ref={rowRef}
-        className="cursor-pointer select-none"
-        onClick={handleClick}
-        aria-expanded={open}
-      >
-        <TableCell className="whitespace-nowrap text-foreground/70">{formatDateTime(decision.ts_utc)}</TableCell>
+      <TableRow ref={rowRef} className="cursor-pointer select-none" onClick={handleClick}>
+        <TableCell className="whitespace-nowrap p-0">
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-controls={open ? detailId : undefined}
+            onClick={(e) => {
+              // Without this the row's own handler fires too and the second
+              // toggle cancels the first.
+              e.stopPropagation();
+              void handleClick();
+            }}
+            className="flex w-full items-center gap-1.5 px-2 py-2 text-left text-foreground/70 hover:text-foreground focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring"
+          >
+            <span aria-hidden className="text-muted-foreground">
+              {open ? "▾" : "▸"}
+            </span>
+            {formatDateTime(decision.ts_utc)}
+            <span className="sr-only">
+              {" "}
+              — {decision.symbol}, {decision.action}, {decision.gate_reason}: reasoning chain
+            </span>
+          </button>
+        </TableCell>
         <TableCell className="font-semibold">{decision.symbol}</TableCell>
         <TableCell>{modeLabel(decision.mode)}</TableCell>
         <TableCell>{decision.regime}</TableCell>
@@ -277,7 +302,7 @@ export function DecisionCard({
         <TableCell>{decision.qty ?? "—"}</TableCell>
       </TableRow>
       {open && (
-        <TableRow>
+        <TableRow id={detailId}>
           <TableCell colSpan={7} className="min-w-0 max-w-0 whitespace-normal bg-muted/20 p-3">
             {loading ? (
               <div className="space-y-2">

@@ -2,11 +2,21 @@ import { Activity } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LimitMeter } from "@/components/LimitMeter";
+import { SectionEmpty } from "@/components/SectionEmpty";
 import { formatDateTime } from "@/lib/format";
 import type { GreeksSnapshot } from "@/lib/types";
 
 export function GreeksGauges({ snapshot }: { snapshot: GreeksSnapshot | null }) {
-  if (snapshot === null) return null;
+  if (snapshot === null) {
+    return (
+      <SectionEmpty
+        icon={Activity}
+        title="Portfolio greeks"
+        className=""
+        reason="No greeks snapshot yet. The management tick re-prices the book every five minutes while the market is open, and writes the aggregate delta and vega against their limits."
+      />
+    );
+  }
 
   const breached = snapshot.breached === 1;
 

@@ -79,7 +79,14 @@ export function WalkTimelineChart({ trade, natural, walkCapFraction }: WalkTimel
 
   return (
     <div className="mt-2">
-      <ChartContainer config={chartConfig} className="aspect-auto h-44 w-full">
+      <ChartContainer
+        config={chartConfig}
+        role="img"
+        aria-label={`Limit-order walk for ${trade.symbol}: ${lastStep} step${lastStep === 1 ? "" : "s"} from ${money(mid)} to ${money(points[points.length - 1].limit)}${cap !== null ? `, against a cap of ${money(cap)}` : ""}${natural !== null ? ` and a natural of ${money(natural)}` : ""} — ${
+          trade.fill_price !== null ? `filled at ${money(trade.fill_price)}` : `unfilled, ${trade.status}`
+        }.`}
+        className="aspect-auto h-44 w-full"
+      >
         <LineChart data={points} margin={{ top: 10, right: 16, bottom: 4, left: 4 }}>
           <XAxis
             dataKey="step"

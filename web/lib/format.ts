@@ -21,6 +21,15 @@ export function formatTimeUtc(iso: string): string {
   return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
 }
 
+// Day and month only, same manual-UTC discipline -- for a chip or label that
+// has to disambiguate two sessions ("2 Sep 14:15") without spending a whole
+// formatDateTime on it.
+export function formatDayMonth(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`;
+}
+
 export function formatMoney(value: number | string): string {
   const n = typeof value === "string" ? Number(value) : value;
   if (!Number.isFinite(n)) return "—";
