@@ -109,11 +109,11 @@ function Footer({
     <footer className="mt-8 flex flex-col items-center gap-3 border-t border-border/60 pt-3 text-center text-sm text-muted-foreground">
       <span>
         Founders{" "}
-        <a href="https://github.com/straf10" target="_blank" rel="noreferrer" className="hover:text-foreground">
+        <a href="https://github.com/straf10" target="_blank" rel="noreferrer" className="hover:text-foreground" title="GitHub: straf10">
           @straf10
         </a>{" "}
         &amp;{" "}
-        <a href="https://github.com/stanimeros" target="_blank" rel="noreferrer" className="hover:text-foreground">
+        <a href="https://github.com/stanimeros" target="_blank" rel="noreferrer" className="hover:text-foreground" title="GitHub: stanimeros">
           @stanimeros
         </a>
       </span>
