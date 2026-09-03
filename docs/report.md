@@ -299,6 +299,43 @@ won't read that file end to end.
   loss against roughly $464,400 of short-leg notional on a $95.6k-equity account — each limit
   correct individually, with an unmodeled interaction between them.
 
+- **The broker's mark left the band its own strikes permit (found 2026-09-03, live).** A vertical
+  spread's value is confined by arithmetic, not by opinion: a long vertical is worth between zero
+  and the distance between its strikes, and a short one is worth between minus that distance and
+  zero. Judged equity is `cash + the broker's mark`, and the mark is under no such obligation.
+  Measured on the open LLY 1160/1165 bear put vertical (trade 8, long, 4 contracts, band
+  `[$0, $2,000]`) at **15:25 UTC**:
+
+  | leg | qty | broker mark | market value |
+  |---|---|---|---|
+  | `LLY260904P01160000` (short) | −4 | 15.35 | −$6,140 |
+  | `LLY260904P01165000` (long) | +4 | 13.85 | +$5,540 |
+  | **net** | | | **−$600** |
+
+  The 1165 put is marked *below* the 1160 put. A higher-strike put can never be worth less than a
+  lower-strike one, so this is not a wide mark or a stale mark — it is an impossible one, and the
+  position it describes cannot be worth less than zero. With LLY at 1153.54 both puts were ITM and
+  the vertical's intrinsic was its full $5.00 width, i.e. **+$2,000**.
+
+  The gap is not a one-tick artifact. Sampled through the session: −$2,140 at 13:04 UTC, −$2,140 at
+  14:52, −$320 at 15:18, −$600 at 15:25. It moves with the marks and has not once been inside the
+  band.
+
+  Two things follow, and they are different in kind. The first is a **reporting** point: some of the
+  drawdown on the equity line is a marking artifact rather than a loss, and `agent/tools/markgap.py`
+  now measures exactly how much, published every management tick at `/markgap` and on the dashboard.
+  The second is an **execution** point, and it is the one that cost money: `walk_cap` bounded a
+  closing order only when it was a debit, so the unwind of this position computed a cap of `+3.00` —
+  authorisation to *pay* $3.00 per spread to dispose of a vertical bounded below by zero. That is
+  fixed (`WALK_CAP_CREDIT_SIGN_FLOOR`), and the fix is keyed off the original structure rather than
+  the sign of the closing mid precisely because an inverted chain like this one makes the sign
+  unreliable.
+
+  What this finding is **not**: evidence that the account is secretly ahead. A markgap proves the
+  mark is impossible; it says nothing about what a market maker will pay for a 50%-wide chain at
+  the close. The real, structural loss on trade 8 was booked at fill and is not in dispute —
+  $6.65 paid for a $5.00-wide vertical, a guaranteed −$660 before the market moved at all.
+
 - **Alpaca CLI `--symbols` filter bug (found and fixed).** The installed Alpaca CLI's `--symbols`
   flag does not filter multi-leg (`order_class=mleg`) orders — an mleg order has no top-level
   `symbol` field for the flag to match, so the filter silently no-ops rather than erroring. Found
