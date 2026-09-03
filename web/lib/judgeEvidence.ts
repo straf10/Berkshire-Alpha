@@ -40,7 +40,7 @@ export const JUDGED_ACCOUNT = {
   startEquity: 100_000,
 } as const;
 
-export const REPO_URL = "https://github.com/straf10/Autonomous-Debate-Trading-Agent";
+export const REPO_URL = "https://github.com/straf10/Berkshire-Alpha";
 
 // --- Sealed-window measurements, each stamped ------------------------------
 
