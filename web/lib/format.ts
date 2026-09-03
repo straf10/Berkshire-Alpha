@@ -13,6 +13,14 @@ export function formatDateTime(iso: string, opts: { seconds?: boolean } = {}): s
   return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}, ${time} UTC`;
 }
 
+// Time-of-day only, same manual-UTC discipline as formatDateTime -- for the
+// session window ("13:30-20:00 UTC"), where the date is already established.
+export function formatTimeUtc(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
+}
+
 export function formatMoney(value: number | string): string {
   const n = typeof value === "string" ? Number(value) : value;
   if (!Number.isFinite(n)) return "—";
@@ -96,8 +104,8 @@ export function riskDecisionVariant(decision: string): "default" | "destructive"
   return "secondary";
 }
 
-// Reflector verdict pill (docs/day4_action_plan.md Step 5): LOOSEN reads as
-// an accent call-out, TIGHTEN as a warning, HOLD as the neutral default.
+// Reflector verdict pill: LOOSEN reads as an accent call-out, TIGHTEN as a
+// warning, HOLD as the neutral default.
 export function verdictVariant(verdict: string): "default" | "destructive" | "secondary" {
   if (verdict === "LOOSEN") return "default";
   if (verdict === "TIGHTEN") return "destructive";

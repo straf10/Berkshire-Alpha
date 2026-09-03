@@ -49,9 +49,9 @@
 }
 
 /*
- * PLAN.md "2050" dashboard aesthetic: near-black background, thin neon
- * cyan/violet accent, monospace numerals. This is a demo-only surface
- * (docs/day6_ui_plan.md S5) so the dark palette is the ONLY palette --
+ * The dark "2050" dashboard aesthetic of docs/plan.md:451: near-black
+ * background, thin neon cyan/violet accent, monospace numerals. This is a
+ * demo-only surface, so the dark palette is the ONLY palette --
  * :root carries it directly rather than gating it behind .dark/prefers-color-scheme.
  */
 :root {

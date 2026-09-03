@@ -6,9 +6,8 @@ import { formatCost } from "@/lib/format";
 import type { LlmUsageResponse } from "@/lib/types";
 
 // One row per (node, model) pair -- node is the agent role (analyst/debate
-// persona/trader/risk-manager) that made the call, so this is "which tool
-// cost how much" per docs/day6_ui_plan.md-style monitoring, not just a
-// single opaque total.
+// persona/trader/risk-manager) that made the call, so this answers "which
+// stage cost how much" rather than showing a single opaque total.
 export function LlmUsage({ usage }: { usage: LlmUsageResponse | null }) {
   if (usage === null) return null;
 

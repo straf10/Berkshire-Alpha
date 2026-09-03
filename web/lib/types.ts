@@ -74,7 +74,7 @@ export interface DebateSummary {
   consensus_score: number;
   verdict: string;
   terminated_early: number;
-  conviction: number | null; // docs/day6_ui_plan.md S0.1 -- NULL on rows written before this landed
+  conviction: number | null; // NULL on debate rows written before conviction was recorded
 }
 
 export interface Proposal {
@@ -175,12 +175,15 @@ export interface Status {
   session_date?: string;
   open_utc?: string;
   close_utc?: string;
-  scan_1_utc?: string;
-  scan_2_utc?: string;
+  // One ISO stamp per entry-scan slot (agent/config.py SCAN_OFFSETS_MIN),
+  // written by agent/main.py's _publish_status. The scan_1_utc/scan_2_utc
+  // fields this type used to declare were never on the wire.
+  scan_utcs?: string[];
   completed_scans?: number;
   next_action?: string;
   next_action_utc?: string;
   now_utc?: string;
+  entries_halted?: boolean;
 }
 
 export interface AccountState {
@@ -288,7 +291,7 @@ export interface AgentConfig {
   tools: { name: string; purpose: string }[];
 }
 
-// --- New endpoints, docs/day6_ui_plan.md S0.2 ---
+// --- Account, risk and usage endpoints ---
 
 export interface EquityPoint {
   ts_utc: string;
@@ -403,7 +406,7 @@ export interface HealthBucket {
   total_count: number;
 }
 
-// docs/day4_action_plan.md Step 5 -- the Reflector's post-market critique.
+// The Reflector's post-market critique of the session just closed.
 export interface Reflection {
   id: number;
   ts_utc: string;

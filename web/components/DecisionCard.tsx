@@ -206,11 +206,10 @@ function ExpandedChain({ chain, walkCapFraction }: { chain: DecisionChain; walkC
   );
 }
 
-// Table row pair (summary + conditional detail row) rather than the
-// DecisionsLog table's plain rows -- clicking a row lazy-fetches and expands
-// its full reasoning chain below it, so this looks like the same table
-// (docs: "Decisions log and Reasoning feed to be table like the decision
-// log") while still being the expandable centerpiece PLAN.md calls out.
+// Table row pair (summary + conditional detail row) rather than a plain row:
+// clicking a row lazy-fetches and expands its full reasoning chain below it,
+// so the feed still reads as an ordinary scannable table while being the
+// expandable centerpiece docs/plan.md:455 calls out.
 export function DecisionCard({
   decision,
   walkCapFraction,

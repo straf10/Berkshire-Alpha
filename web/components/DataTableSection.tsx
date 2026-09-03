@@ -4,8 +4,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 // Shared wrapper for the "icon + uppercase label" header followed by a
 // bordered, horizontally-scrollable table -- previously hand-rolled
-// identically in OpenPositionsTable, TradeHistoryTable, and DecisionsLog as
-// a bare div (no card background/ring), which visually mismatched the
+// identically in every table section as a bare div (no card
+// background/ring), which visually mismatched the
 // Card-based sections (LlmUsage, ToolUsage, AgentConfigPanel). Built on
 // Card/CardHeader/CardTitle so every section -- table or stat card -- shares
 // the same background/border treatment.

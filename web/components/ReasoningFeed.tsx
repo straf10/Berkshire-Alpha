@@ -10,11 +10,10 @@ import type { Decision } from "@/lib/types";
 
 const POLL_MS = 15_000;
 
-// The centerpiece per PLAN.md: "our strongest asset for Presentation &
-// Explainability" -- same table shape as DecisionsLog (same columns, same
-// DataTableSection wrapper), but each row is clickable and lazy-fetches its
-// full chain on first expand (DecisionCard), fixing the old page's eager
-// N+1 verdict fetch.
+// The centerpiece per docs/plan.md:455 -- "our strongest asset for
+// Presentation & Explainability". A plain scannable table whose every row is
+// clickable and lazy-fetches its full chain on first expand (DecisionCard),
+// fixing the old page's eager N+1 verdict fetch.
 //
 // Polls independently of LiveRefresh's 60s full-page router.refresh() (which
 // re-runs page.tsx's 14 parallel fetches): this feed only needs the one
