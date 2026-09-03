@@ -29,6 +29,7 @@ import { OpenPositionsTable } from "@/components/OpenPositionsTable";
 import { ReasoningFeed } from "@/components/ReasoningFeed";
 import { Reflection } from "@/components/Reflection";
 import { StatusBar } from "@/components/StatusBar";
+import { MarkGapPanel } from "@/components/MarkGapPanel";
 import { Section } from "@/components/Section";
 import { SystemFlow } from "@/components/SystemFlow";
 import { Card, CardContent } from "@/components/ui/card";
@@ -49,6 +50,7 @@ import type {
   HealthBucket,
   HealthResponse,
   LlmUsageResponse,
+  MarkGapResponse,
   OpenPosition,
   Reflection as ReflectionShape,
   Status,
@@ -158,6 +160,7 @@ export function Dashboard({
   healthHistory,
   health,
   reflection,
+  markgap,
   frontendLastUpdated,
 }: {
   initialTab: TabId;
@@ -178,6 +181,7 @@ export function Dashboard({
   healthHistory: HealthBucket[] | null;
   health: HealthResponse | null;
   reflection: ReflectionShape | null;
+  markgap: MarkGapResponse | null;
   frontendLastUpdated: string;
 }) {
   const [tab, setTab] = useState<TabId>(initialTab);
@@ -268,6 +272,10 @@ export function Dashboard({
             walkCapFraction={walkCap}
             onOpenPipeline={() => handleTabChange("flow")}
           />
+          {/* Sits directly under the account hero because it is a statement
+              ABOUT that hero: the equity above is cash plus the broker's mark,
+              and this is how far that mark strays from what the strikes allow. */}
+          <MarkGapPanel markgap={markgap} />
           {/* Greeks and funnel side by side because they describe one event:
               the delta breach is why the funnel's last two stages are zero.
               Stacked full-width, nothing connected them. */}
@@ -308,6 +316,7 @@ export function Dashboard({
               deep inside an expanded table row. */}
           <FeaturedWalk trades={trades} walkCapFraction={walkCap} />
           <OpenPositionsTable positions={openPositions} assignments={assignments} />
+          <MarkGapPanel markgap={markgap} />
           <TradeHistoryTable trades={trades} />
         </TabsContent>
 
