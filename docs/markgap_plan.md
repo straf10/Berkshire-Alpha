@@ -1,7 +1,7 @@
 # Mark integrity, entry freeze, and a bounded close — implementation plan
 
 Branch: `feat/markgap-entry-halt-close-floor`
-Written 2026-09-03 ~15:20 UTC, mid-session, agent live on Railway.
+Written 2026-09-03 ~15:00 UTC, mid-session, agent live on Railway.
 
 ## 0. Why now, and the clock we are working against
 
@@ -420,7 +420,7 @@ signal matches CI**:
 ./venv/Scripts/python.exe -m pytest -q -m "not live"
 ```
 
-Baseline measured on this branch at 15:35 UTC: **515 passed, 1 deselected**.
+Baseline measured on this branch at 15:00 UTC: **515 passed, 1 deselected**.
 (A bare `pytest` additionally runs `test_live_chain.py`, which fails against
 the live chain on its hardcoded 2026-08-31 dates. CI runs `-m "not live"`, so
 it cannot block the merge — see R2.)
@@ -473,7 +473,7 @@ the pre-fix behaviour is what is running now, and the unwind still fires.
 
 ---
 
-# 8. Review of this plan (second pass, 2026-09-03 ~15:40 UTC)
+# 8. Review of this plan (second pass, 2026-09-03 ~15:05 UTC)
 
 Read back against the code, not against memory. Fourteen findings; four change
 what gets built, and §5 and §6 above have been corrected in place where the
