@@ -51,7 +51,14 @@ jobs:
     needs: changes
     if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # 5 was under the real cost of this job and it had been failing as a coin
+    # flip: `npm ci` on this dependency tree (Next 16 + Tailwind 4 + base-ui,
+    # ~20 direct deps) runs close to five minutes on a cold runner all by
+    # itself, before lint and build get a turn. Every frontend-touching merge
+    # since 33736898502 shows as "cancelled" -- that is this cap firing, not a
+    # test failing, and because deploy-frontend `needs` this job, each one also
+    # silently skipped the Vercel deploy.
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: web
@@ -91,7 +98,9 @@ jobs:
       needs.changes.outputs.frontend == 'true' &&
       !contains(github.event.head_commit.message, '[skip deploy]')
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Same reasoning as test-frontend: this job installs the Vercel CLI and
+    # runs a production build of the same tree under the same cap.
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: web
