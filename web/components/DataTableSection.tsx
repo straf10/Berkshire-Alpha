@@ -35,12 +35,17 @@ export function DataTableSection({
         </CardTitle>
       </CardHeader>
       <CardContent>
+        {/* No overflow-x-auto on the wrapper below: ui/table.tsx already puts
+            every table inside its own `relative w-full overflow-x-auto`
+            container, so this was a second scroll region nested around the
+            first. The inner one is the one that actually moves; this div only
+            ever carried the border. */}
         {isEmpty ? (
           <p className="text-muted-foreground">{emptyMessage}</p>
         ) : (
           <>
             {aside}
-            <div className="overflow-x-auto rounded-md border border-border">{children}</div>
+            <div className="rounded-md border border-border">{children}</div>
           </>
         )}
       </CardContent>
