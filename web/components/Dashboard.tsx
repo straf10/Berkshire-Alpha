@@ -17,7 +17,6 @@ import { useState } from "react";
 import { AccountVitals } from "@/components/AccountVitals";
 import { AgentConfigPanel } from "@/components/AgentConfigPanel";
 import { AssignmentPanel } from "@/components/AssignmentPanel";
-import { DecisionsLog } from "@/components/DecisionsLog";
 import { Funnel } from "@/components/Funnel";
 import { GreeksGauges } from "@/components/GreeksGauges";
 import { HealthStrip } from "@/components/HealthStrip";
@@ -245,12 +244,11 @@ export function Dashboard({
           <HealthStrip buckets={healthHistory} />
         </TabsContent>
 
-        {/* Decisions: intentionally both a compact skim table AND the full
-            expandable reasoning feed for the SAME underlying decisions array --
-            scan the log, then expand the matching card for the full debate/
-            risk-vote chain, without hunting across tabs for one subject. */}
+        {/* Decisions: the reasoning feed is the whole tab. It previously sat
+            under a "Decisions log" table that rendered the same seven columns
+            from the same array with none of the expand behaviour -- a strict
+            subset, so it is gone. */}
         <TabsContent value="decisions">
-          <DecisionsLog decisions={decisions} />
           <ReasoningFeed
             decisions={decisions}
             walkCapFraction={config ? Number(config.execution_guardrails.walk_cap_fraction) : null}

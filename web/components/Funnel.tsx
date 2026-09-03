@@ -4,7 +4,8 @@ import { FunnelBarChart } from "@/components/charts/FunnelBarChart";
 import type { FunnelResponse } from "@/lib/types";
 
 // Reframes a low trade count as visible discipline rather than an empty
-// dashboard (docs/IMMEDIATE_IMPROVEMENT.md item 8 / day6_ui_plan.md S4 Funnel).
+// dashboard: the counts come from the same reject sets the entry path uses,
+// so every drop-off here is a rule that actually fired.
 export function Funnel({ funnel }: { funnel: FunnelResponse | null }) {
   if (funnel === null) return null;
 

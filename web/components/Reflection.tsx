@@ -5,8 +5,8 @@ import { formatDateTime, verdictVariant } from "@/lib/format";
 import type { Reflection as ReflectionShape } from "@/lib/types";
 
 // The agent's own post-market critique of the constraint that bound it that
-// session (docs/day4_action_plan.md Step 5) -- degrades independently like
-// every other section (page.tsx's established pattern: null in, null out).
+// session -- degrades independently like every other section (page.tsx's
+// established pattern: null in, null out).
 export function Reflection({ reflection }: { reflection: ReflectionShape | null }) {
   if (reflection === null) return null;
 

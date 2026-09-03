@@ -5,7 +5,7 @@ export function apiBase(): string {
 /**
  * Never throws. Every dashboard section fetches independently through this
  * so one missing/erroring endpoint blanks only that section instead of
- * tripping the page's global ServiceDown fallback (docs/day6_ui_plan.md S7.4).
+ * tripping the page's global ServiceDown fallback.
  */
 export async function fetchJson<T>(url: string): Promise<T | null> {
   try {
