@@ -30,6 +30,12 @@ app.add_middleware(
 )
 
 
+# One week of hourly buckets. The uptime strip's default is 90 hours and it
+# has never asked for more; this only has to be generous enough that no real
+# caller notices the ceiling.
+_HEALTH_HISTORY_MAX_HOURS = 168
+
+
 async def get_conn() -> AsyncIterator[aiosqlite.Connection]:
     async with connect(_settings.db_path) as conn:
         yield conn
@@ -138,8 +144,16 @@ async def tools_usage(session_date: str | None = None, conn: aiosqlite.Connectio
 
 @app.get("/health/history")
 async def health_history(hours: int = 90, conn: aiosqlite.Connection = Depends(get_conn)) -> list[dict[str, Any]]:
-    """Uptime strip data: one bucket per hour over the last `hours` hours."""
-    return await read.health_history(conn, hours)
+    """Uptime strip data: one bucket per hour over the last `hours` hours.
+
+    Clamped like every other limit on this API (docs/review_2026-09-04.md
+    P1-4). `read.health_history` allocates one dict entry per hour BEFORE it
+    looks at any data, and this process also runs the trading loop
+    (main.main's `asyncio.gather(serve_api, supervised_loop)`) -- so an
+    unclamped `hours` on a public, unauthenticated GET could OOM the trader,
+    not just the API. `read.health_history` re-clamps as well; this is the
+    fix, that is the belt."""
+    return await read.health_history(conn, min(max(hours, 1), _HEALTH_HISTORY_MAX_HOURS))
 
 
 @app.get("/reflections")
