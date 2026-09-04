@@ -1,6 +1,23 @@
-# Alpaca AI Trading Agents Hackathon
+<p align="center">
+  <img src="web/public/logo-earthy.png" alt="" width="150">
+</p>
 
-Our submission for the [Alpaca AI Trading Agents Hackathon](https://lablab.ai/ai-hackathons/alpaca-ai-trading-agents-hackathon) (lablab.ai x Alpaca, 28 Aug – 4 Sep 2026).
+<h1 align="center">Berkshire Alpha</h1>
+
+<p align="center">
+  <b>An autonomous options-trading agent whose models argue —<br>and whose risk layer cannot be argued with.</b>
+</p>
+
+<p align="center">
+  <a href="https://berkshire-alpha.vercel.app/">Live dashboard</a> ·
+  <a href="docs/onepager.md">One-page write-up</a> ·
+  <a href="#judged-account">Judged account</a> ·
+  <a href="LICENSE">MIT</a>
+</p>
+
+---
+
+Our submission for the [Alpaca AI Trading Agents Hackathon](https://lablab.ai/ai-hackathons/alpaca-ai-trading-agents-hackathon) (lablab.ai x Alpaca, 28 Aug – 4 Sep 2026). The required one-page write-up — AI logic, risk gates, Alpaca infrastructure — is at **[docs/onepager.md](docs/onepager.md)**, and is also rendered in full on the dashboard's *For the Judges* tab.
 
 See [docs/hackathon.md](docs/hackathon.md) for the full rundown of the challenge, rules, timeline, prizes, and judging criteria.
 
@@ -40,8 +57,9 @@ Trading parameters in `agent/config.py` were frozen ahead of the judged sessions
 
 Live and trading — agent, risk gates, LLM pipeline, and dashboard are all running.
 
-- **Live dashboard (Vercel):** https://autonomous-debate-trading-agent.vercel.app
+- **Live dashboard (Vercel):** https://berkshire-alpha.vercel.app/
 - **Agent API (Railway):** https://autonomous-debate-trading-agent-production.up.railway.app
+  — the Railway project keeps its original name; only the Vercel project and the GitHub repo were renamed.
 
 Every push to `main` runs tests (pytest, eslint, `next build`) via GitHub Actions, then auto-deploys the agent to Railway and the dashboard to Vercel. See [docs/deployment.md](docs/deployment.md) for details.
 

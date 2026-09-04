@@ -11,14 +11,18 @@ downtime.
 
 - **Agent API (Railway):** https://autonomous-debate-trading-agent-production.up.railway.app
   - `/health`, `/state/account`, `/positions`, `/decisions`, `/decisions/{id}`, `/trades`, `/greeks/latest`
-- **Dashboard (Vercel):** https://autonomous-debate-trading-agent.vercel.app
+- **Dashboard (Vercel):** https://berkshire-alpha.vercel.app/
   - Reads live state from the Railway API via `NEXT_PUBLIC_API_BASE`.
-  - The old `larp-lake.vercel.app` auto-domain (which had held Vercel's
-    deployment-protection bypass) was dropped by Vercel the moment the first production
-    deploy landed under the renamed project; it now 404s. `autonomous-debate-trading-agent.vercel.app`
-    is the new auto-assigned production domain and is publicly reachable (verified: 200,
-    no SSO gate) — no dashboard action was needed, Vercel reassigned the bypass to it
-    automatically.
+  - **This has now moved twice, the same way both times.** Renaming the Vercel project
+    drops the previous auto-assigned domain immediately: `larp-lake.vercel.app` 404'd the
+    moment the project became `autonomous-debate-trading-agent`, and
+    `autonomous-debate-trading-agent.vercel.app` 404'd the moment it became
+    `berkshire-alpha` (verified 404 on 4 Sep, against 200 on the new one). Vercel carries
+    the deployment-protection bypass across to the new domain on its own — no dashboard
+    action is needed — but **every link in this repo pointing at the old domain breaks
+    silently.** If the project is renamed again, grep for the old host before doing
+    anything else.
+  - The Railway project was NOT renamed and keeps its original hostname.
 
 ## Where things live
 
