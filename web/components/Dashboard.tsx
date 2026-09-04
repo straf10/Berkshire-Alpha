@@ -321,7 +321,6 @@ export function Dashboard({
             decisions={decisions}
             trades={trades}
             status={status}
-            health={health}
             walkCapFraction={walkCap}
           />
           <GreeksGauges snapshot={greeksLatest} />
