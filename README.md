@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="web/public/logo-earthy.png" alt="" width="150">
+  <img src="web/public/translucent_bg.png" alt="" width="150">
 </p>
 
 <h1 align="center">Berkshire Alpha</h1>
