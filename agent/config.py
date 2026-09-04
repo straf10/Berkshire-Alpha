@@ -523,6 +523,35 @@ class Settings:
 WEB_ORIGINS_DEFAULT: Final[tuple[str, ...]] = ("https://berkshire-alpha.vercel.app",)
 
 
+# Commit of the running image, for /config (docs/review_2026-09-04.md §D:
+# "this bundle adds no config constant, so /config cannot prove the Railway
+# image took it"). The frontend has had a build SHA since ac59335
+# (web/next.config.ts); the agent had none, so the only way to check a deploy
+# landed was to find a newly-published constant -- which works right up until
+# a change that adds none, i.e. every behavioural fix.
+#
+# Read from the environment, which /config otherwise never does. That
+# endpoint's rule is "no credentials can leak through here", and these three
+# names are platform-injected git metadata, never secrets. Nothing else about
+# the environment is exposed.
+_REVISION_ENV_NAMES: Final[tuple[str, ...]] = (
+    "RAILWAY_GIT_COMMIT_SHA",   # Railway (the agent's host)
+    "GIT_COMMIT_SHA",           # generic, and what the Dockerfile can pass
+    "GITHUB_SHA",               # CI-built images
+)
+
+
+def revision() -> str | None:
+    """The running image's commit, or None when the platform injected none --
+    in which case fall back to a behaviour flag in /config's
+    execution_guardrails block to tell two images apart."""
+    for name in _REVISION_ENV_NAMES:
+        value = os.environ.get(name)
+        if value:
+            return value.strip()
+    return None
+
+
 def cors_origins(web_origin: str) -> list[str]:
     """The published dashboard, plus whatever WEB_ORIGIN adds. Order-stable."""
     origins = dict.fromkeys(WEB_ORIGINS_DEFAULT)

@@ -550,3 +550,44 @@ def test_every_limit_taking_route_clamps_it() -> None:
         body = ast.dump(node)
         for arg in sized:
             assert "'min'" in body, f"{node.name} takes `{arg}` without a min() clamp"
+
+
+async def test_config_publishes_a_revision_and_no_secrets(monkeypatch) -> None:
+    """docs/review_2026-09-04.md §D. /config now reads three platform-injected
+    git-metadata env vars so a deploy is verifiable when the change published
+    no new constant. That is the ONLY environment this endpoint may touch --
+    its whole safety property is that no credential can leak through it."""
+    from agent import config as agent_config
+    from agent.api.app import agent_settings
+
+    monkeypatch.setenv("APCA_API_SECRET_KEY", "super-secret-value")
+    monkeypatch.setenv("FEATHERLESS_API_KEY", "another-secret-value")
+    monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "abc123def")
+
+    payload = await agent_settings()
+
+    assert payload["revision"] == "abc123def"
+    blob = repr(payload)
+    assert "super-secret-value" not in blob
+    assert "another-secret-value" not in blob
+
+    # Absent metadata must read as None, not crash or invent one -- the
+    # behaviour flags below it are the fallback witness.
+    for name in agent_config._REVISION_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    assert (await agent_settings())["revision"] is None
+
+
+async def test_config_publishes_the_exit_path_behaviour_flags() -> None:
+    """These are how a deploy of the exit-path bundle is confirmed from
+    outside when the platform injects no commit sha. Each must be True in an
+    image that carries the code, so they are asserted, not merely present."""
+    from agent.api.app import agent_settings
+
+    guardrails = (await agent_settings())["execution_guardrails"]
+    for flag in (
+        "terminal_day_legged_close",
+        "walk_terminates_on_external_cancel",
+        "held_legs_priced_without_data_filters",
+    ):
+        assert guardrails[flag] is True, flag
