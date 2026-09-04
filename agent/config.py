@@ -502,6 +502,33 @@ class Settings:
     reddit_user_agent: str = "options-alpha-agent/0.1"
 
 
+# --- Dashboard CORS ---------------------------------------------------------
+#
+# WEB_ORIGIN used to be a single string handed straight to CORSMiddleware, and
+# that has now silently killed the live dashboard TWICE -- both times because
+# the Vercel project was renamed and the env var was not (docs/deployment.md
+# records the renames; it did not record that CORS rides on them). The failure
+# is invisible from the server side: every endpoint keeps returning 200, and
+# only the browser refuses the response, so /health looks perfect while the
+# replay panel on the landing page sits empty.
+#
+# So the published dashboard is a DEFAULT in code, not only an env var. A
+# stale or missing WEB_ORIGIN can now ADD an origin; it can no longer remove
+# the one the judges use. WEB_ORIGIN itself is read as a comma-separated list
+# so preview deployments can be added without another code change.
+WEB_ORIGINS_DEFAULT: Final[tuple[str, ...]] = ("https://berkshire-alpha.vercel.app",)
+
+
+def cors_origins(web_origin: str) -> list[str]:
+    """The published dashboard, plus whatever WEB_ORIGIN adds. Order-stable."""
+    origins = dict.fromkeys(WEB_ORIGINS_DEFAULT)
+    for raw in web_origin.split(","):
+        origin = raw.strip().rstrip("/")
+        if origin:
+            origins.setdefault(origin, None)
+    return list(origins)
+
+
 def _require_env(name: str) -> str:
     value = os.environ.get(name)
     if not value:

@@ -23,6 +23,18 @@ downtime.
     silently.** If the project is renamed again, grep for the old host before doing
     anything else.
   - The Railway project was NOT renamed and keeps its original hostname.
+  - **A rename also breaks CORS, and that failure is invisible from the server
+    side.** `WEB_ORIGIN` is what the read-only API answers
+    `Access-Control-Allow-Origin` with; when the project became
+    `berkshire-alpha` and the env var did not, every endpoint kept returning
+    200 while the browser dropped the response — so `/health` looked perfect
+    and the replay panel on the landing page rendered "No cycle has run yet"
+    (found 4 Sep, after the second rename). The API now keeps the published
+    dashboard in code (`agent/config.py` `WEB_ORIGINS_DEFAULT`,
+    `cors_origins()`, guarded by a test) and treats `WEB_ORIGIN` as a
+    comma-separated list that can only ADD origins. Update the env var anyway
+    if the domain changes again, but a stale one can no longer take the site
+    down on its own.
 
 ## Where things live
 
