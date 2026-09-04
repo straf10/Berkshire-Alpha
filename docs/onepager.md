@@ -53,7 +53,12 @@ one.** We would rather submit that sentence than a clean dashboard.
    priors agree, that agreement is evidence; when one model is re-prompted into two hats and
    agrees with itself, it is an artefact. The three *risk* personas deliberately share one
    model, so that "the conservative persona vetoed" can never be confounded with "the weaker
-   model vetoed."
+   model vetoed." **One caveat we would rather state than be caught on:** per-node routing
+   (`LLM_NODE_MODELS`) shipped on 2 Sep, *after* the last debated cycle had already run, so
+   this is the ensemble in force now and every transcript replayable on the dashboard shows a
+   single model on every node. Nothing is retrofitted to hide that — the cycle replay prints
+   each node's model from the event's own metadata, and `/llm/usage` counts the calls that
+   predate routing and says so.
 3. **We compute Deflated Sharpe Ratio and Minimum Track Record Length, against a counted
    trial budget.** Trading parameters were frozen before the judged sessions
    (`docs/preregistration.md`) and every revision that produced them is logged
