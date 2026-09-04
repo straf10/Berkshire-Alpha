@@ -130,32 +130,65 @@ async def fetch_session_minute_bars(
 
 
 def _is_priceable(snap: Any) -> bool:
-    """Drop contracts with degenerate data. plan.md: an all-zero greeks block or
-    null IV is a realistic silent-failure mode, not a hypothetical one.
+    """Can this contract be priced at all, and its exposure signed? Nothing
+    more. The ONLY predicate `fetch_leg_snapshots` applies, because that is
+    what prices legs of positions we already HOLD.
 
-    Deliberately has no width check: this predicate is used for both chain
-    intake and pricing legs of positions we already hold. A quote must never
-    be dropped for being wide once we own it -- otherwise exit_tick cannot
-    price the position, evaluate_exit never runs, and the position becomes
-    invisible to the risk gates. See docs/review.md P0-1.
+    Every test that means "this is not worth ENTERING" belongs in
+    `_has_usable_data` / `_is_usable_for_entry`, never here. A quote dropped
+    from `fetch_leg_snapshots` is a position `exit_tick` cannot price:
+    `current_net_mid` returns None and the trade is held WITHOUT
+    `evaluate_exit` ever running -- not by decision, but because the code
+    never got as far as asking. `UNWIND` and the 2-DTE time stop are both
+    downstream of that check (docs/review.md P0-1 fixed the width half of
+    this; docs/review_2026-09-04.md P0-2 is the rest).
+
+    So, deliberately permitted here:
+      - a ZERO BID. mid = ask/2 is a perfectly good price, and a zero bid on
+        a leg we own is information -- it says the leg is worth nothing -- not
+        a reason to go blind. Routine on the OTM leg of any vertical held to
+        expiry.
+      - ALL-ZERO GREEKS. They contribute 0 to the portfolio, which
+        build_exposures already handles explicitly and loudly (greeks.py).
+      - a NULL IV. No exit-path consumer reads `iv`.
+    All three are normal on the expiry day of a position that must be closed,
+    which is precisely when losing sight of it is least affordable.
+
+    `greeks is not None` stays, because `_quote_from_snapshot` reads `.delta`
+    and `.vega` off it -- that is an arithmetic requirement, not a quality
+    judgement.
     """
+    q = snap.latest_quote
+    if q is None or q.ask_price <= 0 or q.bid_price < 0 or q.ask_price < q.bid_price:
+        return False
+    return snap.greeks is not None
+
+
+def _has_usable_data(snap: Any) -> bool:
+    """Data-quality tier, for chain INTAKE only. plan.md: an all-zero greeks
+    block or null IV is a realistic silent-failure mode, not a hypothetical
+    one, and a one-sided market is not a market to open into.
+
+    Kept separate from the width check above it so `_build_chain_snapshot`'s
+    DEGENERATE_CHAIN accounting is unchanged: only genuine data failures count
+    toward DEGENERATE_CHAIN_MAX_DROP, never a merely wide quote
+    (docs/review.md P0-4)."""
+    if not _is_priceable(snap):
+        return False
     iv = snap.implied_volatility
     if iv is None or iv <= 0:
         return False
     g = snap.greeks
-    if g is None or (g.delta == 0.0 and g.gamma == 0.0 and g.theta == 0.0 and g.vega == 0.0):
+    if g.delta == 0.0 and g.gamma == 0.0 and g.theta == 0.0 and g.vega == 0.0:
         return False
-    q = snap.latest_quote
-    if q is None or q.bid_price <= 0 or q.ask_price <= 0 or q.ask_price < q.bid_price:
-        return False
-    return True
+    return snap.latest_quote.bid_price > 0
 
 
 def _is_usable_for_entry(snap: Any) -> bool:
-    """_is_priceable plus a bid-ask width check. Only for chain intake --
+    """_has_usable_data plus a bid-ask width check. Only for chain intake --
     deciding whether to open a new position in a contract. Must never be used
     to price a position we already hold (see _is_priceable's docstring)."""
-    if not _is_priceable(snap):
+    if not _has_usable_data(snap):
         return False
     q = snap.latest_quote
     mid = (q.bid_price + q.ask_price) / 2
@@ -188,7 +221,12 @@ def _quote_from_snapshot(occ: str, snap: Any) -> OptionQuote:
         gamma=g.gamma,
         theta=g.theta,
         vega=g.vega,
-        iv=snap.implied_volatility,
+        # `_is_priceable` deliberately admits a null IV so a held position
+        # stays priceable (its exit path reads bid/ask/delta/vega and never
+        # iv), so coerce rather than propagate None into a float field. Chain
+        # intake still rejects a null IV outright, in `_has_usable_data`, so
+        # this can only ever be reached by fetch_leg_snapshots.
+        iv=snap.implied_volatility if snap.implied_volatility is not None else 0.0,
     )
 
 
@@ -201,7 +239,7 @@ def _build_chain_snapshot(underlying: str, raw: Mapping[str, Any]) -> ChainSnaps
     dropped = 0  # data failures only: null IV, all-zero greeks, non-positive/inverted quote
     wide_dropped = 0  # priceable but too wide to enter -- not a data failure, doesn't count toward DEGENERATE_CHAIN
     for occ, snap in raw.items():
-        if not _is_priceable(snap):
+        if not _has_usable_data(snap):
             dropped += 1
             continue
         if not _is_usable_for_entry(snap):

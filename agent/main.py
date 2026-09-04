@@ -225,23 +225,35 @@ async def _open_trades(conn: aiosqlite.Connection) -> list[OpenTrade]:
     for trade_id, symbol, structure_s, expiry_s, filled_qty, final_limit, submitted_limit, legs_json, plan_json in rows:
         if plan_json is None:
             continue
-        plan_data = json.loads(plan_json)
-        legs = tuple(
-            Leg(
-                occ_symbol=leg["occ_symbol"], strike=float(leg["strike"]), right=leg["right"],
-                side=leg["side"], ratio_qty=int(leg["ratio_qty"]), intent=Intent(leg["intent"]),
-                delta=float(leg["delta"]), vega=float(leg["vega"]), bid=float(leg["bid"]), ask=float(leg["ask"]),
+        # docs/review_2026-09-04.md P1-2: per-row, so one unparseable row does
+        # not take down the whole query and with it every OTHER open position's
+        # exit check. Every field below is parsed from stored JSON or coerced
+        # from a TEXT/REAL column, so a schema drift or a truncated write is a
+        # row-level problem, not a tick-level one.
+        try:
+            plan_data = json.loads(plan_json)
+            legs = tuple(
+                Leg(
+                    occ_symbol=leg["occ_symbol"], strike=float(leg["strike"]), right=leg["right"],
+                    side=leg["side"], ratio_qty=int(leg["ratio_qty"]), intent=Intent(leg["intent"]),
+                    delta=float(leg["delta"]), vega=float(leg["vega"]), bid=float(leg["bid"]), ask=float(leg["ask"]),
+                )
+                for leg in json.loads(legs_json)
             )
-            for leg in json.loads(legs_json)
-        )
-        structure = Structure(structure_s)
-        entry_price = Decimal(str(final_limit if final_limit is not None else submitted_limit))
-        open_trades.append(OpenTrade(
-            trade_id=trade_id, symbol=symbol, structure=structure,
-            regime=Regime.CREDIT if STRUCTURE_IS_CREDIT[structure] else Regime.DEBIT,
-            expiry=date.fromisoformat(expiry_s), qty=int(filled_qty), entry_net_mid=entry_price,
-            max_profit_per_spread=Decimal(str(plan_data["max_profit_per_spread"])), legs=legs,
-        ))
+            structure = Structure(structure_s)
+            entry_price = Decimal(str(final_limit if final_limit is not None else submitted_limit))
+            open_trades.append(OpenTrade(
+                trade_id=trade_id, symbol=symbol, structure=structure,
+                regime=Regime.CREDIT if STRUCTURE_IS_CREDIT[structure] else Regime.DEBIT,
+                expiry=date.fromisoformat(expiry_s), qty=int(filled_qty), entry_net_mid=entry_price,
+                max_profit_per_spread=Decimal(str(plan_data["max_profit_per_spread"])), legs=legs,
+            ))
+        except Exception:  # noqa: BLE001 -- deliberate: see above
+            logger.exception(
+                "_open_trades: trade %d (%s) could not be reconstructed from its stored "
+                "row -- SKIPPED, so it gets no exit check and no risk accounting until "
+                "an operator repairs it", trade_id, symbol,
+            )
     return open_trades
 
 
@@ -618,73 +630,128 @@ async def exit_tick(
     unwind = is_unwind_triggered(deps.clock.now())
 
     for trade in open_trades:
-        mid = current_net_mid(trade, quotes)
-        if mid is None:
-            logger.warning("exit_tick: %s trade %d missing a live quote -- holding, retry next tick", trade.symbol, trade.trade_id)
-            continue
-
-        dte = (trade.expiry - session.session_date).days
-        decision = evaluate_exit(
-            is_credit=STRUCTURE_IS_CREDIT[trade.structure], entry_net_mid=trade.entry_net_mid,
-            current_net_mid=mid, max_profit_per_spread=trade.max_profit_per_spread,
-            dte=dte, unwind_triggered=unwind,
-        )
-        if not decision.should_close:
-            continue
-
-        closing_plan = build_closing_plan(trade, quotes, spot=spots.get(trade.symbol, 0.0))
-        if closing_plan is None:
-            logger.warning("exit_tick: %s trade %d decided %s but a quote vanished mid-tick -- retry next tick",
-                            trade.symbol, trade.trade_id, decision.reason)
-            continue
-
-        result = await walk_to_fill(deps.broker, closing_plan, trade.qty, clock=deps.clock)
-        logger.info("exit_tick: %s trade %d %s (%s) -> %s", trade.symbol, trade.trade_id, decision.reason, decision.detail, result.status)
-
-        close_net = result.fill_price
-        closed_ok = result.status == "FILLED" and result.filled_qty == trade.qty
-
-        # docs/markgap_plan.md P2. A STRUCTURAL rejection will be rejected
-        # identically on every retry, so "try again next tick" is not a
-        # recovery -- it is the position riding past the horizon. Leg out
-        # instead, short leg first, aborting rather than ever holding a naked
-        # short (see close_legs_individually's protocol).
-        if result.status == "REJECTED" and result.reject_code in STRUCTURAL_CLOSE_REJECTS:
-            legged = await close_legs_individually(deps.broker, closing_plan, trade.qty, clock=deps.clock)
-            logger.warning("exit_tick: %s trade %d combined close rejected (%s) -> legged close %s: %s",
-                            trade.symbol, trade.trade_id, result.reject_code, legged.status, legged.detail)
-            if legged.status == "FILLED":
-                close_net, closed_ok = legged.close_net, True
-            elif legged.status == "STRANDED_LONG_LEG":
-                # The row cannot express half a spread (one row, one fill
-                # price), and rebuilding a 2-leg close for a 1-leg position
-                # would fail forever -- MLEG requires 2-4 legs. Park the trade
-                # so exit_tick stops touching it, and say so loudly.
-                logger.error("exit_tick: %s trade %d STRANDED: %s", trade.symbol, trade.trade_id, legged.detail)
-                pending = await _read_state_value(conn, "legged_close_pending") or {}
-                pending[str(trade.trade_id)] = {
-                    "symbol": trade.symbol, "occ_symbol": legged.stranded_occ_symbol,
-                    "qty": trade.qty, "short_fill": str(legged.short_fill),
-                    "detail": legged.detail, "ts_utc": datetime.now(timezone.utc).isoformat(),
-                }
-                await storage_write.put_state(conn, "legged_close_pending", pending)
-
-        if closed_ok:
-            realized_pnl = (-trade.entry_net_mid - (close_net or Decimal("0"))) * 100 * trade.qty
-            await storage_write.close_trade(
-                conn, trade.trade_id, closed_at=datetime.now(timezone.utc).isoformat(), realized_pnl=realized_pnl,
-                # P2 remediation (docs/audit_report_v2.md §9 item 10): decision.reason
-                # is the ExitReason evaluate_exit returned above -- now persisted so
-                # it's possible to determine from stored state, not price arithmetic,
-                # why a trade closed.
-                exit_reason=decision.reason.value if decision.reason is not None else None,
+        # docs/review_2026-09-04.md P1-2: one position that cannot be
+        # evaluated must not cost the others their exit check. Before this
+        # guard a single raising trade -- a malformed legs_json, a broker
+        # exception on the legged path -- skipped every LATER trade in the
+        # tick, and if the cause was deterministic it did so on every tick
+        # forever, because supervised_loop restarts the loop straight back
+        # into the same first trade. MAX_CONCURRENT_POSITIONS is 6.
+        try:
+            await _exit_one_trade(deps, session, conn, trade, quotes, spots, unwind=unwind)
+        except Exception:  # noqa: BLE001 -- deliberate: see above
+            logger.exception(
+                "exit_tick: %s trade %d raised -- skipping it; every other open "
+                "position still gets its exit check this tick",
+                trade.symbol, trade.trade_id,
             )
-        # PARTIAL_SUSPENDED / UNFILLED_REJECT / REJECTED: closed_at stays
-        # NULL deliberately. walk_to_fill already polls a partial fill up to
-        # PARTIAL_FILL_MAX_POLL_S internally; a close that is STILL not fully
-        # filled after that is a known, flagged gap (no partial-close
-        # accounting in trades' single-row-per-spread schema) rather than a
-        # silently swallowed one -- the next tick will re-evaluate and retry.
+
+
+async def _exit_one_trade(
+    deps: Deps, session: SessionPlan, conn: aiosqlite.Connection, trade: OpenTrade,
+    quotes: dict[str, Any], spots: dict[str, float], *, unwind: bool,
+) -> None:
+    """One trade's exit evaluation and, if it decides to close, the close
+    itself. Split out of exit_tick's loop so the per-trade exception guard
+    there is a single obvious statement rather than a 60-line indented
+    block."""
+    mid = current_net_mid(trade, quotes)
+    if mid is None:
+        logger.warning("exit_tick: %s trade %d missing a live quote -- holding, retry next tick", trade.symbol, trade.trade_id)
+        return
+
+    dte = (trade.expiry - session.session_date).days
+    decision = evaluate_exit(
+        is_credit=STRUCTURE_IS_CREDIT[trade.structure], entry_net_mid=trade.entry_net_mid,
+        current_net_mid=mid, max_profit_per_spread=trade.max_profit_per_spread,
+        dte=dte, unwind_triggered=unwind,
+    )
+    if not decision.should_close:
+        return
+
+    closing_plan = build_closing_plan(trade, quotes, spot=spots.get(trade.symbol, 0.0))
+    if closing_plan is None:
+        logger.warning("exit_tick: %s trade %d decided %s but a quote vanished mid-tick -- retry next tick",
+                        trade.symbol, trade.trade_id, decision.reason)
+        return
+
+    result = await walk_to_fill(deps.broker, closing_plan, trade.qty, clock=deps.clock)
+    logger.info("exit_tick: %s trade %d %s (%s) -> %s", trade.symbol, trade.trade_id, decision.reason, decision.detail, result.status)
+
+    close_net = result.fill_price
+    closed_ok = result.status == "FILLED" and result.filled_qty == trade.qty
+
+    # docs/markgap_plan.md P2. A STRUCTURAL rejection will be rejected
+    # identically on every retry, so "try again next tick" is not a
+    # recovery -- it is the position riding past the horizon. Leg out
+    # instead, short leg first, aborting rather than ever holding a naked
+    # short (see close_legs_individually's protocol).
+    structural_reject = result.status == "REJECTED" and result.reject_code in STRUCTURAL_CLOSE_REJECTS
+
+    # docs/review_2026-09-04.md P0-1. Same argument, one day later: on the
+    # TERMINAL day an unfilled close is not "retry next tick" either, because
+    # there is no next day to retry into. It is the position going to expiry.
+    #
+    # The combined close cannot cross a chain whose quotes violate strike
+    # arbitrage -- walk_cap floors a long vertical's close at
+    # WALK_CAP_CREDIT_SIGN_FLOOR, correctly, since its value is bounded below
+    # by zero -- so on 2026-09-03 trade 8 walked 250 replaces across five
+    # segments and never filled. close_legs_individually CAN cross it: it pays
+    # the short leg's ask and takes the long leg's bid rather than quoting a
+    # net. On that book that is a ~7.39 debit on a 5.00-wide spread, i.e. a
+    # certain loss the sign floor exists to forbid.
+    #
+    # Which is the point: on the terminal day the invariant worth protecting
+    # changes. "Never pay a giveaway" is right on every day the position has a
+    # horizon left. On the last day the alternative to the giveaway is
+    # assignment -- for trade 8, the long leg auto-exercised into SHORT 400
+    # LLY, ~$464k notional on a ~$94k account, held over a weekend. A bounded
+    # certain cost dominates an unbounded overnight exposure, and the scoring
+    # snapshot is already locked, so there is no upside to holding. Strictly
+    # gated on the terminal day so it can never fire while a horizon remains.
+    terminal_day = unwind or dte <= 0
+    unfilled_on_terminal_day = terminal_day and result.status == "UNFILLED_REJECT"
+
+    if structural_reject or unfilled_on_terminal_day:
+        trigger = (
+            f"structurally rejected ({result.reject_code})" if structural_reject
+            else f"unfilled on the terminal day (dte={dte}, unwind={unwind})"
+        )
+        legged = await close_legs_individually(deps.broker, closing_plan, trade.qty, clock=deps.clock)
+        logger.warning("exit_tick: %s trade %d combined close %s -> legged close %s: %s",
+                        trade.symbol, trade.trade_id, trigger, legged.status, legged.detail)
+        if legged.status == "FILLED":
+            close_net, closed_ok = legged.close_net, True
+        elif legged.status == "STRANDED_LONG_LEG":
+            # The row cannot express half a spread (one row, one fill
+            # price), and rebuilding a 2-leg close for a 1-leg position
+            # would fail forever -- MLEG requires 2-4 legs. Park the trade
+            # so exit_tick stops touching it, and say so loudly.
+            logger.error("exit_tick: %s trade %d STRANDED: %s", trade.symbol, trade.trade_id, legged.detail)
+            pending = await _read_state_value(conn, "legged_close_pending") or {}
+            pending[str(trade.trade_id)] = {
+                "symbol": trade.symbol, "occ_symbol": legged.stranded_occ_symbol,
+                "qty": trade.qty, "short_fill": str(legged.short_fill),
+                "detail": legged.detail, "ts_utc": datetime.now(timezone.utc).isoformat(),
+            }
+            await storage_write.put_state(conn, "legged_close_pending", pending)
+
+    if closed_ok:
+        realized_pnl = (-trade.entry_net_mid - (close_net or Decimal("0"))) * 100 * trade.qty
+        await storage_write.close_trade(
+            conn, trade.trade_id, closed_at=datetime.now(timezone.utc).isoformat(), realized_pnl=realized_pnl,
+            # P2 remediation (docs/audit_report_v2.md §9 item 10): decision.reason
+            # is the ExitReason evaluate_exit returned above -- now persisted so
+            # it's possible to determine from stored state, not price arithmetic,
+            # why a trade closed.
+            exit_reason=decision.reason.value if decision.reason is not None else None,
+        )
+    # PARTIAL_SUSPENDED / UNFILLED_REJECT / REJECTED: closed_at stays
+    # NULL deliberately. walk_to_fill already polls a partial fill up to
+    # PARTIAL_FILL_MAX_POLL_S internally; a close that is STILL not fully
+    # filled after that is a known, flagged gap (no partial-close
+    # accounting in trades' single-row-per-spread schema) rather than a
+    # silently swallowed one -- the next tick will re-evaluate and retry.
 
 
 def _build_llm_client(http: httpx.AsyncClient, conn: aiosqlite.Connection, budget: LlmBudget, settings: Settings) -> LlmPort:
@@ -1215,52 +1282,77 @@ async def management_tick(deps: Deps, session: SessionPlan) -> None:
     target, stop loss, 2-DTE time stop, end-of-competition unwind -- all
     deterministic), skipping any trade assignment_tick is still
     reconciling. Makes no LLM call and reads no budget -- the spend
-    ceiling halts new entries only, never management."""
+    ceiling halts new entries only, never management.
+
+    Every path out of here records a health sample, including a raise
+    (docs/review_2026-09-04.md P0-3). The `ok=True` write used to be the LAST
+    statement in the function, so anything that raised in between -- a
+    re-raising `_tracked` around fetch_leg_snapshots, a broker exception on
+    the legged close -- left NO sample for the tick at all. `read.
+    health_history` renders a sample-less bucket as `no_data`, which the
+    uptime strip legitimately treats as "market closed", and supervised_loop
+    then catches the exception, sleeps 30s and restarts. So a repeating
+    deterministic failure during RTH was indistinguishable from a quiet
+    weekend on the one panel the judges look at."""
     async with storage_db.connect(deps.settings.db_path) as conn:
+        ok = False
         try:
-            account = await _tracked(conn, "ALPACA_CLI", "get_account", cli_bridge.get_account())
-            positions = await _tracked(conn, "ALPACA_CLI", "list_positions", cli_bridge.list_positions())
-        except cli_bridge.CliUnavailable as e:
-            logger.error("management_tick: CLI unavailable: %s", e)
+            ok = await _management_tick(deps, session, conn)
+        finally:
+            # If the DB connection itself is what failed, this write fails
+            # too. That is the one case a DB-backed health signal cannot
+            # cover, and it is why the API's own /health is a separate probe.
             await storage_write.insert_health_sample(
-                conn, storage_write.HealthSampleRow(ts_utc=datetime.now(timezone.utc).isoformat(), ok=False)
+                conn, storage_write.HealthSampleRow(ts_utc=datetime.now(timezone.utc).isoformat(), ok=ok)
             )
-            return
 
-        assignment = await assignment_tick(deps, session, conn, positions)
-        if assignment.acted:
-            positions = await _tracked(conn, "ALPACA_CLI", "list_positions", cli_bridge.list_positions())
 
-        spots = await _read_state_value(conn, "spots") or {}
-        exposures = await build_exposures(positions, deps.clients, spots)
-        portfolio = aggregate(exposures, account.equity)
+async def _management_tick(deps: Deps, session: SessionPlan, conn: aiosqlite.Connection) -> bool:
+    """The body of one management tick. Split out so the caller's `finally`
+    writes the health sample on every path out, raise included.
 
-        breached = portfolio.delta_breached or portfolio.vega_breached
-        greeks_row = storage_write.GreeksRow(
-            ts_utc=datetime.now(timezone.utc).isoformat(), equity=account.equity,
-            delta_dollars=portfolio.delta_dollars, vega_dollars=portfolio.vega_dollars,
-            delta_limit=portfolio.delta_limit, vega_limit=portfolio.vega_limit, breached=breached,
-            per_position_json=json.dumps([dataclasses.asdict(e) for e in exposures], default=str),
-        )
-        await storage_write.insert_greeks_snapshot(conn, greeks_row)
-        await storage_write.put_state(conn, "reduce_only", breached)
-        # A spread parked by a stranded leg-by-leg close (docs/markgap_plan.md
-        # P2) is skipped for the same reason an assignment-touched one is:
-        # exit_tick would rebuild a 2-leg closing order for a position that no
-        # longer has two legs, and MLEG requires 2-4. It stays parked until an
-        # operator clears the key.
-        parked = await _read_state_value(conn, "legged_close_pending") or {}
-        skip = frozenset(assignment.trade_ids) | {int(tid) for tid in parked}
-        await exit_tick(deps, session, conn, spots, skip_trade_ids=skip)
-        await storage_write.put_state(conn, "account", {
-            "equity": str(account.equity), "last_equity": str(account.last_equity),
-            "buying_power": str(account.buying_power), "cash": str(account.cash),
-        })
-        await storage_write.put_state(conn, "positions", [p.symbol for p in positions])
-        await _publish_markgap(conn, positions, spots)
-        await storage_write.insert_health_sample(
-            conn, storage_write.HealthSampleRow(ts_utc=datetime.now(timezone.utc).isoformat(), ok=True)
-        )
+    Returns whether the tick was healthy. A CLI outage returns False rather
+    than raising -- it is a real "down" for this tick but an expected,
+    handled condition, and the caller records it identically either way."""
+    try:
+        account = await _tracked(conn, "ALPACA_CLI", "get_account", cli_bridge.get_account())
+        positions = await _tracked(conn, "ALPACA_CLI", "list_positions", cli_bridge.list_positions())
+    except cli_bridge.CliUnavailable as e:
+        logger.error("management_tick: CLI unavailable: %s", e)
+        return False
+
+    assignment = await assignment_tick(deps, session, conn, positions)
+    if assignment.acted:
+        positions = await _tracked(conn, "ALPACA_CLI", "list_positions", cli_bridge.list_positions())
+
+    spots = await _read_state_value(conn, "spots") or {}
+    exposures = await build_exposures(positions, deps.clients, spots)
+    portfolio = aggregate(exposures, account.equity)
+
+    breached = portfolio.delta_breached or portfolio.vega_breached
+    greeks_row = storage_write.GreeksRow(
+        ts_utc=datetime.now(timezone.utc).isoformat(), equity=account.equity,
+        delta_dollars=portfolio.delta_dollars, vega_dollars=portfolio.vega_dollars,
+        delta_limit=portfolio.delta_limit, vega_limit=portfolio.vega_limit, breached=breached,
+        per_position_json=json.dumps([dataclasses.asdict(e) for e in exposures], default=str),
+    )
+    await storage_write.insert_greeks_snapshot(conn, greeks_row)
+    await storage_write.put_state(conn, "reduce_only", breached)
+    # A spread parked by a stranded leg-by-leg close (docs/markgap_plan.md
+    # P2) is skipped for the same reason an assignment-touched one is:
+    # exit_tick would rebuild a 2-leg closing order for a position that no
+    # longer has two legs, and MLEG requires 2-4. It stays parked until an
+    # operator clears the key.
+    parked = await _read_state_value(conn, "legged_close_pending") or {}
+    skip = frozenset(assignment.trade_ids) | {int(tid) for tid in parked}
+    await exit_tick(deps, session, conn, spots, skip_trade_ids=skip)
+    await storage_write.put_state(conn, "account", {
+        "equity": str(account.equity), "last_equity": str(account.last_equity),
+        "buying_power": str(account.buying_power), "cash": str(account.cash),
+    })
+    await storage_write.put_state(conn, "positions", [p.symbol for p in positions])
+    await _publish_markgap(conn, positions, spots)
+    return True
 
 
 def _position_view(pos: cli_bridge.CliPosition) -> markgap.PositionView | None:

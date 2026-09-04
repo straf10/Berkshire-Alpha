@@ -27,6 +27,7 @@ import { LlmUsage } from "@/components/LlmUsage";
 import { ModelEnsemble } from "@/components/ModelEnsemble";
 import { OpenPositionsTable } from "@/components/OpenPositionsTable";
 import { ReasoningFeed } from "@/components/ReasoningFeed";
+import { RiskGateStandDown } from "@/components/RiskGateStandDown";
 import { Reflection } from "@/components/Reflection";
 import { StatusBar } from "@/components/StatusBar";
 import { MarkGapPanel } from "@/components/MarkGapPanel";
@@ -153,7 +154,7 @@ export function Dashboard({
   toolUsage,
   healthHistory,
   health,
-  reflection,
+  reflections,
   markgap,
   frontendLastUpdated,
 }: {
@@ -173,7 +174,7 @@ export function Dashboard({
   toolUsage: ToolUsageResponse | null;
   healthHistory: HealthBucket[] | null;
   health: HealthResponse | null;
-  reflection: ReflectionShape | null;
+  reflections: ReflectionShape[] | null;
   markgap: MarkGapResponse | null;
   frontendLastUpdated: string;
 }) {
@@ -291,6 +292,7 @@ export function Dashboard({
         <TabsContent value="judges">
           <JudgesBrief
             status={status}
+            reflections={reflections}
             account={account}
             config={config}
             decisions={decisions}
@@ -305,6 +307,11 @@ export function Dashboard({
             and system health. No raw rows here; drill-down content
             (decisions, trades) lives in its own tab. */}
         <TabsContent value="overview" className="flex flex-col gap-4">
+          {/* Leads the tab on purpose: AccountVitals below renders equity as
+              the largest number on the site, so without this the first thing
+              a cold visitor reads is the drawdown rather than the constraint
+              that bounded it. Renders nothing when no session was frozen. */}
+          <RiskGateStandDown reflections={reflections} decisions={decisions} />
           <AccountVitals account={account} history={equityHistory} sessionDate={status.session_date} />
           {/* The architecture argument is the second thing a judge sees, not
               something they have to find on a tab called "How it works" -- and
@@ -329,7 +336,7 @@ export function Dashboard({
           {/* The Reflector leads: it is the session's thesis, and the feed
               below it is the evidence. It used to be the last card under a
               fifty-row table. */}
-          <Reflection reflection={reflection} />
+          <Reflection reflection={reflections?.[0] ?? null} />
           {/* Keyed on the filter: ReasoningFeed seeds its facet selection in a
               useState initialiser, so a prop change alone would not re-filter.
               Remounting is the honest fix at this size -- the alternative is

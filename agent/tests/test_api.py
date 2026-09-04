@@ -514,3 +514,80 @@ def test_cors_keeps_the_published_dashboard_when_web_origin_is_stale() -> None:
         published,
         "https://preview.example",
     ]
+
+
+async def test_health_history_hours_is_clamped(tmp_path) -> None:
+    """docs/review_2026-09-04.md P1-4. `hours` was the only unclamped limit on
+    this API, and read.health_history allocates one dict entry per hour BEFORE
+    reading a row. The API shares its process with the trading loop
+    (main.main's asyncio.gather), so an unauthenticated GET could OOM the
+    trader, not just the API."""
+    from agent.api.app import _HEALTH_HISTORY_MAX_HOURS
+    from agent.storage import read
+
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+
+    async with storage_db.connect(db_path) as conn:
+        for hours, expected in ((90, 90), (10**9, _HEALTH_HISTORY_MAX_HOURS), (0, 1), (-5, 1)):
+            buckets = await read.health_history(conn, hours)
+            assert len(buckets) == expected, f"hours={hours} produced {len(buckets)} buckets"
+
+
+def test_every_limit_taking_route_clamps_it() -> None:
+    """The clamping convention, pinned. Any route that accepts a caller-chosen
+    size must bound it before it reaches storage.read -- a new endpoint that
+    forgets is exactly how `hours` slipped through."""
+    src = (REPO_ROOT / "agent" / "api" / "app.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
+            continue
+        sized = {a.arg for a in node.args.args + node.args.kwonlyargs} & {"limit", "hours"}
+        if not sized:
+            continue
+        body = ast.dump(node)
+        for arg in sized:
+            assert "'min'" in body, f"{node.name} takes `{arg}` without a min() clamp"
+
+
+async def test_config_publishes_a_revision_and_no_secrets(monkeypatch) -> None:
+    """docs/review_2026-09-04.md §D. /config now reads three platform-injected
+    git-metadata env vars so a deploy is verifiable when the change published
+    no new constant. That is the ONLY environment this endpoint may touch --
+    its whole safety property is that no credential can leak through it."""
+    from agent import config as agent_config
+    from agent.api.app import agent_settings
+
+    monkeypatch.setenv("APCA_API_SECRET_KEY", "super-secret-value")
+    monkeypatch.setenv("FEATHERLESS_API_KEY", "another-secret-value")
+    monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "abc123def")
+
+    payload = await agent_settings()
+
+    assert payload["revision"] == "abc123def"
+    blob = repr(payload)
+    assert "super-secret-value" not in blob
+    assert "another-secret-value" not in blob
+
+    # Absent metadata must read as None, not crash or invent one -- the
+    # behaviour flags below it are the fallback witness.
+    for name in agent_config._REVISION_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    assert (await agent_settings())["revision"] is None
+
+
+async def test_config_publishes_the_exit_path_behaviour_flags() -> None:
+    """These are how a deploy of the exit-path bundle is confirmed from
+    outside when the platform injects no commit sha. Each must be True in an
+    image that carries the code, so they are asserted, not merely present."""
+    from agent.api.app import agent_settings
+
+    guardrails = (await agent_settings())["execution_guardrails"]
+    for flag in (
+        "terminal_day_legged_close",
+        "walk_terminates_on_external_cancel",
+        "held_legs_priced_without_data_filters",
+    ):
+        assert guardrails[flag] is True, flag

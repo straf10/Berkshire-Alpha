@@ -288,7 +288,7 @@ export function ReasoningFeed({
             <div className="mt-4 grid gap-4 md:grid-cols-2">
               <div>
                 <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Reject distribution
+                  Risk Gate Interventions
                 </h3>
                 <RejectHistogram
                   bars={rejects}

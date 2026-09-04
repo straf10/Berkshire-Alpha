@@ -24,7 +24,7 @@ export function LlmUsage({
     return (
       <SectionEmpty
         icon={Coins}
-        title="LLM usage & cost"
+        title="Inference Cost Basis"
         reason="No LLM calls recorded yet on this deploy. Every model call is metered per node and per model as it happens — the first entry scan of the session fills this in."
       />
     );
@@ -53,18 +53,22 @@ export function LlmUsage({
       <CardHeader className="pb-2">
         <CardTitle className="flex items-center gap-1.5 text-subheadline font-semibold uppercase tracking-wide text-muted-foreground">
           <Coins className="size-3.5" />
-          LLM usage &amp; cost
+          Inference Cost Basis
         </CardTitle>
       </CardHeader>
       <CardContent>
         <div className="mb-2 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
-          <StatTile label="Total cost" value={formatCost(totals.cost_usd)} />
-          {ordersSent > 0 && (
-            <StatTile label="Per order sent" value={formatCost(totals.cost_usd / ordersSent)} />
-          )}
+          {/* Unit cost first, lifetime total after it. A headline reading
+              "$0.04 total" is read as "they barely used it"; the same spend
+              expressed per deliberated candidate is read as an operating
+              cost that scales, which is what it is. */}
           {deliberated > 0 && (
             <StatTile label="Per deliberated candidate" value={formatCost(totals.cost_usd / deliberated)} />
           )}
+          {ordersSent > 0 && (
+            <StatTile label="Per order sent" value={formatCost(totals.cost_usd / ordersSent)} />
+          )}
+          <StatTile label="Total cost" value={formatCost(totals.cost_usd)} />
           <StatTile label="API calls" value={totals.calls.toLocaleString()} />
           <StatTile label="Prompt tokens" value={totals.prompt_tokens.toLocaleString()} />
           <StatTile label="Completion tokens" value={totals.completion_tokens.toLocaleString()} />

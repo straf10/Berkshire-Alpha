@@ -212,6 +212,38 @@ async def _walk(
                 state.reject_code or RejectCode.UNKNOWN, tuple(events),
             )
 
+        if state.status == OrderStatus.CANCELED:
+            # Cancelled or EXPIRED out from under us -- an operator's `alpaca
+            # order cancel-all`, or the closing bell on a DAY order
+            # (ALPACA_STATUS_MAP folds `expired` into CANCELED). The order is
+            # gone, so every remaining step would `replace_order` a dead id:
+            # AlpacaBroker.replace_order catches the APIError and re-fetches
+            # (deliberately, so a still-settling order is never abandoned),
+            # returning CANCELED again -- and without this branch the walk
+            # falls through to "NEW/ACCEPTED -> replace" and burns the rest of
+            # its cap that way. Measured on the LLY close: 42 futile steps at
+            # WALK_REST_S each, ~10 minutes during which management_tick never
+            # returns (no health sample, no markgap publish, no status
+            # refresh), ending in `cancel_order` raising on an
+            # already-cancelled order and reporting REJECTED/UNKNOWN instead
+            # of the truthful UNFILLED_REJECT.
+            #
+            # filled_qty is carried through, not zeroed: an order can be
+            # cancelled AFTER a partial fill, and that partial is real risk
+            # that must still reach update_trade_result.
+            logger.warning(
+                "walk: order %s is %s at step %d (cancelled externally, or the "
+                "session ended) -- terminating the walk instead of replacing a dead order",
+                order_id, state.status, step,
+            )
+            events.append(
+                WalkEvent(ts=clock.now(), step=step, action="CANCEL", order_id=order_id, limit=limit, status=state.status)
+            )
+            return WalkResult(
+                "UNFILLED_REJECT", order_id, limit, None, state.filled_qty, step,
+                RejectCode.UNFILLED_REJECT, tuple(events),
+            )
+
         # NEW / ACCEPTED -> replace one step further, unless the cap is reached.
         if limit + WALK_STEP > cap:
             await broker.cancel_order(order_id)
@@ -326,10 +358,36 @@ async def close_legs_individually(
 
     short_leg, long_leg = buy_legs[0], sell_legs[0]
 
-    short_state = await _submit_leg_and_wait(
-        broker, symbol=short_leg.occ_symbol, qty=qty, side="BUY",
-        limit=_quantize_cent(Decimal(str(short_leg.ask))), intent=Intent.BUY_TO_CLOSE, clock=clock,
-    )
+    # Each submit is wrapped so a RAISE lands on the same result the
+    # corresponding REJECTION does (docs/review_2026-09-04.md P1-2). Without
+    # this the function never returns, so exit_tick's caller never writes
+    # `legged_close_pending` -- the state key whose entire purpose is to flag
+    # exactly the half-closed spread a mid-protocol failure produces.
+    try:
+        short_state = await _submit_leg_and_wait(
+            broker, symbol=short_leg.occ_symbol, qty=qty, side="BUY",
+            limit=_quantize_cent(Decimal(str(short_leg.ask))), intent=Intent.BUY_TO_CLOSE, clock=clock,
+        )
+    except Exception:  # noqa: BLE001 -- same contract walk_to_fill holds
+        # The short order may in fact be live or filled at the broker (the
+        # raise can come from the poll, not the submit). Reporting
+        # ABORTED_SHORT_LEG is still the safe direction: we leave the long leg
+        # alone, so the worst case is a lone LONG option -- defined risk, no
+        # obligation -- which the next tick's detect_assignments surfaces as
+        # ORPHAN_LEG_UNHEDGED. Buying back a short can never create a naked
+        # short, which is why this ambiguity is tolerable here and would not
+        # be on the other leg.
+        logger.exception(
+            "legged close: short leg %s raised before a fill could be confirmed -- "
+            "long leg untouched, the order may still be live at the broker",
+            short_leg.occ_symbol,
+        )
+        return LeggedCloseResult(
+            "ABORTED_SHORT_LEG", None, None, None, None,
+            f"short leg {short_leg.occ_symbol} raised before a fill could be confirmed "
+            "-- long leg untouched, order may still be live at the broker",
+        )
+
     if short_state.status != OrderStatus.FILLED or short_state.filled_qty != qty:
         # Rule 2. The spread is intact and still defined-risk; the next tick
         # re-evaluates from scratch.
@@ -339,12 +397,28 @@ async def close_legs_individually(
             f"({short_state.status}, {short_state.filled_qty}/{qty}) -- long leg untouched",
         )
 
-    long_state = await _submit_leg_and_wait(
-        broker, symbol=long_leg.occ_symbol, qty=qty, side="SELL",
-        limit=max(_quantize_cent(Decimal(str(long_leg.bid))), Decimal("0.01")),
-        intent=Intent.SELL_TO_CLOSE, clock=clock,
-    )
+    # Read before the long-leg submit so the STRANDED result can carry it even
+    # when that submit raises.
     short_fill = short_state.fill_avg_price or Decimal("0")
+
+    try:
+        long_state = await _submit_leg_and_wait(
+            broker, symbol=long_leg.occ_symbol, qty=qty, side="SELL",
+            limit=max(_quantize_cent(Decimal(str(long_leg.bid))), Decimal("0.01")),
+            intent=Intent.SELL_TO_CLOSE, clock=clock,
+        )
+    except Exception:  # noqa: BLE001 -- see above
+        logger.exception(
+            "legged close: long leg %s raised after the short leg closed at %s -- "
+            "a lone LONG option remains", long_leg.occ_symbol, short_fill,
+        )
+        return LeggedCloseResult(
+            "STRANDED_LONG_LEG", None, short_fill, None, long_leg.occ_symbol,
+            f"short leg closed at {short_fill} but the long leg {long_leg.occ_symbol} submit "
+            "raised -- a lone LONG option remains, defined risk, no obligation; "
+            "operator must close it",
+        )
+
     if long_state.status != OrderStatus.FILLED or long_state.filled_qty != qty:
         return LeggedCloseResult(
             "STRANDED_LONG_LEG", None, short_fill, None, long_leg.occ_symbol,

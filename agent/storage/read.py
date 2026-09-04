@@ -18,6 +18,10 @@ from agent.tools.walk_cap import walk_cap
 
 _CLOSING_INTENTS = {"BUY_TO_CLOSE", "SELL_TO_CLOSE"}
 
+# One week. health_history allocates a dict entry per hour before reading any
+# row, so this bounds the allocation regardless of caller.
+_MAX_HISTORY_HOURS = 168
+
 
 def _walk_cap_for_trade(plan_json: str | None) -> Decimal | None:
     """The cap the live walk actually enforced for this trade's plan,
@@ -352,7 +356,13 @@ async def health_history(conn: aiosqlite.Connection, hours: int = 90) -> list[di
 
     Buckets in Python rather than SQL to stay backend-agnostic -- SQLite's
     strftime and Postgres's date_trunc aren't the same dialect, and at most
-    a few thousand rows for a 90-hour window is cheap to bucket in memory."""
+    a few thousand rows for a 90-hour window is cheap to bucket in memory.
+
+    `hours` is clamped here as well as at the route (docs/review_2026-09-04.md
+    P1-4): the dict below allocates one entry per hour before a single row is
+    read, so the bound belongs with the allocation and not only with the
+    caller that happens to be public today."""
+    hours = min(max(hours, 1), _MAX_HISTORY_HOURS)
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
     cur = await conn.execute(
         "SELECT ts_utc, ok FROM health_samples WHERE ts_utc >= ? ORDER BY ts_utc ASC", (cutoff,)

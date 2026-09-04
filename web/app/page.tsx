@@ -107,7 +107,7 @@ export default async function Page({
     fetchJson<ToolUsageResponse>(`${base}/tools/usage`),
     fetchJson<HealthBucket[]>(`${base}/health/history`),
     fetchJson<HealthResponse>(`${base}/health`),
-    fetchJson<ReflectionShape[]>(`${base}/reflections?limit=1`),
+    fetchJson<ReflectionShape[]>(`${base}/reflections?limit=10`),
     fetchJson<MarkGapResponse>(`${base}/markgap`),
   ]);
 
@@ -129,7 +129,7 @@ export default async function Page({
       toolUsage={toolUsage}
       healthHistory={healthHistory}
       health={health}
-      reflection={reflections?.[0] ?? null}
+      reflections={reflections}
       markgap={markgap}
       frontendLastUpdated={new Date().toISOString()}
     />
