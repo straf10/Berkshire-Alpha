@@ -2613,3 +2613,76 @@ async def test_one_raising_trade_does_not_block_the_others(tmp_path, monkeypatch
     await main_module.management_tick(deps, session)
 
     assert len(seen) == 2, f"the second trade never got its exit check: {seen}"
+
+
+async def _health_samples(db_path: str) -> list[int]:
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT ok FROM health_samples ORDER BY id")
+        return [row[0] for row in await cur.fetchall()]
+
+
+async def test_management_tick_records_a_healthy_sample(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    _patch_cli(monkeypatch, positions=[])
+
+    async def no_snapshots(clients, occ_symbols):
+        return {}
+
+    monkeypatch.setattr(main_module, "fetch_leg_snapshots", no_snapshots)
+    clients = FakeClients()
+    deps = _deps(db_path, clients, MockBroker([]), _FastClock(datetime(2026, 8, 31, 14, 0, tzinfo=timezone.utc)))
+
+    await main_module.management_tick(deps, await main_module.current_or_next_session(clients))
+
+    assert await _health_samples(db_path) == [1]
+
+
+async def test_a_raising_management_tick_records_a_DOWN_sample(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """docs/review_2026-09-04.md P0-3. The ok=True write used to be the LAST
+    statement in management_tick, so anything raising in between left NO
+    sample at all -- and read.health_history renders a sample-less bucket as
+    `no_data`, which the uptime strip legitimately treats as "market closed".
+    supervised_loop then swallows the exception, sleeps 30s and restarts, so a
+    repeating deterministic failure during RTH was indistinguishable from a
+    quiet weekend on the one panel the judges look at."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    _patch_cli(monkeypatch, positions=[])
+
+    # exit_tick returns early with an empty book, so it needs one open
+    # position to get as far as the failing call.
+    async with storage_db.connect(db_path) as conn:
+        await _seed_long_vertical(conn, "LLY260904P01160000", "LLY260904P01165000")
+
+    async def boom(*a, **k):
+        raise RuntimeError("the market data endpoint is down")
+
+    monkeypatch.setattr(main_module, "fetch_leg_snapshots", boom)
+    clients = FakeClients()
+    deps = _deps(db_path, clients, MockBroker([]), _FastClock(datetime(2026, 8, 31, 14, 0, tzinfo=timezone.utc)))
+    session = await main_module.current_or_next_session(clients)
+
+    with pytest.raises(RuntimeError):
+        await main_module.management_tick(deps, session)
+
+    assert await _health_samples(db_path) == [0], "a failed tick must record itself as DOWN"
+
+
+async def test_a_cli_outage_records_a_DOWN_sample(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pre-existing explicit ok=False path, preserved through the split:
+    a CLI outage returns False rather than raising, and the caller's `finally`
+    records it identically to a raise."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+
+    async def dead_cli():
+        raise cli_bridge.CliUnavailable("exec: alpaca: not found")
+
+    monkeypatch.setattr(cli_bridge, "get_account", dead_cli)
+    clients = FakeClients()
+    deps = _deps(db_path, clients, MockBroker([]), _FastClock(datetime(2026, 8, 31, 14, 0, tzinfo=timezone.utc)))
+
+    await main_module.management_tick(deps, await main_module.current_or_next_session(clients))
+
+    assert await _health_samples(db_path) == [0]

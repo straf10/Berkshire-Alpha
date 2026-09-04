@@ -1282,52 +1282,77 @@ async def management_tick(deps: Deps, session: SessionPlan) -> None:
     target, stop loss, 2-DTE time stop, end-of-competition unwind -- all
     deterministic), skipping any trade assignment_tick is still
     reconciling. Makes no LLM call and reads no budget -- the spend
-    ceiling halts new entries only, never management."""
+    ceiling halts new entries only, never management.
+
+    Every path out of here records a health sample, including a raise
+    (docs/review_2026-09-04.md P0-3). The `ok=True` write used to be the LAST
+    statement in the function, so anything that raised in between -- a
+    re-raising `_tracked` around fetch_leg_snapshots, a broker exception on
+    the legged close -- left NO sample for the tick at all. `read.
+    health_history` renders a sample-less bucket as `no_data`, which the
+    uptime strip legitimately treats as "market closed", and supervised_loop
+    then catches the exception, sleeps 30s and restarts. So a repeating
+    deterministic failure during RTH was indistinguishable from a quiet
+    weekend on the one panel the judges look at."""
     async with storage_db.connect(deps.settings.db_path) as conn:
+        ok = False
         try:
-            account = await _tracked(conn, "ALPACA_CLI", "get_account", cli_bridge.get_account())
-            positions = await _tracked(conn, "ALPACA_CLI", "list_positions", cli_bridge.list_positions())
-        except cli_bridge.CliUnavailable as e:
-            logger.error("management_tick: CLI unavailable: %s", e)
+            ok = await _management_tick(deps, session, conn)
+        finally:
+            # If the DB connection itself is what failed, this write fails
+            # too. That is the one case a DB-backed health signal cannot
+            # cover, and it is why the API's own /health is a separate probe.
             await storage_write.insert_health_sample(
-                conn, storage_write.HealthSampleRow(ts_utc=datetime.now(timezone.utc).isoformat(), ok=False)
+                conn, storage_write.HealthSampleRow(ts_utc=datetime.now(timezone.utc).isoformat(), ok=ok)
             )
-            return
 
-        assignment = await assignment_tick(deps, session, conn, positions)
-        if assignment.acted:
-            positions = await _tracked(conn, "ALPACA_CLI", "list_positions", cli_bridge.list_positions())
 
-        spots = await _read_state_value(conn, "spots") or {}
-        exposures = await build_exposures(positions, deps.clients, spots)
-        portfolio = aggregate(exposures, account.equity)
+async def _management_tick(deps: Deps, session: SessionPlan, conn: aiosqlite.Connection) -> bool:
+    """The body of one management tick. Split out so the caller's `finally`
+    writes the health sample on every path out, raise included.
 
-        breached = portfolio.delta_breached or portfolio.vega_breached
-        greeks_row = storage_write.GreeksRow(
-            ts_utc=datetime.now(timezone.utc).isoformat(), equity=account.equity,
-            delta_dollars=portfolio.delta_dollars, vega_dollars=portfolio.vega_dollars,
-            delta_limit=portfolio.delta_limit, vega_limit=portfolio.vega_limit, breached=breached,
-            per_position_json=json.dumps([dataclasses.asdict(e) for e in exposures], default=str),
-        )
-        await storage_write.insert_greeks_snapshot(conn, greeks_row)
-        await storage_write.put_state(conn, "reduce_only", breached)
-        # A spread parked by a stranded leg-by-leg close (docs/markgap_plan.md
-        # P2) is skipped for the same reason an assignment-touched one is:
-        # exit_tick would rebuild a 2-leg closing order for a position that no
-        # longer has two legs, and MLEG requires 2-4. It stays parked until an
-        # operator clears the key.
-        parked = await _read_state_value(conn, "legged_close_pending") or {}
-        skip = frozenset(assignment.trade_ids) | {int(tid) for tid in parked}
-        await exit_tick(deps, session, conn, spots, skip_trade_ids=skip)
-        await storage_write.put_state(conn, "account", {
-            "equity": str(account.equity), "last_equity": str(account.last_equity),
-            "buying_power": str(account.buying_power), "cash": str(account.cash),
-        })
-        await storage_write.put_state(conn, "positions", [p.symbol for p in positions])
-        await _publish_markgap(conn, positions, spots)
-        await storage_write.insert_health_sample(
-            conn, storage_write.HealthSampleRow(ts_utc=datetime.now(timezone.utc).isoformat(), ok=True)
-        )
+    Returns whether the tick was healthy. A CLI outage returns False rather
+    than raising -- it is a real "down" for this tick but an expected,
+    handled condition, and the caller records it identically either way."""
+    try:
+        account = await _tracked(conn, "ALPACA_CLI", "get_account", cli_bridge.get_account())
+        positions = await _tracked(conn, "ALPACA_CLI", "list_positions", cli_bridge.list_positions())
+    except cli_bridge.CliUnavailable as e:
+        logger.error("management_tick: CLI unavailable: %s", e)
+        return False
+
+    assignment = await assignment_tick(deps, session, conn, positions)
+    if assignment.acted:
+        positions = await _tracked(conn, "ALPACA_CLI", "list_positions", cli_bridge.list_positions())
+
+    spots = await _read_state_value(conn, "spots") or {}
+    exposures = await build_exposures(positions, deps.clients, spots)
+    portfolio = aggregate(exposures, account.equity)
+
+    breached = portfolio.delta_breached or portfolio.vega_breached
+    greeks_row = storage_write.GreeksRow(
+        ts_utc=datetime.now(timezone.utc).isoformat(), equity=account.equity,
+        delta_dollars=portfolio.delta_dollars, vega_dollars=portfolio.vega_dollars,
+        delta_limit=portfolio.delta_limit, vega_limit=portfolio.vega_limit, breached=breached,
+        per_position_json=json.dumps([dataclasses.asdict(e) for e in exposures], default=str),
+    )
+    await storage_write.insert_greeks_snapshot(conn, greeks_row)
+    await storage_write.put_state(conn, "reduce_only", breached)
+    # A spread parked by a stranded leg-by-leg close (docs/markgap_plan.md
+    # P2) is skipped for the same reason an assignment-touched one is:
+    # exit_tick would rebuild a 2-leg closing order for a position that no
+    # longer has two legs, and MLEG requires 2-4. It stays parked until an
+    # operator clears the key.
+    parked = await _read_state_value(conn, "legged_close_pending") or {}
+    skip = frozenset(assignment.trade_ids) | {int(tid) for tid in parked}
+    await exit_tick(deps, session, conn, spots, skip_trade_ids=skip)
+    await storage_write.put_state(conn, "account", {
+        "equity": str(account.equity), "last_equity": str(account.last_equity),
+        "buying_power": str(account.buying_power), "cash": str(account.cash),
+    })
+    await storage_write.put_state(conn, "positions", [p.symbol for p in positions])
+    await _publish_markgap(conn, positions, spots)
+    return True
 
 
 def _position_view(pos: cli_bridge.CliPosition) -> markgap.PositionView | None:
