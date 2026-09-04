@@ -310,7 +310,7 @@ export function AgentTheatre({
             {speaking.role}
           </>
         ) : (
-          "Eight personas speak; four model families across three vendors. Everything else on this cycle is arithmetic."
+          "Eight personas speak, and each prints the model it actually ran on. Everything else on this cycle is arithmetic."
         )}
       </p>
     </div>
