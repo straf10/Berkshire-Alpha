@@ -24,7 +24,7 @@ _settings = load_settings()
 app = FastAPI(title="Options Alpha Agent", docs_url="/docs")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[_settings.web_origin] if _settings.web_origin else [],
+    allow_origins=agent_config.cors_origins(_settings.web_origin),
     allow_methods=["GET"],
     allow_headers=["*"],
 )

@@ -493,3 +493,24 @@ async def test_markgap_endpoint_empty_before_first_publish(tmp_path) -> None:
 
     async with storage_db.connect(db_path) as conn:
         assert await api_app.markgap(conn=conn) == {}
+
+
+def test_cors_keeps_the_published_dashboard_when_web_origin_is_stale() -> None:
+    """A renamed Vercel project must not be able to silently un-CORS the site.
+
+    This has happened twice in production. The symptom is deceptive: every
+    endpoint still answers 200 and /health looks healthy, because only the
+    browser enforces the missing header -- so the failure shows up as an empty
+    replay panel on the landing page and nowhere else.
+    """
+    from agent.config import WEB_ORIGINS_DEFAULT, cors_origins
+
+    published = WEB_ORIGINS_DEFAULT[0]
+
+    assert cors_origins("") == [published]
+    assert published in cors_origins("https://a-previous-name.vercel.app")
+    # Comma-separated, whitespace- and trailing-slash-tolerant, no duplicates.
+    assert cors_origins(f" {published}/ , https://preview.example ") == [
+        published,
+        "https://preview.example",
+    ]
