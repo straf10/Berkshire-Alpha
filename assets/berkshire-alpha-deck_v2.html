@@ -255,6 +255,36 @@ h2.wide{max-width:26ch;font-size:40px}
   .slide{overflow:hidden !important}
   #stage > .slide:last-child{page-break-after:auto !important;break-after:auto !important}
 }
+
+/* ── print performance ───────────────────────────────────────────────────
+   Measured 4 Sep: the exported PDF took 4.4 s/page to rasterise at 150 dpi —
+   about 5x the per-pixel cost of an ordinary print-to-PDF, and slow in every
+   reader, because it is a property of the file rather than of the viewer.
+   The cause was alpha compositing, not text: render time tracked page AREA
+   exactly (linear from 25 to 300 dpi, no fixed cost) and stayed flat across
+   pages whose glyph count varied 2.3x. Ten slides carried 117 /Transparency
+   groups, 234 /Group, 132 /Shading and 72 /SMask; each one makes the reader
+   allocate an offscreen buffer and composite it back down.
+
+   Nearly all of it was .slide::before — three overlapping full-page radial
+   washes, each fading to `transparent`. They cannot simply be made opaque:
+   the first layer would paint white over the other two. Collapsing them to
+   ONE opaque wash takes the deck from 41.0 s to 6.6 s for ten pages (6.2x)
+   for a mean pixel delta of 1.5/255 against the old export. The rest — the
+   backdrop blur, the drop shadows, the contrast filter on the watermark —
+   is worth ~0.8 MB of file size but almost no time.
+
+   Screen rendering is untouched; every rule here is print-only. */
+@media print{
+  .glass{backdrop-filter:none!important;-webkit-backdrop-filter:none!important;box-shadow:none!important}
+  .s1-avatar{box-shadow:none!important}
+  #notes{box-shadow:none!important}
+  .mark{filter:none!important}
+  .slide::before{
+    background:radial-gradient(900px 900px at 4% -8%,
+      color-mix(in srgb, var(--primary) 7%, #FFFFFF) 0%, #FFFFFF 62%)!important;
+  }
+}
 </style>
 </head>
 <body>
