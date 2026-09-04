@@ -212,6 +212,38 @@ async def _walk(
                 state.reject_code or RejectCode.UNKNOWN, tuple(events),
             )
 
+        if state.status == OrderStatus.CANCELED:
+            # Cancelled or EXPIRED out from under us -- an operator's `alpaca
+            # order cancel-all`, or the closing bell on a DAY order
+            # (ALPACA_STATUS_MAP folds `expired` into CANCELED). The order is
+            # gone, so every remaining step would `replace_order` a dead id:
+            # AlpacaBroker.replace_order catches the APIError and re-fetches
+            # (deliberately, so a still-settling order is never abandoned),
+            # returning CANCELED again -- and without this branch the walk
+            # falls through to "NEW/ACCEPTED -> replace" and burns the rest of
+            # its cap that way. Measured on the LLY close: 42 futile steps at
+            # WALK_REST_S each, ~10 minutes during which management_tick never
+            # returns (no health sample, no markgap publish, no status
+            # refresh), ending in `cancel_order` raising on an
+            # already-cancelled order and reporting REJECTED/UNKNOWN instead
+            # of the truthful UNFILLED_REJECT.
+            #
+            # filled_qty is carried through, not zeroed: an order can be
+            # cancelled AFTER a partial fill, and that partial is real risk
+            # that must still reach update_trade_result.
+            logger.warning(
+                "walk: order %s is %s at step %d (cancelled externally, or the "
+                "session ended) -- terminating the walk instead of replacing a dead order",
+                order_id, state.status, step,
+            )
+            events.append(
+                WalkEvent(ts=clock.now(), step=step, action="CANCEL", order_id=order_id, limit=limit, status=state.status)
+            )
+            return WalkResult(
+                "UNFILLED_REJECT", order_id, limit, None, state.filled_qty, step,
+                RejectCode.UNFILLED_REJECT, tuple(events),
+            )
+
         # NEW / ACCEPTED -> replace one step further, unless the cap is reached.
         if limit + WALK_STEP > cap:
             await broker.cancel_order(order_id)

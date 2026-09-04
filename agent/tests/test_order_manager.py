@@ -453,3 +453,37 @@ async def test_failed_cancel_of_a_stranded_order_still_returns_rejected() -> Non
 
     assert result.status == "REJECTED"
     assert result.order_id == "o1"
+
+
+async def test_externally_cancelled_order_terminates_the_walk() -> None:
+    """docs/review_2026-09-04.md P1-1. An operator's `alpaca order cancel-all`
+    -- step 1 of scripts/flatten_lly.sh -- or the closing bell on a DAY order
+    leaves the poll returning CANCELED. Before this branch existed the walk
+    fell through to "NEW/ACCEPTED -> replace" and spent every remaining step
+    replacing a dead order id."""
+    broker = MockBroker([
+        _state("o1", OrderStatus.NEW),        # submit
+        _state("o1", OrderStatus.CANCELED),   # first poll: cancelled under us
+    ])
+    result = await walk_to_fill(broker, _credit_plan("-0.90", "-0.75"), 6, clock=FakeClock())
+
+    assert result.status == "UNFILLED_REJECT"
+    assert result.reject_code == RejectCode.UNFILLED_REJECT
+    assert result.steps == 0
+    assert broker.replaced == [], "replaced an order that no longer exists"
+
+
+async def test_expired_order_terminates_the_walk_with_its_partial_fill() -> None:
+    """`expired` folds into CANCELED via ALPACA_STATUS_MAP, which is what the
+    closing bell does to a DAY order mid-walk (the live 2026-09-03 segment 5).
+    A partial fill booked before the cancel is real risk and must survive into
+    the result, not be zeroed."""
+    broker = MockBroker([
+        _state("o1", OrderStatus.NEW),
+        _state("o1", OrderStatus.CANCELED, filled_qty=2),
+    ])
+    result = await walk_to_fill(broker, _credit_plan("-0.90", "-0.75"), 6, clock=FakeClock())
+
+    assert result.status == "UNFILLED_REJECT"
+    assert result.filled_qty == 2
+    assert broker.replaced == []
