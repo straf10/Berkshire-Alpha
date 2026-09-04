@@ -282,3 +282,18 @@
     box-shadow: var(--glass-shadow);
   }
 }
+
+/* The Bull <-> Bear connector in <AgentTheatre>. A marching dash rather than
+   a moving dot: it reads as "these two are exchanging turns" without adding
+   an animation library for one line. */
+@keyframes dash {
+  to {
+    stroke-dashoffset: -7;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-\[dash_0\.6s_linear_infinite\] {
+    animation: none;
+  }
+}

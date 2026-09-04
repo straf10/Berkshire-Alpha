@@ -1,5 +1,5 @@
 import { formatDayMonth, formatTimeUtc, safeJsonParse } from "@/lib/format";
-import { FLOW_ORDER, STAGES, type StageKey } from "@/lib/pipeline";
+import { FLOW_ORDER, STAGES, personaForNode, type PersonaId, type StageKey } from "@/lib/pipeline";
 import type { DecisionChain, LlmCall, QuantSnapshot, Trade, WalkEvent } from "@/lib/types";
 
 // One component, two sources.
@@ -17,6 +17,13 @@ export interface StageEvent {
   kind: "start" | "output" | "skip" | "complete";
   /** Who is speaking: "Bear · round 1", "Risk — conservative", "Gate". */
   speaker: string;
+  /**
+   * The persona behind `speaker`, where there is one. `speaker` is a formatted
+   * display string and must stay free to change; this is the stable key the
+   * cast view matches avatars on. Absent for deterministic stages, which have
+   * no speaker -- that is a fact about the pipeline, not a gap.
+   */
+  persona?: PersonaId;
   headline: string;
   /** The model's real text, or the real value. Never invented. */
   body?: string;
@@ -186,6 +193,7 @@ export function replaySource(
       stage: "analysts",
       kind: "output",
       speaker: `${call.node === "QUANT" ? "Quant" : "News"} analyst`,
+      persona: personaForNode(call.node),
       headline: out?.ok === 0 ? (out.error ?? "failed") : "analysed",
       body: parsed?.analyst_summary ?? parsed?.iv_rv_interpretation,
       meta: callMeta(call),
@@ -208,6 +216,7 @@ export function replaySource(
       stage: "debate",
       kind: "output",
       speaker: `${persona === "BULL" ? "Bull" : "Bear"} · round ${turn?.round ?? cursor[persona]}`,
+      persona,
       headline: turn?.doc_action ?? "spoke",
       body: turn?.rebuttal_argument,
       meta: callMeta(call),
@@ -237,6 +246,7 @@ export function replaySource(
       stage: "trader",
       kind: "output",
       speaker: "Trader",
+      persona: "TRADER",
       headline: proposal?.strategy_name ?? "proposed",
       body: proposal?.reasoning,
       meta: callMeta(call),
@@ -252,6 +262,7 @@ export function replaySource(
       stage: "risk",
       kind: "output",
       speaker: `Risk — ${persona.toLowerCase()}`,
+      persona: personaForNode(call.node),
       headline: vote?.decision ?? "voted",
       body: vote?.manager_notes,
       meta: callMeta(call),
