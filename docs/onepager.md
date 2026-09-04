@@ -2,7 +2,7 @@
 
 **Judged account:** `bc8bc895-ec1e-4b9d-9f69-413432024e5e` (`PA3UM9X4MN5X`) · paper,
 $100,000 start, Options Level 3, never manually traded.
-**Repo:** MIT · **Dashboard:** autonomous-debate-trading-agent.vercel.app
+**Repo:** MIT · **Dashboard:** berkshire-alpha.vercel.app
 
 ---
 
