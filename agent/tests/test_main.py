@@ -2438,3 +2438,178 @@ async def test_management_tick_publishes_markgap_on_a_flat_book(
     assert published["spreads"] == []
     assert published["omitted"] == 0
     assert published["computed_at"]
+
+
+async def _seed_long_vertical(conn, short_occ: str, long_occ: str) -> int:
+    """A BEAR_PUT_SPREAD (debit) open trade -- the shape of live trade 8. Its
+    closing plan takes walk_cap's `is_closing and not structure_is_credit`
+    branch, i.e. the one floored at WALK_CAP_CREDIT_SIGN_FLOOR."""
+    return await _seed_open_trade(
+        conn, symbol="LLY", structure="BEAR_PUT_SPREAD", filled_qty=4,
+        entry_limit=Decimal("1.94"), max_profit_per_spread=Decimal("306"),
+        legs=[
+            _closing_leg_dict(long_occ, 1165.0, "BUY", "BUY_TO_OPEN"),
+            _closing_leg_dict(short_occ, 1160.0, "SELL", "SELL_TO_OPEN"),
+        ],
+    )
+
+
+def _inverted_book(short_occ: str, long_occ: str):
+    """The live 2026-09-03 quotes: the long 1165P bids BELOW the short 1160P,
+    which the strikes forbid. Closing net_mid is a credit and net_natural a
+    debit, so walk_cap's floor terminates the walk on its first cap test --
+    the compressed form of a book no net-credit limit could cross."""
+    from agent.schemas.market import OptionQuote as _OptionQuote
+
+    async def fake_snapshots(clients, occ_symbols):
+        return {
+            long_occ: _OptionQuote(occ_symbol=long_occ, underlying="LLY", expiry=date(2026, 9, 4),
+                                   strike=1165.0, right="P", bid=2.72, ask=17.19, delta=-0.60,
+                                   gamma=0.01, theta=-0.01, vega=0.02, iv=0.35),
+            short_occ: _OptionQuote(occ_symbol=short_occ, underlying="LLY", expiry=date(2026, 9, 4),
+                                    strike=1160.0, right="P", bid=5.58, ask=10.11, delta=-0.48,
+                                    gamma=0.01, theta=-0.01, vega=0.02, iv=0.35),
+        }
+
+    return fake_snapshots
+
+
+def _os(order_id: str, status, *, filled_qty: int = 0, fill: Decimal | None = None):
+    from agent.execution.broker import OrderState
+
+    return OrderState(order_id=order_id, status=status, limit_price=None, filled_qty=filled_qty,
+                      total_qty=4, fill_avg_price=fill, reject_code=None, reject_message=None)
+
+
+def _resting_combined_order():
+    """A broker whose combined mleg order never leaves NEW -- MockBroker
+    repeats its last script entry, so the walk runs its full cap and cancels
+    UNFILLED_REJECT, exactly as the live close did across 250 replaces."""
+    from agent.schemas.execution import OrderStatus as _OrderStatus
+
+    return MockBroker([_os("c1", _OrderStatus.NEW)])
+
+
+class _LegsFillBroker(MockBroker):
+    """The combined close never fills; each single-leg close does. That is the
+    live asymmetry: a net-credit limit cannot cross an arbitrage-violating
+    book, but paying one leg's ask and taking the other's bid can."""
+
+    def __init__(self, leg_fills) -> None:
+        from agent.schemas.execution import OrderStatus as _OrderStatus
+
+        super().__init__([_os("c1", _OrderStatus.NEW)])
+        self._leg_fills = list(leg_fills)
+
+    async def submit_close(self, symbol, qty, side, limit, intent):
+        self.closes.append((symbol, qty, side, limit, intent))
+        return self._leg_fills.pop(0)
+
+
+async def test_unfilled_close_on_the_terminal_day_legs_out(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """docs/review_2026-09-04.md P0-1. A long vertical's close is floored at
+    WALK_CAP_CREDIT_SIGN_FLOOR -- correctly, its value is bounded below by
+    zero -- so on an arbitrage-violating chain the combined order can never
+    fill; 250 replaces across five segments on 2026-09-03 proved it.
+    close_legs_individually CAN cross that book (it pays the short leg's ask
+    and takes the long leg's bid rather than quoting a net), but it was
+    reachable only from a STRUCTURAL reject, which an unfilled walk never
+    produces -- so the one recovery path was switched off in the only
+    scenario that has ever occurred."""
+    from agent.schemas.execution import OrderStatus as _OrderStatus
+
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    _patch_cli(monkeypatch, positions=[])
+
+    short_occ, long_occ = "LLY260904P01160000", "LLY260904P01165000"
+    async with storage_db.connect(db_path) as conn:
+        trade_id = await _seed_long_vertical(conn, short_occ, long_occ)
+    monkeypatch.setattr(main_module, "fetch_leg_snapshots", _inverted_book(short_occ, long_occ))
+
+    broker = _LegsFillBroker([
+        _os("s1", _OrderStatus.FILLED, filled_qty=4, fill=Decimal("10.11")),  # buy the short back at its ask
+        _os("l1", _OrderStatus.FILLED, filled_qty=4, fill=Decimal("2.72")),   # sell the long at its bid
+    ])
+    # After the 2026-09-03 15:30 ET unwind, so evaluate_exit returns UNWIND.
+    clock = _FastClock(datetime(2026, 9, 4, 14, 0, tzinfo=timezone.utc))
+    clients = FakeClients()
+    deps = _deps(db_path, clients, broker, clock)
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.management_tick(deps, session)
+
+    assert len(broker.submitted) == 1, "the combined close must still be tried first"
+    assert [side for _, _, side, _, _ in broker.closes] == ["BUY", "SELL"], \
+        "the legged close must retire the short leg before selling the long"
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT closed_at, realized_pnl FROM trades WHERE id = ?", (trade_id,))
+        closed_at, realized_pnl = await cur.fetchone()
+    assert closed_at is not None, "the position must be flat after a terminal-day escalation"
+    # close_net = short_fill - long_fill = 10.11 - 2.72 = +7.39, the debit
+    # paid to get flat. realized = (-1.94 - 7.39) * 100 * 4.
+    assert realized_pnl == pytest.approx(-3732.0)
+
+
+async def test_unfilled_close_before_the_terminal_day_does_not_leg_out(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The other half of the gate. While the position still has a horizon,
+    "the walk did not fill" must stay "retry next tick" -- otherwise every
+    wide market becomes a cross-the-spread market order."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    _patch_cli(monkeypatch, positions=[])
+
+    short_occ, long_occ = "LLY260904P01160000", "LLY260904P01165000"
+    async with storage_db.connect(db_path) as conn:
+        trade_id = await _seed_long_vertical(conn, short_occ, long_occ)
+    monkeypatch.setattr(main_module, "fetch_leg_snapshots", _inverted_book(short_occ, long_occ))
+
+    broker = _resting_combined_order()
+    # Before the unwind. The seeded expiry is 2026-09-04 and the session date
+    # is 2026-08-31, so dte > 0 too -- neither terminal-day condition holds.
+    clock = _FastClock(datetime(2026, 8, 31, 14, 0, tzinfo=timezone.utc))
+    clients = FakeClients()
+    deps = _deps(db_path, clients, broker, clock)
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.management_tick(deps, session)
+
+    assert broker.closes == [], "must not leg out while the position still has a horizon"
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT closed_at FROM trades WHERE id = ?", (trade_id,))
+        (closed_at,) = await cur.fetchone()
+    assert closed_at is None
+
+
+async def test_one_raising_trade_does_not_block_the_others(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """docs/review_2026-09-04.md P1-2. The loop body was unguarded, so one
+    raising trade skipped every LATER trade's exit check -- and a
+    deterministic cause did so on every tick, because supervised_loop
+    restarts straight back into the same first trade."""
+    seen: list[int] = []
+    real = main_module._exit_one_trade
+
+    async def flaky(deps, session, conn, trade, quotes, spots, *, unwind):
+        seen.append(trade.trade_id)
+        if len(seen) == 1:
+            raise RuntimeError("legs_json is not what the schema promised")
+        return await real(deps, session, conn, trade, quotes, spots, unwind=unwind)
+
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    _patch_cli(monkeypatch, positions=[])
+
+    short_occ, long_occ = "LLY260904P01160000", "LLY260904P01165000"
+    async with storage_db.connect(db_path) as conn:
+        await _seed_long_vertical(conn, short_occ, long_occ)
+        await _seed_long_vertical(conn, short_occ, long_occ)
+    monkeypatch.setattr(main_module, "fetch_leg_snapshots", _inverted_book(short_occ, long_occ))
+    monkeypatch.setattr(main_module, "_exit_one_trade", flaky)
+
+    clients = FakeClients()
+    deps = _deps(db_path, clients, _resting_combined_order(),
+                 _FastClock(datetime(2026, 8, 31, 14, 0, tzinfo=timezone.utc)))
+    session = await main_module.current_or_next_session(clients)
+    await main_module.management_tick(deps, session)
+
+    assert len(seen) == 2, f"the second trade never got its exit check: {seen}"

@@ -487,3 +487,41 @@ async def test_expired_order_terminates_the_walk_with_its_partial_fill() -> None
     assert result.status == "UNFILLED_REJECT"
     assert result.filled_qty == 2
     assert broker.replaced == []
+
+
+async def test_legged_close_treats_a_raising_short_leg_as_an_abort() -> None:
+    """docs/review_2026-09-04.md P1-2. The protocol was safe against a
+    REJECTION and not against a RAISE: the function never returned, so
+    exit_tick never got a result to act on. A raise on the short leg must land
+    on the same abort the rejection does -- long leg untouched."""
+    class ShortExplodes(MockBroker):
+        async def submit_close(self, symbol, qty, side, limit, intent):
+            self.closes.append((symbol, qty, side, limit, intent))
+            raise RuntimeError("connection reset")
+
+    broker = ShortExplodes([])
+    result = await close_legs_individually(broker, _closing_debit_plan("-2.80", "-2.80"), 4, clock=FakeClock())
+
+    assert result.status == "ABORTED_SHORT_LEG"
+    assert len(broker.closes) == 1, "the long leg must not be touched"
+    assert result.close_net is None
+
+
+async def test_legged_close_reports_a_stranded_long_leg_when_its_submit_raises() -> None:
+    """The half-closed state is the one that MUST be reported: the short leg
+    is retired, a lone long option remains, and `legged_close_pending` is only
+    written if a LeggedCloseResult comes back saying so."""
+    class LongExplodes(MockBroker):
+        async def submit_close(self, symbol, qty, side, limit, intent):
+            self.closes.append((symbol, qty, side, limit, intent))
+            if side == "SELL":
+                raise RuntimeError("connection reset")
+            return self._next()
+
+    broker = LongExplodes([_state("short", OrderStatus.FILLED, filled_qty=4, fill_avg_price=Decimal("3.20"))])
+    result = await close_legs_individually(broker, _closing_debit_plan("-2.80", "-2.80"), 4, clock=FakeClock())
+
+    assert result.status == "STRANDED_LONG_LEG"
+    assert result.stranded_occ_symbol == "TST260904C00100000"
+    assert result.short_fill == Decimal("3.20"), "the short fill must survive the raise"
+    assert result.close_net is None
