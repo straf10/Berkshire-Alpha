@@ -21,7 +21,6 @@ Our submission for the [Alpaca AI Trading Agents Hackathon](https://lablab.ai/ai
 
 See [docs/hackathon.md](docs/hackathon.md) for the full rundown of the challenge, rules, timeline, prizes, and judging criteria.
 
-
 ## What it does
 
 An autonomous options-trading agent that runs against Alpaca's paper trading environment, four scans per session, unattended:
