@@ -94,6 +94,14 @@ export function WriteUp() {
           that &ldquo;the conservative persona vetoed&rdquo; can never be confounded with &ldquo;the
           weaker model vetoed.&rdquo;
         </p>
+        <p>
+          <B>One caveat we would rather state than be caught on.</B> Per-node routing shipped on 2
+          September, after the last debated cycle had already run — so this is the ensemble in force
+          now, and every transcript replayable on this dashboard shows a single model on every node.
+          Nothing here is retrofitted to hide that: the cycle replay prints each node&rsquo;s model
+          from the event&rsquo;s own metadata, and the usage table counts the calls that predate
+          routing and says so.
+        </p>
       </Fold>
 
       <Fold title="Risk gates">

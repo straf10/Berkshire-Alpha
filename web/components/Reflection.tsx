@@ -29,7 +29,7 @@ export function Reflection({ reflection }: { reflection: ReflectionShape | null 
     return (
       <SectionEmpty
         icon={Brain}
-        title="Reflector"
+        title="Post-Session Attribution"
         reason="No reflection yet. The Reflector runs once the market closes, on the session that just ended — it reads that session's decisions and trades and names the constraint that bound the agent."
       />
     );
@@ -40,7 +40,7 @@ export function Reflection({ reflection }: { reflection: ReflectionShape | null 
       <CardHeader className="pb-2">
         <CardTitle className="flex flex-wrap items-center gap-1.5 text-subheadline font-semibold uppercase tracking-wide text-muted-foreground">
           <Brain className="size-3.5" />
-          Reflector
+          Post-Session Attribution
           <span className="normal-case">({reflection.session_date})</span>
         </CardTitle>
       </CardHeader>

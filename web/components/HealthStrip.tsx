@@ -39,7 +39,7 @@ export function HealthStrip({ buckets, status }: { buckets: HealthBucket[] | nul
     return (
       <SectionEmpty
         icon={Activity}
-        title="Agent uptime — market hours"
+        title="Operational Continuity — RTH"
         reason="No health samples yet. The management tick writes one every five minutes while the market is open; this strip draws one bar per market hour from the first sample onwards."
       />
     );
@@ -51,7 +51,7 @@ export function HealthStrip({ buckets, status }: { buckets: HealthBucket[] | nul
     return (
       <SectionEmpty
         icon={Activity}
-        title="Agent uptime — market hours"
+        title="Operational Continuity — RTH"
         reason="No health sample has landed inside a market hour yet. Closed hours are not drawn at all — an hour the agent was never meant to run in is not uptime data — so the strip appears with the first sample after the opening bell."
       />
     );
@@ -68,7 +68,7 @@ export function HealthStrip({ buckets, status }: { buckets: HealthBucket[] | nul
       <div className="mb-2 flex flex-wrap items-center justify-between gap-1.5">
         <p className="flex items-center gap-1.5 text-subheadline font-semibold uppercase tracking-wide text-muted-foreground">
           <Activity className="size-3.5" />
-          Agent uptime — market hours
+          Operational Continuity — RTH
         </p>
         <span className="text-sm tabular-nums text-foreground/70">
           {uptimePct}% up over {covered.length} market hours ({failedChecks} failed{" "}

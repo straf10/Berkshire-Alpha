@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { WriteUp } from "@/components/judges/WriteUp";
+import { RiskGateStandDown } from "@/components/RiskGateStandDown";
 import { Section, SectionHero } from "@/components/Section";
 import { SystemFlow } from "@/components/SystemFlow";
 import { Badge } from "@/components/ui/badge";
@@ -36,6 +37,7 @@ import type {
   AgentConfig,
   Decision,
   MarkGapResponse,
+  Reflection,
   Status,
   Trade,
 } from "@/lib/types";
@@ -237,6 +239,7 @@ function MarkGapEvidence({ markgap }: { markgap: MarkGapResponse }) {
 
 export function JudgesBrief({
   status,
+  reflections,
   account,
   config,
   decisions,
@@ -246,6 +249,9 @@ export function JudgesBrief({
   onOpenDecisions,
 }: {
   status: Status;
+  /** Per-session Reflector digests -- the only honest source for the freeze
+      totals below, see RiskGateStandDown for why the decisions window is not. */
+  reflections: Reflection[] | null;
   account: AccountState | null;
   config: AgentConfig | null;
   decisions: Decision[];
@@ -336,7 +342,19 @@ export function JudgesBrief({
             <Metric
               label="Models · vendors · routed nodes"
               value="4 · 3 · 9"
-              note="Bull and Bear are different model families on purpose, so agreement between them is evidence rather than an artefact of shared priors."
+              note={
+                <>
+                  Bull and Bear are different model families on purpose, so agreement between them
+                  is evidence rather than an artefact of shared priors.{" "}
+                  <span className="text-foreground/80">
+                    Per-node routing shipped 2 Sep, after the last debated cycle ran — so the
+                    transcripts you can replay below show one model on every node. The cast view
+                    prints each node&apos;s actual model from the event&apos;s own metadata, and the
+                    usage table counts the calls that predate routing, rather than either of them
+                    asserting this table.
+                  </span>
+                </>
+              }
             />
             <Metric
               label="Refusals, each naming its rule"
@@ -484,6 +502,13 @@ export function JudgesBrief({
             />
           </div>
 
+          {/* The two sessions the gate refused to trade at all. It sits above
+              the refusal ledger deliberately: the ledger proves the agent can
+              explain a refusal, this proves it can stop entirely -- a stronger
+              and separate claim, and the only one of the two whose numbers a
+              judge cannot reconstruct from the decisions window. */}
+          <RiskGateStandDown reflections={reflections} decisions={decisions} variant="judges" />
+
           {/* Refusal framing */}
           <div className="rounded-lg border border-hairline bg-surface-2/50 p-4">
             <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
@@ -492,7 +517,7 @@ export function JudgesBrief({
                 The refusal ledger
               </p>
               <span className="text-caption tabular-nums text-muted-foreground">
-                {refusals.evaluated} evaluations · {sessionSpan}
+                last {refusals.evaluated} evaluations held · {sessionSpan}
               </span>
             </div>
 
@@ -535,8 +560,13 @@ export function JudgesBrief({
                 </button>
               ))}
             </div>
-            <p className="mt-2 text-caption uppercase tracking-wide text-muted-foreground/70">
-              Click any rule to open its decisions, filtered
+            <p className="mt-2 text-caption text-muted-foreground/70">
+              <span className="uppercase tracking-wide">
+                Click any rule to open its decisions, filtered
+              </span>{" "}
+              — this histogram is the live decisions window the dashboard holds, so its{" "}
+              <code className="text-muted-foreground">REDUCE_ONLY</code> count is smaller than the
+              session totals above, which come from the Reflector&apos;s own per-session digest.
             </p>
           </div>
         </div>
