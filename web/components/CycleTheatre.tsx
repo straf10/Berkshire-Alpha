@@ -9,14 +9,12 @@ import { WalkTimelineChart } from "@/components/charts/WalkTimelineChart";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiBase, fetchJson } from "@/lib/api";
 import { formatDateTime, formatTimeUtc, safeJsonParse } from "@/lib/format";
+import { isAgentStale } from "@/lib/health";
 import { STAGE_BY_KEY, type StageKey } from "@/lib/pipeline";
 import { delayFor, replaySource, type CycleSource } from "@/lib/replay";
 import { cn } from "@/lib/utils";
-import type { Decision, DecisionChain, HealthResponse, Status, Trade } from "@/lib/types";
+import type { Decision, DecisionChain, Status, Trade } from "@/lib/types";
 
-// Two consecutive missed management ticks (300s each) before the agent is
-// called stale -- one late tick is a slow Railway container, not an outage.
-const STALE_AFTER_MS = 2 * 300_000;
 const SPEEDS = [1, 8] as const;
 
 interface SpreadPlanShape {
@@ -134,14 +132,12 @@ export function CycleTheatre({
   decisions,
   trades,
   status,
-  health,
   walkCapFraction,
   onOpenPipeline,
 }: {
   decisions: Decision[];
   trades: Trade[] | null;
   status: Status;
-  health: HealthResponse | null;
   walkCapFraction: number | null;
   onOpenPipeline?: () => void;
 }) {
@@ -224,9 +220,7 @@ export function CycleTheatre({
 
   // --- State machine. Market-closed is the PRIMARY state, designed first: it
   // is what a judge will almost certainly land on, and it is not a failure.
-  const lastCycleMs = health?.last_cycle_utc ? new Date(health.last_cycle_utc).getTime() : null;
-  const stale =
-    status.is_open === true && lastCycleMs !== null && nowMs - lastCycleMs > STALE_AFTER_MS;
+  const stale = isAgentStale(status, nowMs);
   const replaying = cursor >= 0 && !atEnd;
   const finished = cursor >= 0 && atEnd;
 
@@ -276,9 +270,9 @@ export function CycleTheatre({
             <div className="min-w-0">
               {stale && (
                 <p className="mb-1 text-sm tabular-nums text-warn">
-                  The market is open but the last cycle was {formatDateTime(health!.last_cycle_utc!)} —
-                  more than two management ticks ago. Something is wrong, and this panel is not
-                  hiding it.
+                  The market is open and the agent said its next action — {status.next_action ?? "a cycle"} —
+                  was due at {formatDateTime(status.next_action_utc!)}. It is more than two management
+                  ticks late. Something is wrong, and this panel is not hiding it.
                 </p>
               )}
               {!source && (
