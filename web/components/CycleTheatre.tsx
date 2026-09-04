@@ -1,7 +1,8 @@
 "use client";
 
-import { Pause, Play, RotateCcw, Workflow } from "lucide-react";
+import { Pause, Play, RotateCcw, Users, Workflow } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AgentTheatre } from "@/components/AgentTheatre";
 import { Section } from "@/components/Section";
 import { SystemFlow } from "@/components/SystemFlow";
 import { WalkTimelineChart } from "@/components/charts/WalkTimelineChart";
@@ -22,11 +23,28 @@ interface SpreadPlanShape {
   net_natural: string;
 }
 
-// Which cycle to replay: the most recent one that ran the whole pipeline
-// through to a fill, because that is the only kind that has something to show
-// in every lane. Computed from the trades the page already fetched -- never a
-// hard-coded id, so it moves forward on its own with each new session.
-function replayTargetId(decisions: Decision[], trades: Trade[] | null): number | null {
+// The cycle the replay opens on.
+//
+// Pinned, on purpose, and this is the one hard-coded id in the file. Decision
+// 86 (NVDA, 1 Sep) is the cycle where the pipeline visibly did its job: all
+// ten nodes answered, the Bull COMMITted while the Bear DISAGREED in both
+// rounds, the Conservative risk persona voted REJECT while the other two
+// APPROVEd -- and the deterministic gate authorised it anyway. That is the
+// whole thesis in one cycle, and a demo that has to argue with whatever ran
+// last is not a demo.
+//
+// It is NOT pinned for being profitable. It is not: its trade is still open
+// and carries no realised P&L, and of the two trades that HAVE closed both
+// closed negative. Nothing in this UI calls it a winning trade, and nothing
+// should -- the account id is published precisely so that claim could be
+// checked.
+//
+// The derived pick below stays as the fallback for the day this row is not
+// in the database, so a missing id degrades to "the last full cycle" rather
+// than to an empty panel.
+const PINNED_DECISION_ID = 86;
+
+function derivedTargetId(decisions: Decision[], trades: Trade[] | null): number | null {
   const filled = (trades ?? []).filter((t) => t.fill_price !== null);
   if (filled.length > 0) {
     return filled.reduce((best, t) => (t.ts_utc > best.ts_utc ? t : best)).decision_id;
@@ -127,8 +145,14 @@ export function CycleTheatre({
   walkCapFraction: number | null;
   onOpenPipeline?: () => void;
 }) {
-  const targetId = replayTargetId(decisions, trades);
+  const fallbackId = derivedTargetId(decisions, trades);
+  const targetId = PINNED_DECISION_ID;
   const [chain, setChain] = useState<DecisionChain | null>(null);
+  // Cast is the default because Overview is the landing page: a first-time
+  // visitor has no reason yet to care about `agent/risk/gates.py:35-60`, but
+  // every reason to watch eight models disagree. The graph is one click away
+  // here and is the primary rendering on Pipeline and For the Judges.
+  const [view, setView] = useState<"cast" | "technical">("cast");
   // Seeded from the target, so the effect below never has to setState
   // synchronously on mount just to report "nothing to load".
   const [loading, setLoading] = useState(targetId !== null);
@@ -149,15 +173,22 @@ export function CycleTheatre({
   useEffect(() => {
     if (targetId === null) return;
     let cancelled = false;
-    void fetchJson<DecisionChain>(`${apiBase()}/decisions/${targetId}`).then((data) => {
+    void (async () => {
+      // fetchJson resolves null rather than throwing, so a pinned id that is
+      // no longer in the database is indistinguishable from an outage here --
+      // fall back to the derived cycle instead of rendering an empty stage.
+      let data = await fetchJson<DecisionChain>(`${apiBase()}/decisions/${targetId}`);
+      if (!data?.decision && fallbackId !== null && fallbackId !== targetId) {
+        data = await fetchJson<DecisionChain>(`${apiBase()}/decisions/${fallbackId}`);
+      }
       if (cancelled) return;
       setChain(data);
       setLoading(false);
-    });
+    })();
     return () => {
       cancelled = true;
     };
-  }, [targetId]);
+  }, [targetId, fallbackId]);
 
   const source: CycleSource | null = useMemo(
     () => (chain ? replaySource(chain, { scanUtcs: status.scan_utcs }) : null),
@@ -207,7 +238,8 @@ export function CycleTheatre({
     () => new Set(played.filter((e) => e.kind !== "skip").map((e) => e.stage)),
     [played]
   );
-  const activeStage: StageKey | null = cursor >= 0 && source ? source.events[cursor].stage : null;
+  const activeEvent = cursor >= 0 && source ? source.events[cursor] : null;
+  const activeStage: StageKey | null = activeEvent?.stage ?? null;
 
   const walkReached = played.some((e) => e.stage === "walk" && e.kind !== "skip");
   const natural = chain?.decision
@@ -260,8 +292,8 @@ export function CycleTheatre({
                   {status.is_open
                     ? "Nothing is mid-cycle right now."
                     : "Nothing is running, and that is correct — the agent trades market hours only."}{" "}
-                  The last full cycle {source.laneBShortCircuit ? "short-circuited the LLM lane" : "ran end to end"}
-                  . Play it back and watch the agent think.
+                  This is a cycle that {source.laneBShortCircuit ? "short-circuited the LLM lane" : "ran end to end"}
+                  , replayed from its stored rows. Play it back and watch the agent think.
                 </p>
               )}
               {source && cursor >= 0 && (
@@ -300,6 +332,30 @@ export function CycleTheatre({
                     Reset
                   </button>
                 )}
+                <div role="group" aria-label="Diagram view" className="flex items-center gap-1">
+                  {(
+                    [
+                      ["cast", "Cast", Users],
+                      ["technical", "Technical", Workflow],
+                    ] as const
+                  ).map(([id, label, Icon]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      aria-pressed={view === id}
+                      onClick={() => setView(id)}
+                      className={cn(
+                        "inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
+                        view === id
+                          ? "border-primary bg-primary/10 text-primary"
+                          : "border-border text-muted-foreground hover:text-foreground"
+                      )}
+                    >
+                      <Icon className="size-3.5" />
+                      {label}
+                    </button>
+                  ))}
+                </div>
                 <div role="group" aria-label="Playback speed" className="flex items-center gap-1">
                   {SPEEDS.map((s) => (
                     <button
@@ -343,14 +399,23 @@ export function CycleTheatre({
 
         <div className="grid gap-3 lg:grid-cols-[minmax(0,3fr)_minmax(0,1fr)]">
           <div className="min-w-0 overflow-hidden rounded-lg border border-hairline">
-            <SystemFlow
-              detail="compact"
-              lit={lit}
-              active={activeStage}
-              skipped={source?.skipped}
-              laneBShortCircuit={source?.laneBShortCircuit ?? null}
-              replaying={replaying || finished}
-            />
+            {view === "cast" ? (
+              <AgentTheatre
+                played={played}
+                active={activeEvent}
+                skipped={source?.skipped}
+                replaying={replaying || finished}
+              />
+            ) : (
+              <SystemFlow
+                detail="compact"
+                lit={lit}
+                active={activeStage}
+                skipped={source?.skipped}
+                laneBShortCircuit={source?.laneBShortCircuit ?? null}
+                replaying={replaying || finished}
+              />
+            )}
           </div>
           <div className="min-w-0">
             <p className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">

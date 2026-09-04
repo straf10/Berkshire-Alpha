@@ -250,3 +250,115 @@ export const RAIL_TEXT: Record<LaneId, string> = {
   b: "NO TRADE — deliberation rejects. Skipped entirely when the gate short-circuits the lane.",
   c: "NO TRADE / NO FILL — gate rejects, and orders cancelled at the walk cap.",
 };
+
+// ---------------------------------------------------------------------------
+// The cast.
+//
+// The eight personas that produce real text. They are a VIEW over the same
+// stages above -- every one names the stage it belongs to -- so the cast and
+// the graph cannot drift apart. The remaining stages are arithmetic and have
+// no speaker; that asymmetry is the point, not an omission.
+//
+// `node` is the llm_calls.node value, which is what replaySource already has
+// in scope. Matching on that rather than on the formatted `speaker` string
+// means renaming a label never silently unmatches an avatar.
+// ---------------------------------------------------------------------------
+
+export type PersonaId =
+  | "QUANT"
+  | "NEWS"
+  | "BULL"
+  | "BEAR"
+  | "TRADER"
+  | "RISK_CONSERVATIVE"
+  | "RISK_NEUTRAL"
+  | "RISK_AGGRESSIVE";
+
+export interface PersonaDef {
+  id: PersonaId;
+  stage: StageKey;
+  /** Under the avatar. Kept to one or two words -- it sits in a 96px column. */
+  label: string;
+  /**
+   * The model this node is routed to TODAY (agent/config.py:396 LLM_NODE_MODELS).
+   * It is the label shown before a persona has spoken; once it has, the cast
+   * view prints the model the replayed call actually used instead. Those two
+   * are not always the same -- per-node routing shipped on 2 Sep (bf393ec) and
+   * every cycle before it ran the single LLM_MODEL -- and printing the config
+   * over a transcript that says otherwise is the kind of small lie the rest of
+   * this dashboard exists to avoid.
+   */
+  model: string;
+  /** One line, shown when this persona is speaking. */
+  role: string;
+}
+
+export const PERSONAS: PersonaDef[] = [
+  {
+    id: "QUANT",
+    stage: "analysts",
+    label: "Quant",
+    model: "Qwen2.5-72B",
+    role: "Reads the IV/RV surface the deterministic layer just computed.",
+  },
+  {
+    id: "NEWS",
+    stage: "analysts",
+    label: "News",
+    model: "Qwen2.5-72B",
+    role: "Reads the tape around the name. Degrades to an empty signal, never blocks.",
+  },
+  {
+    id: "BULL",
+    stage: "debate",
+    label: "Bull",
+    model: "DeepSeek-V3.1-Terminus",
+    role: "Argues the trade. Must cite new evidence to COMMIT.",
+  },
+  {
+    id: "BEAR",
+    stage: "debate",
+    label: "Bear",
+    model: "Kimi-K2-Instruct",
+    role: "Argues against. Agreement with the Bull is only evidence when their weights differ.",
+  },
+  {
+    id: "TRADER",
+    stage: "trader",
+    label: "Trader",
+    model: "DeepSeek-V3.1-Terminus",
+    role: "Turns the verdict into a concrete structure, or the builder does it deterministically.",
+  },
+  {
+    id: "RISK_CONSERVATIVE",
+    stage: "risk",
+    label: "Conservative",
+    model: "DeepSeek-V3.1-Terminus (shared)",
+    role: "Votes on the proposal. Shares a model with the other two, so a veto is never a weaker model.",
+  },
+  {
+    id: "RISK_NEUTRAL",
+    stage: "risk",
+    label: "Neutral",
+    model: "DeepSeek-V3.1-Terminus (shared)",
+    role: "Votes on the proposal. Shares a model with the other two, so a veto is never a weaker model.",
+  },
+  {
+    id: "RISK_AGGRESSIVE",
+    stage: "risk",
+    label: "Aggressive",
+    model: "DeepSeek-V3.1-Terminus (shared)",
+    role: "Votes on the proposal. Shares a model with the other two, so a veto is never a weaker model.",
+  },
+];
+
+export const PERSONA_BY_ID: Record<PersonaId, PersonaDef> = Object.fromEntries(
+  PERSONAS.map((p) => [p.id, p])
+) as Record<PersonaId, PersonaDef>;
+
+/** llm_calls.node -> persona. DEBATE_BULL and RISK_* are the only rewrites. */
+export function personaForNode(node: string): PersonaId | undefined {
+  if (node === "DEBATE_BULL") return "BULL";
+  if (node === "DEBATE_BEAR") return "BEAR";
+  return (PERSONA_BY_ID as Record<string, PersonaDef | undefined>)[node] ? (node as PersonaId) : undefined;
+}
