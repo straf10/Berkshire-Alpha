@@ -279,9 +279,11 @@ export function Dashboard({
           </TabsTrigger>
         </TabsList>
 
-        {/* The submission argument, and the tab a cold visitor lands on
-            (lib/tabs.ts DEFAULT_TAB). Reads only from props already fetched
-            above -- it issues no request of its own. */}
+        {/* The submission argument. First in the tab strip, but NOT the tab
+            that loads -- a cold visitor lands on Overview (lib/tabs.ts
+            DEFAULT_TAB) and sees the thing running before it is explained.
+            Reads only from props already fetched above; issues no request of
+            its own. */}
         <TabsContent value="judges">
           <JudgesBrief
             status={status}
