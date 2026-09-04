@@ -228,7 +228,11 @@ WALK_CAP_CREDIT_SIGN_FLOOR: Final[Decimal] = Decimal("-0.01")
 # (LLY 51.6%/54.6%/39.9%, GS 32.3%). 0.25 sits cleanly between those two
 # clusters. This is a per-contract filter used only for chain ENTRY intake
 # (_is_usable_for_entry) -- it must never gate pricing of a position already
-# held (_is_priceable has no width check at all; see docs/review.md P0-1).
+# held. There are three tiers now: _is_priceable (can this be priced at all --
+# the only thing fetch_leg_snapshots applies), _has_usable_data (+ null IV,
+# all-zero greeks, one-sided quote -- what DEGENERATE_CHAIN counts), and
+# _is_usable_for_entry (+ this width check). See docs/review.md P0-1 and
+# docs/review_2026-09-04.md P0-2.
 # It is also deliberately NOT coupled to DEGENERATE_CHAIN's drop-proportion
 # gate: measured against the committed SPY fixture, 0/18 contracts inside the
 # tradeable delta band are wide, but far-OTM wings are wide by construction
