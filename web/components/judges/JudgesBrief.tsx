@@ -266,6 +266,18 @@ export function JudgesBrief({
   const slip = entrySlippage(trades);
   const refusals = refusalBreakdown(decisions);
   const hasGaps = (markgap?.value.spreads.length ?? 0) > 0;
+  // How far the broker's mark sits outside the band the strikes permit. Shown
+  // next to the P&L because it is the one honest thing that can be said in
+  // mitigation of it -- and it is arithmetic, not an argument.
+  const mgSpread = markgap?.value.spreads[0] ?? null;
+  const markOutside = (() => {
+    if (!mgSpread) return 0;
+    const m = Number(mgSpread.broker_mark);
+    const lo = Number(mgSpread.band_low);
+    const hi = Number(mgSpread.band_high);
+    if (!Number.isFinite(m) || !Number.isFinite(lo) || !Number.isFinite(hi)) return 0;
+    return m < lo ? lo - m : m > hi ? m - hi : 0;
+  })();
   const sessionSpan =
     refusals.sessions.length > 1
       ? `${refusals.sessions[0]} → ${refusals.sessions[refusals.sessions.length - 1]}`
@@ -311,25 +323,51 @@ export function JudgesBrief({
             another prompt can be talked out of its veto. Ours cannot be prompted at all.
           </p>
 
-          <div className="rounded-lg border border-warn/30 bg-warn/5 p-3">
-            <p className="text-caption uppercase tracking-wide text-warn">
-              What we would lead with in a post-mortem, so we lead with it here
+          {/* The four things that are true regardless of how one week of P&L
+              landed. A judge who reads nothing else on this page should leave
+              having read these. */}
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+            <Metric
+              label="Trades a model can authorise"
+              value="0"
+              tone="primary"
+              note="Every proposal lands in a deterministic Python gate. An adversarial test feeds it a fabricated unanimous LLM approval of an oversized trade; the gate still rejects."
+            />
+            <Metric
+              label="Models · vendors · routed nodes"
+              value="4 · 3 · 9"
+              note="Bull and Bear are different model families on purpose, so agreement between them is evidence rather than an artefact of shared priors."
+            />
+            <Metric
+              label="Refusals, each naming its rule"
+              value={`${refusals.refused} of ${refusals.evaluated}`}
+              note="Symbol-level, in a vocabulary that greps to a real constant in agent/risk/gates.py. An agent that cannot explain a refusal cannot be audited."
+            />
+            <Metric
+              label="Parameter trials counted"
+              value={`N = ${EVIDENCE.trials.value}`}
+              note="Frozen before the judged window, every revision logged with the measurement that justified it — including one that was rejected."
+              provenance={EVIDENCE.trials}
+            />
+          </div>
+
+          <div className="rounded-lg border border-primary/25 bg-primary/5 p-3">
+            <p className="text-caption uppercase tracking-wide text-primary/80">
+              What we found by trading that a backtest could not have told us
             </p>
             <p className="mt-1 max-w-3xl text-sm leading-relaxed">
-              Our primary strategy was mechanically disabled for the entire judged window, and
-              nothing in the system could see it. Alpaca&apos;s SDK rejects{" "}
-              <code className="rounded bg-muted px-1 text-xs">limit_price &lt;= 0</code> inside{" "}
-              <code className="rounded bg-muted px-1 text-xs">ReplaceOrderRequest</code>&apos;s
-              constructor — correct for a single leg, wrong for a spread, where a negative limit{" "}
-              <em className="not-italic">is</em> the net credit. It raised before any HTTP call,
-              escaped the adapter&apos;s{" "}
-              <code className="rounded bg-muted px-1 text-xs">APIError</code> handler, and returned
-              REJECTED without cancelling the order it had already placed — which then reserved the
-              quantity at the broker and locked every later close.{" "}
+              We measured our own execution against the broker&apos;s records and found that{" "}
               <strong className="font-semibold">
-                That is why the P&amp;L below is negative. The cause is mechanical, not strategic,
-                and we would rather submit that sentence than a clean dashboard.
+                fill quality, not fees, is the entire game
+              </strong>{" "}
+              — $5.21 of regulatory cost across the whole competition against{" "}
+              {formatMoney(EVIDENCE.slippageAllIn.value)} of real slippage. Then we found something
+              we were not looking for:{" "}
+              <strong className="font-semibold text-foreground">
+                the venue was quoting our option chain in violation of strike arbitrage
               </strong>
+              , which is both why an unwind could not fill and why the broker&apos;s own mark on our
+              position is a number arithmetic forbids. Findings 1–3 below, each with the data.
             </p>
           </div>
         </CardContent>
@@ -358,8 +396,49 @@ export function JudgesBrief({
                 Equity {formatMoney(pnl.equity)} · the agent&apos;s last published snapshot
                 {accountAsOf ? `, ${formatDateTime(accountAsOf)}` : ""}
               </p>
+              {markOutside > 0 && (
+                <p className="mt-2 max-w-3xl text-sm leading-snug">
+                  <strong className="font-semibold tabular-nums text-warn">
+                    {formatMoney(markOutside)}
+                  </strong>{" "}
+                  of that figure is a broker mark sitting outside the band its own strikes permit —
+                  measured, not asserted, in{" "}
+                  <span className="font-semibold text-foreground">finding 3</span> below. Part of
+                  this drawdown is a marking artifact rather than a loss. We are not claiming the
+                  rest of it away.
+                </p>
+              )}
             </div>
           )}
+
+          {/* The mechanical cause, next to the number it explains -- this used
+              to open the page, which put three negative signals in front of a
+              skimming judge before a single strength. Same sentence, same
+              candour, correct place: you read the figure, then why it is that
+              figure. */}
+          <div className="rounded-lg border border-warn/30 bg-warn/5 p-3">
+            <p className="text-caption uppercase tracking-wide text-warn">
+              Why it is negative — mechanical, not strategic
+            </p>
+            <p className="mt-1 max-w-3xl text-sm leading-relaxed">
+              Our primary strategy was disabled for the entire judged window by a defect we could
+              not see. Alpaca&apos;s SDK rejects{" "}
+              <code className="rounded bg-muted px-1 text-xs">limit_price &lt;= 0</code> inside{" "}
+              <code className="rounded bg-muted px-1 text-xs">ReplaceOrderRequest</code>&apos;s
+              constructor — correct for a single leg, wrong for a spread, where a negative limit{" "}
+              <em className="not-italic">is</em> the net credit. It raised before any HTTP call,
+              escaped the adapter&apos;s{" "}
+              <code className="rounded bg-muted px-1 text-xs">APIError</code> handler, and returned
+              REJECTED without cancelling the order it had already placed — which then reserved the
+              quantity at the broker and locked every later close.{" "}
+              <strong className="font-semibold">
+                We root-caused it from the walk telemetry, reproduced it under test, and shipped the
+                fix mid-session
+              </strong>{" "}
+              — the asymmetry that gave it away is finding 1 below. We would rather submit that
+              sentence than a clean dashboard.
+            </p>
+          </div>
 
           <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">
             We are not going to dress this up.{" "}
