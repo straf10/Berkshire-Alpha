@@ -9,6 +9,7 @@ import {
   Gauge,
   Landmark,
   Layers,
+  Scale,
   ScrollText,
   ShieldCheck,
   Workflow,
@@ -130,6 +131,106 @@ function Gap({
   );
 }
 
+/**
+ * The mark-integrity evidence, shown as the arithmetic rather than as a claim.
+ *
+ * A long vertical is bounded in [0, width x qty x 100] by its own strikes: you
+ * cannot owe money on a spread you paid for and cannot make more than the
+ * distance between the strikes. Those two numbers are not a model, an opinion,
+ * or a quote -- they are arithmetic on the contract. So when the broker's mark
+ * falls outside them, the mark is wrong, and it is wrong by an amount anybody
+ * can recompute from the legs printed below it.
+ *
+ * Rendered from /markgap, which the agent publishes every management tick.
+ * The stamp matters: between ticks this is a snapshot, and on a moving book it
+ * goes stale in minutes.
+ */
+function MarkGapEvidence({ markgap }: { markgap: MarkGapResponse }) {
+  const { spreads, omitted, computed_at, total_markgap } = markgap.value;
+  const s = spreads[0];
+  if (!s) return null;
+
+  const mark = Number(s.broker_mark);
+  const low = Number(s.band_low);
+  const high = Number(s.band_high);
+  const intrinsic = s.intrinsic === null ? null : Number(s.intrinsic);
+  const outside = mark < low ? low - mark : mark > high ? mark - high : 0;
+
+  return (
+    <div className="rounded-lg border border-neg/25 bg-neg/5 p-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+        <p className="text-caption uppercase tracking-wide text-neg">
+          {s.symbol} {s.structure.replaceAll("_", " ").toLowerCase()} · {s.qty} spreads · $
+          {s.width} wide
+        </p>
+        <span className="text-caption-2 uppercase tracking-wide text-muted-foreground/70">
+          published {formatDateTime(markgap.asof ?? computed_at, { seconds: true })}
+        </span>
+      </div>
+
+      <dl className="mt-2 grid gap-x-6 gap-y-1 text-sm tabular-nums sm:grid-cols-2">
+        <div className="flex justify-between gap-3">
+          <dt className="text-muted-foreground">What the strikes permit</dt>
+          <dd className="font-mono">
+            {formatMoney(low)} … {formatMoney(high)}
+          </dd>
+        </div>
+        <div className="flex justify-between gap-3">
+          <dt className="text-muted-foreground">Intrinsic value{s.spot ? ` @ ${s.spot}` : ""}</dt>
+          <dd className="font-mono">{intrinsic === null ? "—" : formatMoney(intrinsic)}</dd>
+        </div>
+        <div className="flex justify-between gap-3">
+          <dt className="font-semibold">What the broker marks it</dt>
+          <dd className="font-mono font-semibold text-neg">{formatMoney(mark)}</dd>
+        </div>
+        <div className="flex justify-between gap-3">
+          <dt className="font-semibold">Outside the band by</dt>
+          <dd className="font-mono font-semibold text-neg">{formatMoney(outside)}</dd>
+        </div>
+      </dl>
+
+      <table className="mt-3 w-full text-xs tabular-nums">
+        <thead className="text-muted-foreground">
+          <tr className="text-left">
+            <th className="pb-1 pr-3 font-medium">Leg</th>
+            <th className="pb-1 pr-3 font-medium">Strike</th>
+            <th className="pb-1 pr-3 text-right font-medium">Qty</th>
+            <th className="pb-1 text-right font-medium">Broker mark</th>
+          </tr>
+        </thead>
+        <tbody className="font-mono">
+          {s.legs.map((leg) => (
+            <tr key={leg.occ_symbol} className="border-t border-hairline">
+              <td className="py-1 pr-3">{leg.side}</td>
+              <td className="py-1 pr-3">
+                {leg.strike} {leg.right}
+              </td>
+              <td className="py-1 pr-3 text-right">{leg.qty}</td>
+              <td className="py-1 text-right">{leg.mark}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <p className="mt-2 text-xs leading-snug text-muted-foreground">
+        Read the last column against the middle one. The higher-strike put is the more valuable
+        contract — that is not a market view, it is what the strikes mean — and it is marked{" "}
+        <em className="not-italic">below</em> the lower one. Every number above follows from that
+        one inversion.
+        {omitted > 0 && (
+          <>
+            {" "}
+            {omitted} spread{omitted === 1 ? " is" : "s are"} omitted from the total (
+            {formatMoney(Number(total_markgap))}): a spread is only counted when it can be bounded
+            honestly, and we would rather report a gap in the measurement than a number we cannot
+            defend.
+          </>
+        )}
+      </p>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // The tab
 // ---------------------------------------------------------------------------
@@ -165,7 +266,6 @@ export function JudgesBrief({
   const slip = entrySlippage(trades);
   const refusals = refusalBreakdown(decisions);
   const hasGaps = (markgap?.value.spreads.length ?? 0) > 0;
-  const totalGap = hasGaps ? Number(markgap?.value.total_markgap ?? 0) : null;
   const sessionSpan =
     refusals.sessions.length > 1
       ? `${refusals.sessions[0]} → ${refusals.sessions[refusals.sessions.length - 1]}`
@@ -545,8 +645,53 @@ export function JudgesBrief({
             </p>
           </Gap>
 
+          {markgap && hasGaps && (
+            <Gap
+              n={3}
+              icon={Scale}
+              title="The number this competition scores us on is arithmetically impossible"
+              theirs="Equity is whatever the broker says it is. It is the scoreboard; you do not audit the scoreboard."
+              ours="The broker marks our open vertical outside the band its own strikes permit. Judged equity is cash plus that mark, so an impossible number is sitting inside the figure we are being scored on — against us."
+            >
+              <MarkGapEvidence markgap={markgap} />
+
+              <p className="text-sm leading-relaxed text-muted-foreground">
+                This is the same defect as the failed unwind above, seen from the other side. A
+                chain whose quotes violate strike arbitrage cannot be crossed by a net-credit limit{" "}
+                <em className="not-italic">and</em> cannot be marked coherently. One broken book,
+                two symptoms — 255 orders that could not fill, and a mark that arithmetic forbids.
+                So we built the second measurement:{" "}
+                <code className="rounded bg-muted px-1 text-xs">agent/tools/markgap.py</code> is
+                pure, imports nothing from{" "}
+                <code className="rounded bg-muted px-1 text-xs">agent.execution</code>, runs every
+                management tick, and publishes at{" "}
+                <code className="rounded bg-muted px-1 text-xs">/markgap</code>. It refuses to
+                bound what it cannot bound honestly — a non-two-leg structure, a zero width, a
+                missing leg, a size mismatch — and counts those as omitted rather than guessing.
+              </p>
+
+              <div className="rounded-lg border border-hairline bg-surface-2/50 p-3">
+                <p className="text-caption uppercase tracking-wide text-muted-foreground">
+                  What this finding is not
+                </p>
+                <p className="mt-1 text-sm leading-snug">
+                  It is <strong className="font-semibold">not</strong> evidence that the account is
+                  secretly ahead, and we will not be arguing that our real P&amp;L is better than
+                  the published one. A markgap proves the mark is unreliable in a stated direction
+                  by a stated amount — nothing more. The honest claim is the narrow one:{" "}
+                  <strong className="font-semibold text-foreground">
+                    part of the drawdown on our equity line is a marking artifact rather than a
+                    loss, and here is a tool that says exactly how much.
+                  </strong>{" "}
+                  We would rather publish that distinction than quietly benefit from the
+                  ambiguity.
+                </p>
+              </div>
+            </Gap>
+          )}
+
           <Gap
-            n={3}
+            n={markgap && hasGaps ? 4 : 3}
             icon={Layers}
             title="Greeks are fragile, so we refuse to invent them"
             theirs="Black-Scholes the greeks on the fly from a spot price and a guessed vol."
@@ -571,27 +716,10 @@ export function JudgesBrief({
               because a filter that hides an open position from the exit path is worse than the wide
               quote it was built to catch.
             </p>
-            {totalGap !== null && (
-              <div className="rounded-lg border border-warn/30 bg-warn/5 p-3">
-                <p className="text-caption uppercase tracking-wide text-warn">
-                  And we measure it in the other direction too
-                </p>
-                <p className="mt-1 text-sm leading-snug">
-                  <code className="rounded bg-muted px-1 text-xs">/markgap</code> checks the
-                  broker&apos;s own mark against the arbitrage band the strikes impose. It currently
-                  reports{" "}
-                  <strong className="font-semibold tabular-nums text-warn">
-                    {formatMoney(totalGap)}
-                  </strong>{" "}
-                  of mark sitting outside that band — a number inside the equity this competition is
-                  scored on. We publish it rather than net it out.
-                </p>
-              </div>
-            )}
           </Gap>
 
           <Gap
-            n={4}
+            n={markgap && hasGaps ? 5 : 4}
             icon={Beaker}
             title="A trial you did not count is a trial you cannot deflate"
             theirs="Sweep the parameters, publish the best Sharpe."

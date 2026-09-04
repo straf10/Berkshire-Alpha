@@ -71,6 +71,25 @@ The judged account's live P&L is negative over the sealed window. We're not dres
 - Paper trading, created 29 Aug 2026, $100,000 starting balance, Options Level 3 approved. Never manually traded — agent-only from creation.
 - The account previously recorded here (`b1a0e3d2-61f1-4eac-9421-49deedc68fc4` / `PA3319FCQCPN`) is disqualified as a judged account per Alpaca's FAQ (a manual test trade was placed on it Day 1) and is now the permanent dev/test account.
 
+## The evidence trail
+
+Every claim on the dashboard cites a file, and this is what those files are. They are kept
+because the argument this project makes — that a trading agent should be auditable rather
+than impressive — is only worth anything if the audit is actually there to read.
+
+| Doc | What it is |
+|---|---|
+| [docs/onepager.md](docs/onepager.md) | **The required write-up.** AI logic, risk gates, Alpaca infrastructure. |
+| [docs/friction.md](docs/friction.md) | What execution actually cost, measured off broker records: $5.21 of regulatory fees against $1,961 of slippage. Includes a $224 divergence between our ledger and the broker's that we found while writing it and published rather than backfilled. |
+| [docs/report.md](docs/report.md) | Audit of our own backtest harness, defects first — including the VRP tautology that made every replay credit-only by construction, and the broker mark that left the band its own strikes permit. |
+| [docs/preregistration.md](docs/preregistration.md) | The sealed evaluation window, declared before it opened. |
+| [docs/trial_ledger.md](docs/trial_ledger.md) | Every parameter revision that produced the frozen config, N = 16 — the trial count fed to the Deflated Sharpe Ratio, including one trial that was measured and rejected. |
+| [docs/review.md](docs/review.md) | Independent review of the P0 remediation branch. The reject codes and walk-cap constants in `agent/config.py` cite its findings by number. |
+| [docs/markgap_plan.md](docs/markgap_plan.md) | Design and 14-finding review of the mark-integrity work, shipped as `agent/tools/markgap.py` and `/markgap`. |
+| [docs/plan.md](docs/plan.md) | The build plan the agent was written against; ~260 code comments cite it. |
+| [docs/hackathon.md](docs/hackathon.md) | Competition rules, timeline, judging criteria. |
+| [docs/deployment.md](docs/deployment.md) | Live ops: hosts, env vars, and what breaks when a project gets renamed. |
+
 ## Architecture
 
 ```
