@@ -225,7 +225,11 @@ export function Dashboard({
       <div className="mx-auto w-full max-w-5xl">
         <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-3">
-            <Image src="/logo-earthy.png" alt="" width={64} height={64} className="rounded-lg" />
+            {/* alt="" on purpose: the <h1> beside it says the same thing, so
+                announcing the mark too would just repeat the product name.
+                `rounded-lg` is gone with the opaque asset -- there is no longer
+                a filled square whose corners need softening. */}
+            <Image src="/translucent_bg_v2.png" alt="" width={64} height={64} />
             <h1 className="text-title-2">Berkshire Alpha</h1>
           </div>
           <span className="text-caption tabular-nums text-muted-foreground">
