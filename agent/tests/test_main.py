@@ -2379,39 +2379,6 @@ async def test_maybe_reflect_skips_when_budget_exhausted(tmp_path) -> None:
         assert (await cur.fetchone())[0] == 1
 
 
-async def test_frozen_final_session_approves_nothing(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """docs/markgap_plan.md P0-B, at the level that matters: not "the
-    predicate returns True" (test_session covers that) but "a scan on the
-    final session approves nothing and places nothing".
-
-    The clock, not the session fixture, is what freezes: is_entry_frozen reads
-    deps.clock.now() against FREEZE_ENTRIES_FROM, so the same committed
-    calendar fixture every other scan test uses is reused here with the clock
-    moved past the freeze date."""
-    db_path = str(tmp_path / "agent.db")
-    await storage_db.init_db(db_path)
-    _patch_cli(monkeypatch, positions=FAKE_POSITIONS)
-
-    clients = FakeClients()
-    broker = MockBroker([])
-    frozen_clock = _FastClock(datetime(2026, 9, 3, 14, 0, tzinfo=timezone.utc))  # 10:00 ET, freeze day
-    deps = _deps(db_path, clients, broker, frozen_clock)
-
-    session = await main_module.current_or_next_session(clients)
-    result = await main_module.scan_cycle(deps, session, dry_run=True)
-
-    # scan_cycle returns every gate decision, rejects included -- so the
-    # assertion is that none of them approved, not that none were made.
-    assert result, "the scan still ran; it just must not approve anything"
-    assert not any(d.approved for d in result), [d.reason for d in result if d.approved]
-    assert broker.submitted == [], "a frozen session must place no orders"
-    async with storage_db.connect(db_path) as conn:
-        cur = await conn.execute("SELECT DISTINCT gate_reason FROM decisions")
-        reasons = {r[0] for r in await cur.fetchall()}
-    assert "APPROVED" not in reasons, reasons
-    assert "REDUCE_ONLY" in reasons, reasons
-
-
 async def test_management_tick_publishes_markgap_on_a_flat_book(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2440,7 +2407,7 @@ async def test_management_tick_publishes_markgap_on_a_flat_book(
     assert published["computed_at"]
 
 
-async def _seed_long_vertical(conn, short_occ: str, long_occ: str) -> int:
+async def _seed_long_vertical(conn, short_occ: str, long_occ: str, *, expiry: str = "2026-09-04") -> int:
     """A BEAR_PUT_SPREAD (debit) open trade -- the shape of live trade 8. Its
     closing plan takes walk_cap's `is_closing and not structure_is_credit`
     branch, i.e. the one floored at WALK_CAP_CREDIT_SIGN_FLOOR."""
@@ -2451,6 +2418,7 @@ async def _seed_long_vertical(conn, short_occ: str, long_occ: str) -> int:
             _closing_leg_dict(long_occ, 1165.0, "BUY", "BUY_TO_OPEN"),
             _closing_leg_dict(short_occ, 1160.0, "SELL", "SELL_TO_OPEN"),
         ],
+        expiry=expiry,
     )
 
 
@@ -2524,15 +2492,17 @@ async def test_unfilled_close_on_the_terminal_day_legs_out(tmp_path, monkeypatch
 
     short_occ, long_occ = "LLY260904P01160000", "LLY260904P01165000"
     async with storage_db.connect(db_path) as conn:
-        trade_id = await _seed_long_vertical(conn, short_occ, long_occ)
+        # expiry == SESSION_DATE (2026-08-31) -> dte=0, which is both
+        # < DTE_FORCE_CLOSE(2) (evaluate_exit returns TIME_STOP_2DTE) and the
+        # dte<=0 leg of main.py's terminal_day check that unlocks leg-out.
+        trade_id = await _seed_long_vertical(conn, short_occ, long_occ, expiry="2026-08-31")
     monkeypatch.setattr(main_module, "fetch_leg_snapshots", _inverted_book(short_occ, long_occ))
 
     broker = _LegsFillBroker([
         _os("s1", _OrderStatus.FILLED, filled_qty=4, fill=Decimal("10.11")),  # buy the short back at its ask
         _os("l1", _OrderStatus.FILLED, filled_qty=4, fill=Decimal("2.72")),   # sell the long at its bid
     ])
-    # After the 2026-09-03 15:30 ET unwind, so evaluate_exit returns UNWIND.
-    clock = _FastClock(datetime(2026, 9, 4, 14, 0, tzinfo=timezone.utc))
+    clock = _FastClock(datetime(2026, 8, 31, 14, 0, tzinfo=timezone.utc))
     clients = FakeClients()
     deps = _deps(db_path, clients, broker, clock)
 

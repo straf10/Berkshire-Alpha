@@ -8,11 +8,7 @@ import pytz
 from agent.config import (
     CLOSED_SLEEP_CEILING_S,
     ENTRY_CUTOFF_OFFSET_MIN,
-    FREEZE_ENTRIES_FROM,
     SCAN_OFFSETS_MIN,
-    UNWIND_DATE,
-    UNWIND_ET_HOUR,
-    UNWIND_ET_MINUTE,
 )
 from agent.execution.alpaca_client import AlpacaClients
 
@@ -113,24 +109,21 @@ def minute_bar_window(session: SessionPlan, now_utc: datetime) -> tuple[datetime
     return session.last_session_utc
 
 
-_UNWIND_UTC = _to_utc(datetime(UNWIND_DATE.year, UNWIND_DATE.month, UNWIND_DATE.day, UNWIND_ET_HOUR, UNWIND_ET_MINUTE))
-
-
 def is_entry_frozen(now_utc: datetime) -> bool:
-    """True from FREEZE_ENTRIES_FROM (== UNWIND_DATE) onward -- no NEW entries
-    on the final session, see that constant's config.py comment.
-
-    Compared on the ET calendar date, never the UTC one: after 20:00 ET the
-    UTC date is already tomorrow, so a UTC comparison would freeze the final
-    evening of the PRECEDING session a full day early."""
-    return now_utc.astimezone(_ET).date() >= FREEZE_ENTRIES_FROM
+    """Hackathon-only gate, now retired. UNWIND_DATE/FREEZE_ENTRIES_FROM
+    (2026-09-03) marked the end of the judged competition window; the
+    project continues trading past that date, so this always returns False.
+    Kept as a function (rather than deleted) so the config constants and
+    api/app.py's status fields still have a caller and the historical date
+    stays documented."""
+    return False
 
 
 def is_unwind_triggered(now_utc: datetime) -> bool:
-    """plan.md: Thu 3 Sep 22:30 EEST (15:30 ET) -- one-time, hardcoded, not
-    derived from any session's boundaries. Once true it stays true for the
-    rest of the competition; management_tick checks this every cycle."""
-    return now_utc >= _UNWIND_UTC
+    """Hackathon-only gate, now retired -- see is_entry_frozen. The one-time
+    end-of-competition forced-unwind never fires; exits go through the
+    normal (non-urgent) path indefinitely."""
+    return False
 
 
 def seconds_until_next_boundary(s: SessionPlan, now_utc: datetime) -> float:

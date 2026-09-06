@@ -179,19 +179,10 @@ def test_minute_bar_window_falls_back_outside_the_session() -> None:
     assert minute_bar_window(open_plan, open_plan.open_utc) == open_plan.last_session_utc
 
 
-def test_entry_freeze_is_keyed_to_the_ET_date_not_the_UTC_one() -> None:
-    """docs/markgap_plan.md P0-B. FREEZE_ENTRIES_FROM == UNWIND_DATE
-    (2026-09-03). 23:30 ET on 2 Sep is already 03:30 UTC on the 3rd, so a UTC
-    comparison would freeze the preceding session's final evening a full day
-    early."""
-    eve_of_freeze_et = datetime(2026, 9, 3, 3, 30, tzinfo=timezone.utc)   # 2 Sep 23:30 ET
-    assert is_entry_frozen(eve_of_freeze_et) is False
-
-    after_the_open_et = datetime(2026, 9, 3, 13, 31, tzinfo=timezone.utc)  # 3 Sep 09:31 ET
-    assert is_entry_frozen(after_the_open_et) is True
-
-
-def test_entry_freeze_stays_true_after_the_freeze_date() -> None:
-    """A one-way switch, like is_unwind_triggered: once frozen it never
-    thaws for the rest of the competition."""
-    assert is_entry_frozen(datetime(2026, 9, 4, 14, 0, tzinfo=timezone.utc)) is True
+def test_entry_freeze_is_retired() -> None:
+    """docs/markgap_plan.md P0-B's end-of-competition entry freeze only
+    applied through the judged hackathon window; the project continues
+    trading past it, so is_entry_frozen is permanently False now, including
+    on and after the old freeze date."""
+    assert is_entry_frozen(datetime(2026, 9, 3, 13, 31, tzinfo=timezone.utc)) is False
+    assert is_entry_frozen(datetime(2026, 9, 4, 14, 0, tzinfo=timezone.utc)) is False

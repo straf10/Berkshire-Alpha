@@ -122,19 +122,14 @@ PROFIT_TARGET_PCT_OF_MAX: Final[Decimal] = Decimal("0.50")
 CREDIT_STOP_LOSS_PCT: Final[Decimal] = Decimal("1.00")   # 100% of credit received
 DEBIT_STOP_LOSS_PCT: Final[Decimal] = Decimal("0.50")    # 50% of debit paid
 # plan.md: "Thu 3 Sep, 22:30 EEST (15:30 ET) -- end-of-competition unwind."
-# A fixed calendar trigger, not a per-session offset -- localized via
-# session.py's _ET the same way every other ET wall-clock value is.
+# Hackathon-judging-window marker only. session.is_entry_frozen and
+# is_unwind_triggered were retired to always return False once the project
+# moved to continued live trading past the judged competition -- these
+# constants are kept only because api/app.py still surfaces them as
+# historical status fields.
 UNWIND_DATE: Final[date] = date(2026, 9, 3)
 UNWIND_ET_HOUR: Final[int] = 15
 UNWIND_ET_MINUTE: Final[int] = 30
-# docs/markgap_plan.md P0-B (2026-09-03). No NEW entries from this ET date on.
-# On UNWIND_DATE the book must be flat by UNWIND_ET_HOUR:UNWIND_ET_MINUTE, so
-# a spread opened that morning is a 2-4 hour round trip on a 3-7 DTE thesis
-# (DTE_MIN is 3): it pays the bid/ask twice and gets none of the horizon it
-# was sized for, plus a stranding risk if the close does not fill. This is the
-# risk budget going to zero as the horizon closes, expressed as a calendar
-# date rather than a taper -- with one session left there is nothing to taper.
-# Deliberately keyed to UNWIND_DATE so the two can never drift apart.
 FREEZE_ENTRIES_FROM: Final[date] = UNWIND_DATE
 MAX_RISK_PER_TRADE_PCT: Final[float] = 0.02
 MAX_AGGREGATE_RISK_PCT: Final[float] = 0.10
