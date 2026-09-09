@@ -148,6 +148,18 @@ MAX_CONCURRENT_POSITIONS: Final[int] = 6
 MAX_POSITIONS_PER_UNDERLYING: Final[int] = 1
 PORTFOLIO_DELTA_PCT: Final[float] = 0.15
 PORTFOLIO_VEGA_PCT: Final[float] = 0.02
+# docs/fill_and_learning_plan.md follow-up (2026-09-09). The Alpaca indicative
+# feed returns all-zero greeks for held legs on this account, so the two caps
+# above have never constrained anything -- measured live: delta_dollars 0.00,
+# vega_dollars 0.00, breached 0, with real spreads on the book. When a held
+# leg's feed greeks are unusable, agent/tools/blackscholes.py re-derives delta
+# and vega from the leg's own mid price at this rate. 4% is the front-end USD
+# rate to a good enough approximation for a 3-7 DTE vertical: delta moves by
+# well under a hundredth of a point across any plausible rate error at that
+# horizon, and vega barely at all.
+RISK_FREE_RATE: Final[float] = 0.04
+# Trading-day count used to convert DTE to years in the same fallback.
+DAYS_PER_YEAR: Final[float] = 365.0
 DAILY_LOSS_KILL_PCT: Final[float] = -0.05
 DRAWDOWN_CONSERVATIVE_PCT: Final[float] = -0.08
 DRAWDOWN_TERMINAL_PCT: Final[float] = -0.12

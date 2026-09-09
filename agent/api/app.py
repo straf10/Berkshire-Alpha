@@ -241,6 +241,22 @@ async def agent_settings() -> dict[str, Any]:
             "max_quote_spread_pct": c.MAX_QUOTE_SPREAD_PCT,
             "max_debit_fraction_of_width": _jsonable(c.MAX_DEBIT_FRACTION_OF_WIDTH),
             "degenerate_chain_max_drop": c.DEGENERATE_CHAIN_MAX_DROP,
+            # docs/fill_and_learning_plan.md P0/P1. Published for the same
+            # reason walk_cap_credit_sign_floor is, and the omission cost real
+            # time on 2026-09-09: with none of these exposed there was no way
+            # to tell from outside whether the EV-aware walk was in the running
+            # image, and `walk_cap_fraction` still reading 0.70 (correctly --
+            # it is now only the fallback) actively suggested it was not.
+            "ev_retention": _jsonable(c.EV_RETENTION),
+            "walk_min_steps": c.WALK_MIN_STEPS,
+            "walk_requote_every_steps": c.WALK_REQUOTE_EVERY_STEPS,
+            "max_net_spread_width_pct": c.MAX_NET_SPREAD_WIDTH_PCT,
+            "min_hold_s": c.MIN_HOLD_S,
+            "stop_confirm_ticks": c.STOP_CONFIRM_TICKS,
+            # 2026-09-09 follow-up: the Black-Scholes fallback that makes the
+            # portfolio delta/vega caps functional when the feed zeroes them.
+            "greeks_bs_fallback_rate": c.RISK_FREE_RATE,
+            "expired_ledger_reconciled": True,
         },
         "regime_thresholds": {
             "rsi_period": c.RSI_PERIOD,

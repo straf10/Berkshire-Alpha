@@ -1052,7 +1052,7 @@ async def test_aggregate_risk_from_open_trades(tmp_path) -> None:
         await _seed_trade(conn, max_loss=Decimal("300"), filled_qty=4)          # 1200
         await _seed_trade(conn, max_loss=Decimal("500"), filled_qty=0)          # UNFILLED_REJECT -> 0
         await _seed_trade(conn, max_loss=Decimal("999"), filled_qty=2, closed_at="t")  # closed -> excluded
-        assert await main_module._open_defined_risk(conn) == Decimal("1200")
+        assert await main_module._open_defined_risk(conn, "2026-09-01") == Decimal("1200")
 
 
 async def test_aggregate_risk_partial_fill_weighted(tmp_path) -> None:
@@ -1060,7 +1060,7 @@ async def test_aggregate_risk_partial_fill_weighted(tmp_path) -> None:
     await storage_db.init_db(db_path)
     async with storage_db.connect(db_path) as conn:
         await _seed_trade(conn, max_loss=Decimal("250"), filled_qty=2)  # qty=5 requested, filled=2 -> 500
-        assert await main_module._open_defined_risk(conn) == Decimal("500")
+        assert await main_module._open_defined_risk(conn, "2026-09-01") == Decimal("500")
 
 
 async def test_open_trades_includes_partial_suspended(tmp_path) -> None:
@@ -2656,3 +2656,103 @@ async def test_a_cli_outage_records_a_DOWN_sample(tmp_path, monkeypatch: pytest.
     await main_module.management_tick(deps, await main_module.current_or_next_session(clients))
 
     assert await _health_samples(db_path) == [0]
+
+
+# ---------------------------------------------------------------------------
+# reconcile_expired_ledger (docs/fill_and_learning_plan.md follow-up 2026-09-09)
+# ---------------------------------------------------------------------------
+
+async def _seed_dated_trade(
+    conn, *, symbol: str, expiry: str, occ: str, max_loss: Decimal, filled_qty: int = 4,
+) -> int:
+    decision_id = await storage_write.insert_decision(conn, storage_write.DecisionRow(
+        ts_utc="t", cycle_id="seed", session_date=SESSION_DATE.isoformat(), symbol=symbol,
+        mode="quant-only", regime="CREDIT", structure="BULL_PUT_SPREAD", action="ENTER",
+        gate_reason="APPROVED", gate_detail="APPROVED", observed_value=None, threshold_value=None,
+        qty=filled_qty, equity_feed="iex", earnings_armed=False, quant_json="{}", plan_json=None,
+    ))
+    return await storage_write.insert_trade(conn, storage_write.TradeRow(
+        decision_id=decision_id, ts_utc="t", symbol=symbol, structure="BULL_PUT_SPREAD",
+        expiry=expiry, legs_json=json.dumps([{"occ_symbol": occ}]), qty=filled_qty,
+        submitted_limit=Decimal("-0.9"), filled_qty=filled_qty, status="FILLED",
+        closed_at=None, max_loss_per_spread=max_loss,
+    ))
+
+
+def _cli_position(symbol: str) -> cli_bridge.CliPosition:
+    return cli_bridge.CliPosition(
+        symbol=symbol, asset_class="us_option", qty=Decimal("-4"),
+        avg_entry_price=Decimal("1"), market_value=Decimal("1"), unrealized_pl=Decimal("0"),
+    )
+
+
+async def _closed_at(conn, trade_id: int):
+    cur = await conn.execute("SELECT closed_at, exit_reason FROM trades WHERE id = ?", (trade_id,))
+    return await cur.fetchone()
+
+async def test_expired_ledger_row_not_held_is_closed_and_stops_consuming_risk(tmp_path) -> None:
+    """The live 2026-09-09 state: LLY and NVDA rows that expired 2026-09-04,
+    absent from the broker, still reserving $1,372 of the aggregate ceiling
+    and still being handed to exit_tick every 300s."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    async with storage_db.connect(db_path) as conn:
+        lly = await _seed_dated_trade(
+            conn, symbol="LLY", expiry="2026-09-04", occ="LLY260904P01100000",
+            max_loss=Decimal("194"),
+        )
+        nvda = await _seed_dated_trade(
+            conn, symbol="NVDA", expiry="2026-09-04", occ="NVDA260904C00170000",
+            max_loss=Decimal("149"),
+        )
+        # The expiry filter alone already stops them reserving budget (776+596
+        # is what they reserved live before it existed)...
+        assert await main_module._open_defined_risk(conn, "2026-09-09") == Decimal("0")
+        # ...and a session dated before their expiry still sees the full 1372,
+        # which is exactly the live figure this fixes.
+        assert await main_module._open_defined_risk(conn, "2026-09-01") == Decimal("1372")
+
+        closed = await main_module.reconcile_expired_ledger(
+            conn, session_date="2026-09-09", live_positions=[],
+        )
+        assert closed == 2
+        for trade_id in (lly, nvda):
+            closed_at, exit_reason = await _closed_at(conn, trade_id)
+            assert closed_at is not None
+            assert exit_reason == "EXPIRED_UNRECONCILED"
+        # Now closed outright, so even a back-dated session sees nothing.
+        assert await main_module._open_defined_risk(conn, "2026-09-01") == Decimal("0")
+
+
+async def test_expired_but_still_held_row_is_left_for_assignment_tick(tmp_path) -> None:
+    """A leg the broker still reports is a settlement race, not a stale row --
+    closing it here would hide real, live risk from assignment_tick."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    async with storage_db.connect(db_path) as conn:
+        lly = await _seed_dated_trade(
+            conn, symbol="LLY", expiry="2026-09-04", occ="LLY260904P01100000",
+            max_loss=Decimal("194"),
+        )
+        closed = await main_module.reconcile_expired_ledger(
+            conn, session_date="2026-09-09",
+            live_positions=[_cli_position("LLY260904P01100000")],
+        )
+        assert closed == 0
+        closed_at, _ = await _closed_at(conn, lly)
+        assert closed_at is None
+
+
+async def test_unexpired_rows_are_never_touched(tmp_path) -> None:
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    async with storage_db.connect(db_path) as conn:
+        await _seed_dated_trade(
+            conn, symbol="QCOM", expiry="2026-09-11", occ="QCOM260911P00150000",
+            max_loss=Decimal("180"), filled_qty=5,
+        )
+        closed = await main_module.reconcile_expired_ledger(
+            conn, session_date="2026-09-09", live_positions=[],
+        )
+        assert closed == 0
+        assert await main_module._open_defined_risk(conn, "2026-09-09") == Decimal("900")

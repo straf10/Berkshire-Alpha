@@ -127,3 +127,42 @@ async def test_missing_quote_still_counts_as_a_position() -> None:
     assert exposures[0].expiry == EXPIRY
     assert exposures[0].delta == 0.0
     assert exposures[0].vega == 0.0
+
+
+async def test_all_zero_feed_greeks_are_re_derived_from_the_mid() -> None:
+    """docs/fill_and_learning_plan.md follow-up (2026-09-09). The live Alpaca
+    indicative feed returns delta == gamma == theta == vega == 0.0 for held
+    legs on this account, so `aggregate` produced delta_dollars 0.00 and
+    vega_dollars 0.00 against real positions -- both portfolio caps inert.
+    A deep-ITM put is not delta-neutral; it is close to -1."""
+    class _Greeks:
+        delta = gamma = theta = vega = 0.0
+
+    class _Quote:
+        bid_price, ask_price = 99.0, 101.0   # deep ITM: strike 700 vs spot 600
+
+    class _Snap:
+        implied_volatility = 0.0             # feed gives no IV either
+        greeks = _Greeks()
+        latest_quote = _Quote()
+
+    class FakeClients:
+        async def get_option_snapshot(self, req):
+            return {occ: _Snap() for occ in req.symbol_or_symbols}
+
+    positions = [
+        CliPosition(
+            symbol="LLY260904P00700000", asset_class="us_option", qty=Decimal(-1),
+            avg_entry_price=Decimal("1.0"), market_value=Decimal("-100"), unrealized_pl=Decimal("0"),
+        )
+    ]
+    exposures = await build_exposures(
+        positions, FakeClients(), {"LLY": 600.0}, as_of=date(2026, 8, 31),
+    )
+    assert len(exposures) == 1
+    # The whole point: no longer 0.0.
+    assert exposures[0].delta < -0.9, exposures[0].delta
+    assert exposures[0].vega >= 0.0
+    # And it now actually moves the portfolio number the caps are tested on.
+    portfolio = aggregate(exposures, Decimal("100000"))
+    assert portfolio.delta_dollars > 0.0   # short a put -> positive delta

@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Mapping, Sequence
 
-from agent.config import PORTFOLIO_DELTA_PCT, PORTFOLIO_VEGA_PCT
+from agent.config import (
+    DAYS_PER_YEAR,
+    PORTFOLIO_DELTA_PCT,
+    PORTFOLIO_VEGA_PCT,
+    RISK_FREE_RATE,
+)
 from agent.execution.alpaca_client import AlpacaClients
 from agent.execution.cli_bridge import CliPosition
 from agent.schemas.execution import SpreadPlan
+from agent.tools.blackscholes import delta_vega_from_price
 from agent.tools.market_data import _parse_occ_symbol, fetch_leg_snapshots
 
 logger = logging.getLogger(__name__)
@@ -40,7 +46,8 @@ class PortfolioGreeks:
 
 
 async def build_exposures(
-    positions: Sequence[CliPosition], clients: AlpacaClients, spots: Mapping[str, float]
+    positions: Sequence[CliPosition], clients: AlpacaClients, spots: Mapping[str, float],
+    as_of: date | None = None,
 ) -> list[LegExposure]:
     """ONE batched fetch_leg_snapshots() call for every held option contract."""
     option_positions = [p for p in positions if p.asset_class == "us_option"]
@@ -72,15 +79,46 @@ async def build_exposures(
                 )
             )
             continue
+        spot = spots.get(q.underlying, 0.0)
+        delta, vega = q.delta, q.vega
+
+        # docs/fill_and_learning_plan.md follow-up (2026-09-09): the indicative
+        # feed hands back delta == vega == 0.0 for held legs on this account.
+        # `_has_usable_data` rejects that at chain intake, but a held leg is
+        # deliberately priced WITHOUT the intake filters, so the zeros used to
+        # flow straight into `aggregate` -- which is why delta_dollars and
+        # vega_dollars have read exactly 0.00 against live positions all week,
+        # leaving both portfolio caps inert. Re-derive from the leg's own mid
+        # instead of believing a deep-ITM put is delta-neutral.
+        if delta == 0.0 and vega == 0.0 and spot > 0.0:
+            t_years = max((q.expiry - (as_of or datetime.now(timezone.utc).date())).days, 0) / DAYS_PER_YEAR
+            fallback = delta_vega_from_price(
+                price=q.mid, spot=spot, strike=q.strike, t_years=t_years,
+                rate=RISK_FREE_RATE, right=q.right, iv_hint=q.iv,
+            )
+            if fallback is not None:
+                delta, vega = fallback
+                logger.warning(
+                    "build_exposures: %s feed greeks were all-zero -- re-derived "
+                    "delta=%.4f vega=%.4f from mid %.2f (spot %.2f, %d DTE)",
+                    p.symbol, delta, vega, q.mid, spot, (q.expiry - (as_of or datetime.now(timezone.utc).date())).days,
+                )
+            else:
+                logger.error(
+                    "build_exposures: %s has all-zero feed greeks AND no usable "
+                    "implied vol from mid %.2f -- portfolio greeks understate true exposure",
+                    p.symbol, q.mid,
+                )
+
         exposures.append(
             LegExposure(
                 occ_symbol=p.symbol,
                 underlying=q.underlying,
                 expiry=q.expiry,
                 qty=int(p.qty),
-                delta=q.delta,
-                vega=q.vega,
-                spot=spots.get(q.underlying, 0.0),
+                delta=delta,
+                vega=vega,
+                spot=spot,
             )
         )
     return exposures

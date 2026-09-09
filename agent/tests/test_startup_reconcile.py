@@ -181,7 +181,7 @@ async def test_reconcile_partial_becomes_open_trade(tmp_path, monkeypatch: pytes
     async with storage_db.connect(db_path) as conn:
         await main_module.startup_reconcile(_reconcile_deps(db_path), conn)
         open_trades = await main_module._open_trades(conn)
-        risk = await main_module._open_defined_risk(conn)
+        risk = await main_module._open_defined_risk(conn, "2026-09-01")
 
     assert len(open_trades) == 1
     assert open_trades[0].qty == 1
@@ -623,7 +623,7 @@ async def test_mid_walk_restart_reconstructs_filled_position(tmp_path, monkeypat
         )
         row = await cur.fetchone()
         open_trades = await main_module._open_trades(conn)
-        risk = await main_module._open_defined_risk(conn)
+        risk = await main_module._open_defined_risk(conn, "2026-09-01")
 
     assert report.repaired == 1 and report.unresolved_transient == 0 and report.unresolved_position == 0
     assert tuple(row) == ("FILLED", qty, 1, "o1-r1")

@@ -18,7 +18,11 @@ pytestmark = pytest.mark.live
 
 async def test_live_spy_chain_is_non_degenerate() -> None:
     clients = AlpacaClients(load_settings())
-    session_date = date(2026, 8, 31)
+    # Derived from today, never hardcoded: a fixed date silently rots into a
+    # request for expiries that have already passed, and the test then fails
+    # with "assert 0 > 0" for a reason that has nothing to do with the chain
+    # (observed 2026-09-09, five days after the pinned 2026-08-31 window).
+    session_date = date.today()
     req = OptionChainRequest(
         underlying_symbol="SPY",
         feed=OptionsFeed.INDICATIVE,

@@ -507,3 +507,103 @@ claiming otherwise is how the Reflector talked itself into tightening `NO_REGIME
   (measuring realised vs predicted), not against the fill fixes.
 - One filled trade is not evidence about the exit policy in general. The 6-minute stop is
   evidence about the *mechanism*, which is unsound regardless of that trade's outcome.
+
+---
+
+## 5. Follow-up, 2026-09-09 (post-implementation review)
+
+The P0/P1/P2 items above were implemented and deployed (CI/CD green at 15:10 UTC).
+Replaying the new `walk_cap()` against the ten stored `plan_json` rows of 2026-09-08
+confirms assertions 1 and 2 of section 3 exactly: **7 of 10 now reach a marketable
+price** (was 1), and UNH/ARM/GS are declined — with the new cap *tighter* than the old
+one on all three (GS −1.65 vs −1.12), so the 308-second chase of a 130%-wide chain
+cannot recur. This round fixes what that review then found.
+
+### 5.1 Correction: P1-3's premise was wrong
+
+Section 1.5 claimed the closing walk "will pay almost anything to close", bounded only
+by `width × WALK_CAP_MAX_FRACTION_OF_WIDTH_CLOSING = 1.00`. That is not what the code
+does. On a closing plan `ev_at_mid` is `None`, so `frac` falls back to
+`WALK_CAP_FRACTION = 0.70` and the cap is `mid + 0.70 × (natural − mid)` — strictly
+*below* natural. The `width × 1.00` clamp is an outer arbitrage bound that in practice
+never binds. **The closing cap was never the unbounded thing the section described, and
+`WALK_CAP_MAX_FRACTION_OF_WIDTH_CLOSING` has deliberately been left at 1.00.**
+
+The AAPL evidence points the other way. It filled at ~1.72 against a closing plan whose
+mid must have been ~2.48 for the stop to fire at all (entry credit 1.24, stop at 100% of
+credit). A limit order that starts at mid and walks *up* cannot fill 0.76 better than its
+own starting price unless the market was never at 2.48. So the mid that triggered the
+stop was a phantom off a stale or wide quote — a trigger problem, not an execution one,
+and precisely what P1-2's `quote_wide` refusal and `STOP_CONFIRM_TICKS` exist to catch.
+Neither was deployed when AAPL was stopped at 14:36 UTC.
+
+What P1-3 was actually missing was the **instrumentation**, and that is now in: every
+exit logs `trigger_net_mid`, `plan_net_mid`, `plan_net_natural`, `fill`,
+`slippage_vs_plan_mid` and `width_pct` on one line. If `fill` lands near `plan_net_mid`
+the walk is overpaying and the cap is wrong; if `fill` is far better, the trigger is
+firing on a phantom. There was previously no way to distinguish them, which is how the
+question survived four sessions.
+
+Note also that `MIN_HOLD_S = 900` would **not** have saved AAPL, which was held 20
+minutes. The 2-tick confirmation might have. Leave both as they are for now and let the
+new slippage line supply the evidence before tuning either.
+
+### 5.2 Portfolio delta/vega caps were inert — now fixed
+
+Measured live on 2026-09-09 with real spreads on the book: `delta_dollars` 0.00,
+`vega_dollars` 0.00, `breached` 0, `per_position_json` empty. The Alpaca indicative feed
+returns `delta == gamma == theta == vega == 0.0` for held legs on this account.
+`_has_usable_data` rejects that at chain intake, but a held leg is deliberately priced
+*without* the intake filters, so the zeros flowed straight into `aggregate`. **Both
+portfolio caps have therefore never constrained anything** — invisible while nothing
+filled, and about to stop being invisible now that entries fill.
+
+`agent/tools/blackscholes.py` (new, pure, 11 tests) re-derives delta and vega from the
+leg's own mid: IV from the feed when usable, otherwise implied by bisection. `bs_vega`
+returns **per percentage point**, not per unit vol — the 100× error that would
+permanently trip the vega cap — pinned in tests against the live NVDA 225C feed value of
+0.1141.
+
+### 5.3 Stale ledger rows were reserving risk budget and thrashing exit_tick
+
+LLY and NVDA rows that expired **2026-09-04** still had `closed_at IS NULL` on
+2026-09-09. `startup_reconcile` inspects only NON-terminal statuses, and both are
+`FILLED`, so nothing ever revisited them. Two consequences:
+
+1. `_open_defined_risk` reserved **$1,372 of the $9,891** aggregate ceiling against
+   positions that had not existed for five days.
+2. `_open_trades` still returned them, so every `management_tick` built a closing plan
+   for contracts the broker does not hold and tried to close them — once every 300 s,
+   indefinitely.
+
+Fixed two ways: `_open_defined_risk` now takes `session_date` and ignores expired rows,
+and a new `reconcile_expired_ledger()` closes rows past expiry that the broker does not
+hold. A row the broker *does* still hold is left alone for `assignment_tick` — that is a
+settlement race, not a stale row. `realized_pnl` is written as 0 with
+`exit_reason = EXPIRED_UNRECONCILED` rather than inventing a settlement never observed;
+these rows are from earlier sessions and so never enter a current digest.
+
+### 5.4 A missing enum could discard a whole reflection
+
+`ReflectorOutput.stage` was introduced as required. `complete_json` retries once on a
+schema failure then raises `LlmValidationDropped`, which `reflect()` converts to
+`ok=False` — so one omitted key would have discarded the verdict, the argument and the
+proposed change together. `stage` is now optional (default `None`); the system prompt
+still instructs the model to emit it.
+
+### 5.5 Deploy verifiability
+
+`/config` now publishes `ev_retention`, `walk_min_steps`, `walk_requote_every_steps`,
+`max_net_spread_width_pct`, `min_hold_s`, `stop_confirm_ticks`,
+`greeks_bs_fallback_rate` and `expired_ledger_reconciled`. None of the P0 constants were
+exposed, so there was no way to tell from outside whether the EV-aware walk was in the
+running image — and `walk_cap_fraction` still correctly reading 0.70 (it is now only the
+fallback) actively suggested it was not.
+
+### 5.6 Also
+
+`test_live_chain.py` derived its window from a hardcoded `date(2026, 8, 31)`, which had
+rotted into a request for expiries five days in the past and failed as `assert 0 > 0`.
+Now derived from `date.today()`.
+
+**Suite: 589 passed** (572 before this round, +17 new).

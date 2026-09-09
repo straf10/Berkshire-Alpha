@@ -220,16 +220,30 @@ def _requote_plan_fn(deps: "Deps") -> RequoteFn:
     return _requote
 
 
-async def _open_defined_risk(conn: aiosqlite.Connection) -> Decimal:
+async def _open_defined_risk(conn: aiosqlite.Connection, session_date: str) -> Decimal:
     """Sum of max_loss_per_spread x filled_qty over trades still open (docs/
     day3_llm_plan.md S1a) -- raw query, deliberately bypassing storage.read
     (api-only, same precedent as _read_state_value). Multiplying by
     filled_qty (not qty) makes an UNFILLED_REJECT/CANCELED/REJECTED row
     contribute exactly 0 with no status filter, and prices a partial fill
     correctly. `close_trade` is the sole writer of `closed_at`, so an open
-    position always contributes to the ledger until it actually closes."""
+    position always contributes to the ledger until it actually closes.
+
+    docs/fill_and_learning_plan.md follow-up (2026-09-09): scoped to rows that
+    have not yet expired. A vertical past its expiry carries no forward defined
+    risk -- it has settled, whatever the ledger still says -- so counting it
+    reserves budget against a position that cannot lose another dollar.
+    Measured live on 2026-09-09: LLY (exp 2026-09-04, $776) and NVDA (exp
+    2026-09-04, $596) were still consuming $1,372 of the $9,891 aggregate
+    ceiling, five days after they stopped existing, because `close_trade`
+    never ran on them (startup_reconcile only inspects NON-terminal statuses,
+    and both rows are FILLED). `reconcile_expired_ledger` below closes such
+    rows outright; this filter is the belt to its braces, and also covers the
+    window before the first reconcile of a fresh process."""
     cur = await conn.execute(
-        "SELECT COALESCE(SUM(max_loss_per_spread * filled_qty), 0) FROM trades WHERE closed_at IS NULL"
+        "SELECT COALESCE(SUM(max_loss_per_spread * filled_qty), 0) FROM trades "
+        "WHERE closed_at IS NULL AND expiry >= ?",
+        (session_date,),
     )
     row = await cur.fetchone()
     return Decimal(str(row[0]))
@@ -469,6 +483,73 @@ def _reconcile_classify(
     # REPLACED reaching here means the chain walk exhausted its hop/cycle
     # guard without finding a terminal link -- unresolved, not guessed.
     return None
+
+
+async def reconcile_expired_ledger(
+    conn: aiosqlite.Connection, *, session_date: str,
+    live_positions: list[cli_bridge.CliPosition],
+) -> int:
+    """Close ledger rows whose expiry has passed and which the broker does not
+    hold. Returns the number closed.
+
+    docs/fill_and_learning_plan.md follow-up (2026-09-09). `startup_reconcile`
+    deliberately inspects only NON-terminal statuses, so a row that reached
+    FILLED and then expired is never revisited by anything: `closed_at` stays
+    NULL forever. Two live consequences, both measured on 2026-09-09 against
+    LLY and NVDA rows that expired 2026-09-04:
+
+      1. `_open_defined_risk` reserved $1,372 of the $9,891 aggregate ceiling
+         against positions that had not existed for five days.
+      2. `_open_trades` still returned them, so every management_tick built a
+         closing plan for contracts the broker does not hold, computed
+         dte < DTE_FORCE_CLOSE, and tried to close them -- once every 300s,
+         indefinitely.
+
+    `realized_pnl` is written as 0 and the reason is EXPIRED_UNRECONCILED
+    rather than guessing a settlement we never observed: booking an invented
+    P&L would corrupt the very reflection numbers this whole plan exists to
+    make trustworthy. The rows are from earlier sessions, so they do not enter
+    the current session's digest (`_session_trades` joins on
+    `decisions.session_date`); an operator wanting the true figure has the
+    broker's own history."""
+    held = {p.symbol for p in live_positions}
+    cur = await conn.execute(
+        "SELECT id, symbol, expiry, legs_json FROM trades "
+        "WHERE closed_at IS NULL AND filled_qty > 0 AND expiry < ?",
+        (session_date,),
+    )
+    rows = await cur.fetchall()
+
+    closed = 0
+    for trade_id, symbol, expiry, legs_json in rows:
+        try:
+            occ_symbols = {leg["occ_symbol"] for leg in json.loads(legs_json)}
+        except (ValueError, KeyError, TypeError):
+            logger.exception(
+                "reconcile_expired_ledger: trade %d (%s) has unparseable legs_json -- "
+                "leaving it open for an operator", trade_id, symbol,
+            )
+            continue
+        if occ_symbols & held:
+            # Expired on our calendar but still held at the broker: an
+            # assignment/settlement race, not a stale row. Leave it entirely
+            # alone -- assignment_tick owns that case.
+            logger.warning(
+                "reconcile_expired_ledger: trade %d (%s) expired %s but the broker still "
+                "holds a leg -- leaving it to assignment_tick", trade_id, symbol, expiry,
+            )
+            continue
+        await storage_write.close_trade(
+            conn, trade_id, closed_at=f"{session_date}T00:00:00+00:00",
+            realized_pnl=Decimal("0"), exit_reason="EXPIRED_UNRECONCILED",
+        )
+        closed += 1
+        logger.warning(
+            "reconcile_expired_ledger: closed stale ledger row %d (%s, expired %s) -- "
+            "not held at the broker; realized_pnl recorded as 0 because the true "
+            "settlement was never observed", trade_id, symbol, expiry,
+        )
+    return closed
 
 
 async def _legs_are_held(legs_json: str, live_positions: list[cli_bridge.CliPosition]) -> bool:
@@ -826,6 +907,28 @@ async def _exit_one_trade(
     result = await walk_to_fill(deps.broker, closing_plan, trade.qty, clock=deps.clock)
     logger.info("exit_tick: %s trade %d %s (%s) -> %s", trade.symbol, trade.trade_id, decision.reason, decision.detail, result.status)
 
+    # docs/fill_and_learning_plan.md P1-3: the exit's give-up was recorded
+    # NOWHERE, which is why a systematic asymmetry could survive four sessions
+    # unnoticed. Three numbers settle it: the mid the STOP fired on, the mid
+    # the closing plan was built from, and what we actually paid.
+    #
+    # They also discriminate between the two competing explanations for the
+    # 2026-09-08 QCOM and 2026-09-09 AAPL losses (entered -1.23/-1.24, closed
+    # ~1.73/1.72, both stopped within 20 minutes). If `fill` lands near
+    # `plan_mid`, the walk overpaid and the closing cap is the problem. If
+    # `fill` is far BETTER than `plan_mid`, the mid that triggered the stop
+    # was a phantom off a stale or wide quote and the trigger is the problem.
+    # Until this line existed there was no way to tell them apart.
+    if result.fill_price is not None:
+        logger.warning(
+            "exit_slippage: %s trade %d reason=%s trigger_net_mid=%s plan_net_mid=%s "
+            "plan_net_natural=%s fill=%s slippage_vs_plan_mid=%s width_pct=%s",
+            trade.symbol, trade.trade_id, decision.reason, mid, closing_plan.net_mid,
+            closing_plan.net_natural, result.fill_price,
+            result.fill_price - closing_plan.net_mid,
+            f"{width_pct:.3f}" if width_pct is not None else "n/a",
+        )
+
     close_net = result.fill_price
     closed_ok = result.status == "FILLED" and result.filled_qty == trade.qty
 
@@ -1141,7 +1244,14 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
         portfolio = aggregate(exposures, account.equity)
         open_underlyings = frozenset(underlying for underlying, _ in portfolio.position_keys)
 
-        aggregate_risk = await _open_defined_risk(conn)  # running local -- docs/day3_llm_plan.md S1a/G6
+        # Must run BEFORE _open_defined_risk so a stale row does not reserve
+        # budget for one more scan (docs/fill_and_learning_plan.md follow-up).
+        await reconcile_expired_ledger(
+            conn, session_date=session.session_date.isoformat(), live_positions=positions,
+        )
+        aggregate_risk = await _open_defined_risk(  # running local -- docs/day3_llm_plan.md S1a/G6
+            conn, session.session_date.isoformat()
+        )
 
         # entries_halted (startup_reconcile's position-class fail-safe) is a
         # separate key from reduce_only (management_tick's greeks-breach
@@ -1496,6 +1606,14 @@ async def _management_tick(deps: Deps, session: SessionPlan, conn: aiosqlite.Con
     assignment = await assignment_tick(deps, session, conn, positions)
     if assignment.acted:
         positions = await _tracked(conn, "ALPACA_CLI", "list_positions", cli_bridge.list_positions())
+
+    # AFTER assignment_tick (which owns the expired-but-still-held case) and
+    # BEFORE exit_tick, so a stale row is not handed to exit_tick to build a
+    # closing plan for contracts the broker does not hold -- that retry ran
+    # once every 300s, indefinitely (docs/fill_and_learning_plan.md follow-up).
+    await reconcile_expired_ledger(
+        conn, session_date=session.session_date.isoformat(), live_positions=positions,
+    )
 
     spots = await _read_state_value(conn, "spots") or {}
     exposures = await build_exposures(positions, deps.clients, spots)

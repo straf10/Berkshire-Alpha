@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from agent.agents import reflector
 from agent.schemas.llm import ReflectorOutput
@@ -251,3 +252,29 @@ async def test_insert_reflection_idempotent(tmp_path) -> None:
         cur = await conn.execute("SELECT COUNT(*) FROM reflections")
         row = await cur.fetchone()
         assert row[0] == 1
+
+
+def test_reflector_output_survives_a_missing_stage() -> None:
+    """docs/fill_and_learning_plan.md follow-up (2026-09-09). `stage` was
+    introduced as a REQUIRED enum, which meant one omitted key cost the whole
+    reflection: complete_json retries once, raises LlmValidationDropped, and
+    reflect() turns that into ok=False -- discarding the verdict, the argument
+    and the proposed change together. The session's critique must not hinge on
+    the model remembering one field."""
+    parsed = ReflectorOutput.model_validate({
+        "verdict": "HOLD",
+        "argument": "x" * 60,
+    })
+    assert parsed.stage is None
+    assert parsed.verdict == "HOLD"
+
+
+def test_reflector_output_still_accepts_and_validates_a_stage() -> None:
+    parsed = ReflectorOutput.model_validate({
+        "verdict": "TIGHTEN", "stage": "EXECUTION", "argument": "y" * 60,
+    })
+    assert parsed.stage == "EXECUTION"
+    with pytest.raises(ValidationError):
+        ReflectorOutput.model_validate({
+            "verdict": "HOLD", "stage": "NONSENSE", "argument": "z" * 60,
+        })

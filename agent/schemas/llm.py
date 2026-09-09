@@ -78,6 +78,17 @@ class ReflectorOutput(BaseModel):
     # money went. A verdict with no stage is how "TIGHTEN NO_REGIME" got
     # produced on a day nothing was wrong with the regime filter -- the
     # actual constraint was EXECUTION (the walk cap), not SELECTION.
-    stage: Literal["SELECTION", "EXECUTION", "EXIT"]
+    # Optional, NOT required (docs/fill_and_learning_plan.md follow-up
+    # 2026-09-09). Requiring it made a single omitted key cost the ENTIRE
+    # reflection: complete_json retries once on a schema failure and then
+    # raises LlmValidationDropped, which reflect() catches and turns into
+    # ok=False -- so the argument, the verdict and the proposed change would
+    # all be silently discarded because one enum was missing. The digest is
+    # still persisted in that case, but the session's actual critique is not.
+    # The system prompt does instruct the model to emit `stage`; a default of
+    # None records "the model did not say" honestly rather than inventing a
+    # stage, and is trivially greppable if the model turns out to omit it
+    # often enough to be worth hard-failing on.
+    stage: Literal["SELECTION", "EXECUTION", "EXIT"] | None = None
     argument: str = Field(..., min_length=40, max_length=1200)
     proposed_change: str | None = Field(default=None, max_length=120)
