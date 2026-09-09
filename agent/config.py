@@ -511,6 +511,16 @@ FILL_RATE_FLOOR: Final[float] = 0.50
 # dropped for the rest of the session -- it must still re-pass every risk
 # gate each time; this is a retry budget, not a bypass.
 MAX_ENTRY_RETRY_ATTEMPTS: Final[int] = 3
+# 2026-09-10 review finding: a quote-missing retry deliberately does NOT
+# burn an `attempts` slot (a transient data outage is not a verdict on the
+# trade) -- but that made it unbounded. A contract that has actually
+# EXPIRED never returns a quote again, so without a separate cap the entry
+# would sit in `pending_entries` and be re-requoted at the top of every
+# scan of every future session forever. `_retry_pending_entries` drops an
+# entry outright once its own `plan.expiry` has passed (belt) and after
+# MAX_ENTRY_RETRY_QUOTE_MISSES consecutive scans with no quote at all
+# (braces, for a symbol that stops quoting before its technical expiry).
+MAX_ENTRY_RETRY_QUOTE_MISSES: Final[int] = 5
 CONSENSUS_HIGH_THRESHOLD: Final[float] = 0.85
 DEBATE_MAX_ROUNDS: Final[int] = 2
 DEBATE_CANDIDATES: Final[int] = 4

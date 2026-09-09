@@ -29,6 +29,7 @@ from agent.config import (
     MACRO_TICKERS,
     MANAGEMENT_INTERVAL_S,
     MAX_ENTRY_RETRY_ATTEMPTS,
+    MAX_ENTRY_RETRY_QUOTE_MISSES,
     MAX_NET_SPREAD_WIDTH_PCT,
     MAX_RISK_PER_TRADE_PCT,
     NEWS_LOOKBACK_H,
@@ -328,7 +329,19 @@ async def _retry_pending_entries(
     do NOT reserve a slot on approval here either; a reservation that is
     never released would starve the book exactly like the 2026-09-08
     3x-QCOM/2x-NVDA-over-MAX_POSITIONS_PER_UNDERLYING episode this task's
-    write-up warns against."""
+    write-up warns against.
+
+    2026-09-10 review finding: a quote-missing retry deliberately does not
+    burn an `attempts` slot (see below), which left this genuinely
+    unbounded -- an entry whose contract has actually EXPIRED never gets a
+    quote again, so it would sit in `pending_entries` and be re-requoted at
+    the top of every scan of every future session forever, and nothing
+    here ever stamped or checked a session boundary either, despite the
+    docstring's own claim of being scoped to "the rest of the session".
+    Two independent guards fix that: an entry whose `plan.expiry` has
+    already passed is dropped outright (belt), and an entry that gets
+    MAX_ENTRY_RETRY_QUOTE_MISSES consecutive no-quote scans is dropped too,
+    for a symbol that stops quoting before its technical expiry (braces)."""
     pending: dict[str, list[dict[str, Any]]] = await _read_state_value(conn, "pending_entries") or {}
     if not pending:
         return running_portfolio, running_open_underlyings, aggregate_risk
@@ -349,12 +362,31 @@ async def _retry_pending_entries(
                 logger.exception("retry: pending entry for %s had an unparseable plan -- dropped", symbol)
                 continue
 
+            if plan.expiry < session.session_date:
+                # A dead contract never quotes again -- without this check
+                # the quote-missing branch below would keep it forever.
+                logger.info(
+                    "retry: %s pending entry's contract expired (%s < %s) -- dropped",
+                    symbol, plan.expiry, session.session_date,
+                )
+                continue
+
             fresh = await requote(plan)
             if fresh is None:
                 # A leg's quote vanished this scan -- try again next scan
                 # without burning an attempt (the fresh quote, not the
-                # symbol, was unavailable).
-                kept.append(entry)
+                # symbol, was unavailable), but only up to
+                # MAX_ENTRY_RETRY_QUOTE_MISSES consecutive misses -- a
+                # symbol that stops quoting before its technical expiry
+                # must not retry forever either.
+                quote_misses = int(entry.get("quote_misses", 0)) + 1
+                if quote_misses >= MAX_ENTRY_RETRY_QUOTE_MISSES:
+                    logger.warning(
+                        "retry: %s pending entry has had no quote for %d consecutive scans -- dropped",
+                        symbol, quote_misses,
+                    )
+                    continue
+                kept.append({**entry, "quote_misses": quote_misses})
                 continue
             fresh_mid, fresh_natural = fresh
             fresh_ev = ev_at_price(

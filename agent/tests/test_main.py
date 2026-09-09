@@ -2866,7 +2866,10 @@ async def test_retry_pending_entries_keeps_entry_without_burning_an_attempt_when
     tmp_path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A leg quote vanishing this scan is a data outage, not a verdict on the
-    trade -- it must be retried next scan with the SAME attempt count."""
+    trade -- it must be retried next scan with the SAME attempt count, only
+    a bumped quote_misses counter (docs/fill_and_learning_plan.md S5 Task 5,
+    2026-09-10 review fix: this counter is what stops a truly dead contract
+    from being re-requoted forever)."""
     db_path = str(tmp_path / "agent.db")
     await storage_db.init_db(db_path)
     async with storage_db.connect(db_path) as conn:
@@ -2896,4 +2899,84 @@ async def test_retry_pending_entries_keeps_entry_without_burning_an_attempt_when
             running_open_underlyings=frozenset(), aggregate_risk=Decimal("0"),
         )
         pending = await main_module._read_state_value(conn, "pending_entries")
-        assert pending == {"AAPL": [{"plan_json": _RETRY_PLAN_JSON, "attempts": 1}]}
+        assert pending == {"AAPL": [{"plan_json": _RETRY_PLAN_JSON, "attempts": 1, "quote_misses": 1}]}
+
+
+async def test_retry_pending_entries_drops_entry_whose_contract_has_expired(tmp_path) -> None:
+    """2026-09-10 review finding: without this check, an entry whose
+    contract has genuinely expired never gets a quote again (requote
+    always returns None for it), and the quote-missing branch's "don't
+    burn an attempt" rule meant it would sit in pending_entries and be
+    re-requoted at the top of every scan of every future session forever."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    expired_plan_json = _RETRY_PLAN_JSON.replace('"2026-09-11"', '"2026-08-20"')
+    async with storage_db.connect(db_path) as conn:
+        await storage_write.put_state(
+            conn, "pending_entries", {"AAPL": [{"plan_json": expired_plan_json, "attempts": 1}]},
+        )
+
+    clients = FakeClients()
+    broker = MockBroker([])
+    # session_date resolves to 2026-08-31 (see current_or_next_session's use of
+    # FakeClients.get_clock's fixed 2026-08-29 timestamp elsewhere in this file)
+    # -- after the plan's 2026-08-20 expiry.
+    clock = _FastClock(datetime(2026, 9, 9, 15, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+    session = await main_module.current_or_next_session(clients)
+
+    async with storage_db.connect(db_path) as conn:
+        await main_module._retry_pending_entries(
+            deps, conn, session, cycle_id="c1", ts_utc="t", earnings_armed=False,
+            chain_cache=None, account=FAKE_ACCOUNT, budget=SimpleNamespace(exhausted=False),
+            day_pnl_pct=0.0, drawdown_pct=0.0, buying_power=Decimal("100000"),
+            past_entry_cutoff=False, reduce_only=False,
+            running_portfolio=SimpleNamespace(position_keys=frozenset(), delta_dollars=0.0, vega_dollars=0.0,
+                                               delta_limit=1.0, vega_limit=1.0),
+            running_open_underlyings=frozenset(), aggregate_risk=Decimal("0"),
+        )
+        assert broker.submitted == []
+        pending = await main_module._read_state_value(conn, "pending_entries")
+        assert pending == {}
+
+
+async def test_retry_pending_entries_drops_after_max_consecutive_quote_misses(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A symbol that stops quoting before its technical expiry must not
+    retry forever either -- MAX_ENTRY_RETRY_QUOTE_MISSES consecutive
+    no-quote scans drops it."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    async with storage_db.connect(db_path) as conn:
+        await storage_write.put_state(
+            conn, "pending_entries",
+            {"AAPL": [{
+                "plan_json": _RETRY_PLAN_JSON, "attempts": 1,
+                "quote_misses": main_module.MAX_ENTRY_RETRY_QUOTE_MISSES - 1,
+            }]},
+        )
+
+    async def fake_fetch_leg_snapshots(clients, occ_symbols):
+        return {}
+
+    monkeypatch.setattr(main_module, "fetch_leg_snapshots", fake_fetch_leg_snapshots)
+
+    clients = FakeClients()
+    broker = MockBroker([])
+    clock = _FastClock(datetime(2026, 9, 9, 15, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+    session = await main_module.current_or_next_session(clients)
+
+    async with storage_db.connect(db_path) as conn:
+        await main_module._retry_pending_entries(
+            deps, conn, session, cycle_id="c1", ts_utc="t", earnings_armed=False,
+            chain_cache=None, account=FAKE_ACCOUNT, budget=SimpleNamespace(exhausted=False),
+            day_pnl_pct=0.0, drawdown_pct=0.0, buying_power=Decimal("100000"),
+            past_entry_cutoff=False, reduce_only=False,
+            running_portfolio=SimpleNamespace(position_keys=frozenset(), delta_dollars=0.0, vega_dollars=0.0,
+                                               delta_limit=1.0, vega_limit=1.0),
+            running_open_underlyings=frozenset(), aggregate_risk=Decimal("0"),
+        )
+        pending = await main_module._read_state_value(conn, "pending_entries")
+        assert pending == {}   # the Nth consecutive miss finally drops it

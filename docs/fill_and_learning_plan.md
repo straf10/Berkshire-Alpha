@@ -695,7 +695,29 @@ same way.
 
 Gated on Tasks 3/4 running live first. `EV_RETENTION` stays at `0.50`.
 
-**Suite: 601 passed** (588 immediately before this round — one below the 589 this
-document's §5.6 recorded, pre-existing and untouched by this round — +13 new: 1 in
+### 6.7 2026-09-10 follow-up: `pending_entries` had no bound on a dead contract
+
+Operator review found a real leak in 6.5 before it manifested: the quote-missing branch
+of `_retry_pending_entries` deliberately does not burn an `attempts` slot (a transient
+data outage is not a verdict on the trade) — but a contract that has actually **expired**
+never returns a quote again, so that entry would sit in `agent_state["pending_entries"]`
+and be re-requoted at the top of every scan of every future session forever. Nothing
+anywhere stamped or checked a session boundary either, despite `_retry_pending_entries`'s
+own docstring claiming the attempt cap makes an entry "dropped for the rest of the
+session" — `pending_entries` has no session-date field at all, so an entry that still had
+attempts left would silently survive into a later session's first scan too.
+
+Two independent guards, both in `_retry_pending_entries`: an entry is dropped outright
+once its own `plan.expiry < session.session_date` (belt — this is what actually stops
+the leak, since a dead contract is exactly the case that never increments `attempts`),
+and a new per-entry `quote_misses` counter drops it after `MAX_ENTRY_RETRY_QUOTE_MISSES`
+(5) consecutive no-quote scans regardless of expiry (braces, for a symbol that stops
+quoting before its technical expiry — e.g. a halt or delisting). `quote_misses` resets
+to 0 implicitly the moment a fresh quote comes back, since the entries rebuilt after a
+successful requote never carry the key forward. `MAX_ENTRY_RETRY_QUOTE_MISSES` published
+in `/config` alongside `max_entry_retry_attempts`.
+
+**Suite: 603 passed** (588 immediately before the 2026-09-10 round — one below the 589
+this document's §5.6 recorded, pre-existing and untouched by this round — +15 new: 1 in
 `test_order_manager.py`, 4 in `test_reflector.py`, 3 in `test_storage.py`, 1 in
-`test_api.py`, 4 in `test_main.py`).
+`test_api.py`, 6 in `test_main.py`).

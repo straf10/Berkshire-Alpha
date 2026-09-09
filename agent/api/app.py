@@ -271,6 +271,9 @@ async def agent_settings() -> dict[str, Any]:
             # docs/fill_and_learning_plan.md S5 Task 5 (P2-1): confirms the
             # unfilled-entry retry path is in the running image.
             "max_entry_retry_attempts": c.MAX_ENTRY_RETRY_ATTEMPTS,
+            # 2026-09-10 review fix: confirms the pending-entry leak fix
+            # (expired-contract drop + quote-miss cap) is in the running image.
+            "max_entry_retry_quote_misses": c.MAX_ENTRY_RETRY_QUOTE_MISSES,
         },
         "regime_thresholds": {
             "rsi_period": c.RSI_PERIOD,
