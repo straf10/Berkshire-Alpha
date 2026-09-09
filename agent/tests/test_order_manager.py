@@ -170,6 +170,58 @@ async def test_walk_direction_credit() -> None:
     assert result.final_limit == cap
 
 
+async def test_requote_ev_guard_cancels_when_edge_disappears() -> None:
+    """docs/fill_and_learning_plan.md P0-3, correctness fix: the EV re-priced
+    at a fresh mid must actually be re-derived from the new mid -- for both
+    credit and debit structures d(EV)/d(price) is exactly -100, so a plan
+    that started with ev_at_mid=85 (p_success=0.90, max_profit=100,
+    max_loss=50) and re-quotes to a mid $1.00 worse has ev_at_mid=85-100=-15
+    and must cancel immediately. (Re-invoking the old _ev_at_mid(plan) here
+    always returned the SAME 85, since `plan` is frozen and that helper reads
+    only its static fields -- this guard could never fire.)"""
+    plan = SpreadPlan(
+        symbol="TST", structure=Structure.BULL_PUT_SPREAD, regime=Regime.CREDIT, expiry=EXPIRY, dte=4,
+        legs=(_leg("SELL", -0.28), _leg("BUY", -0.10)), width=3.0,
+        net_mid=Decimal("-1.00"), net_natural=Decimal("-0.50"),
+        max_profit_per_spread=Decimal("100"), max_loss_per_spread=Decimal("50"),
+        p_success=0.90, spot=100.0, short_leg_delta=0.28,
+    )
+    broker = MockBroker([_state("o1", OrderStatus.NEW)])  # never fills -- repeats NEW
+
+    calls = 0
+
+    async def requote(_plan: SpreadPlan) -> tuple[Decimal, Decimal]:
+        nonlocal calls
+        calls += 1
+        return Decimal("0.00"), Decimal("0.20")   # market moved a full dollar against us
+
+    result = await walk_to_fill(broker, plan, 1, clock=FakeClock(), requote=requote)
+    assert calls == 1   # cancelled on the FIRST requote check, not left to keep negotiating
+    assert result.status == "UNFILLED_REJECT"
+    limits = [limit for _, limit in broker.replaced]
+    # three ordinary WALK_STEP replaces happen before step%3==0 first fires
+    assert limits == [Decimal("-0.95"), Decimal("-0.90"), Decimal("-0.85")]
+    assert result.steps == 3
+
+
+async def test_requote_does_not_cancel_plan_that_never_had_positive_ev() -> None:
+    """A plan whose cap was never EV-driven (ev_at_mid <= 0, so walk_cap fell
+    back to WALK_CAP_FRACTION) has no "edge went negative" transition to
+    detect -- a naive `ev_at_mid <= 0 -> cancel` guard would kill an ordinary
+    flat-fraction walk the moment it re-quotes, regardless of direction."""
+    broker = MockBroker([_state("o1", OrderStatus.NEW)])  # never fills -- repeats NEW
+    plan = _debit_plan("2.06", "2.40")   # p_success=0.30 -> ev_at_mid < 0
+
+    async def requote(_plan: SpreadPlan) -> tuple[Decimal, Decimal]:
+        return Decimal("2.10"), Decimal("2.42")   # a mild adverse move
+
+    result = await walk_to_fill(broker, plan, 1, clock=FakeClock(), requote=requote)
+    # walked well past the first requote check (step 3) instead of being
+    # killed by it -- the walk is still using the flat-fraction cap.
+    assert len(broker.replaced) > 3
+    assert result.status == "UNFILLED_REJECT"
+
+
 async def test_walk_cap_at_seventy_percent() -> None:
     broker = MockBroker([_state("o1", OrderStatus.NEW)])
     result = await walk_to_fill(broker, _debit_plan("2.00", "3.00"), 1, clock=FakeClock())

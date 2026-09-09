@@ -271,22 +271,46 @@ async def _walk(
             fresh = await requote(plan)
             if fresh is not None:
                 new_mid, new_natural = _quantize_cent(fresh[0]), _quantize_cent(fresh[1])
-                new_ev_at_mid = None if is_closing_order else _ev_at_mid(plan)
-                # The market has moved against us enough that the plan's own
-                # modelled edge, repriced off the fresh mid, is gone -- do not
-                # keep paying up into a market that has left (P0-3).
-                if new_ev_at_mid is not None and new_ev_at_mid <= 0:
-                    await broker.cancel_order(order_id)
-                    events.append(WalkEvent(ts=clock.now(), step=step, action="CANCEL", order_id=order_id, limit=limit, status=state.status))
-                    return WalkResult(
-                        "UNFILLED_REJECT", order_id, limit, None, state.filled_qty, step,
-                        RejectCode.UNFILLED_REJECT, tuple(events),
-                    )
+                # `plan` is frozen -- re-invoking _ev_at_mid(plan) here always
+                # returns the SAME value, since it reads only
+                # plan.p_success/max_profit_per_spread/max_loss_per_spread,
+                # none of which change on a re-quote. That silently disabled
+                # this guard for every EV-positive plan. Reprice properly
+                # instead: for both credit and debit structures, d(EV)/d(price)
+                # is exactly -100 regardless of p_success (max_profit and
+                # max_loss both move linearly with price and their p/(1-p)
+                # weights sum to 1), so the EV at the fresh mid is the EV at
+                # the old mid shifted by -100 times how far price moved.
+                #
+                # Only meaningful -- and only checked -- when the walk's cap
+                # was actually SIZED off a positive edge in the first place
+                # (ev_at_mid > 0, the same condition walk_cap() itself uses).
+                # A plan that started at ev_at_mid <= 0 was never using the
+                # EV-aware budget (walk_cap fell back to WALK_CAP_FRACTION),
+                # so there is no "edge went negative" transition to detect --
+                # shifting a number that was never driving the cap and then
+                # cancelling on it would kill an ordinary flat-fraction walk
+                # the very first time it re-quotes.
+                if not is_closing_order and ev_at_mid is not None and ev_at_mid > 0:
+                    new_ev_at_mid = ev_at_mid - (new_mid - mid) * Decimal("100")
+                    # The market has moved against us enough that the plan's
+                    # own modelled edge, repriced off the fresh mid, is gone --
+                    # do not keep paying up into a market that has left (P0-3).
+                    if new_ev_at_mid <= 0:
+                        await broker.cancel_order(order_id)
+                        events.append(WalkEvent(ts=clock.now(), step=step, action="CANCEL", order_id=order_id, limit=limit, status=state.status))
+                        return WalkResult(
+                            "UNFILLED_REJECT", order_id, limit, None, state.filled_qty, step,
+                            RejectCode.UNFILLED_REJECT, tuple(events),
+                        )
+                else:
+                    new_ev_at_mid = None if is_closing_order else ev_at_mid
                 new_cap = walk_cap(
                     mid=new_mid, natural=new_natural, width=plan.width, is_closing=is_closing_order,
                     structure_is_credit=STRUCTURE_IS_CREDIT[plan.structure], ev_at_mid=new_ev_at_mid,
                 )
                 mid, natural, cap = new_mid, new_natural, new_cap
+                ev_at_mid = new_ev_at_mid  # a LATER requote shifts from here, not the stale submit-time value
 
         # docs/fill_and_learning_plan.md P0-2: stop only when the budget is
         # actually spent, not when the NEXT fixed-size step would overshoot
