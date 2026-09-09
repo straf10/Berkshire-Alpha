@@ -206,6 +206,28 @@ def test_credit_exceeding_width_rejected() -> None:
     assert result == BuildFailure.NON_POSITIVE_MAX_LOSS
 
 
+def test_wide_net_spread_rejected() -> None:
+    """docs/fill_and_learning_plan.md P0-4: two legs each comfortably inside
+    MAX_QUOTE_SPREAD_PCT (25%) can still compose a net spread nobody can
+    trade, because leg widths ADD while leg mids SUBTRACT. Short leg here is
+    25% wide (0.50/2.25), long leg 24% wide (0.40/1.70) -- both would pass
+    the per-leg gate -- but the net width is (0.50+0.40)/0.55 = 164%."""
+    chain = _chain([
+        _quote(97.0, "P", delta=-0.10, bid=1.50, ask=1.90),
+        _quote(100.0, "P", delta=-0.275, bid=2.00, ask=2.50),
+    ])
+    result = build(_snapshot(), _decision(Structure.BULL_PUT_SPREAD), chain)
+    assert result == BuildFailure.WIDE_NET_SPREAD
+
+
+def test_narrow_net_spread_not_rejected_by_width_gate() -> None:
+    """Control for test_wide_net_spread_rejected: the existing $3-wide credit
+    chain's net width is ~22%, comfortably under MAX_NET_SPREAD_WIDTH_PCT
+    (50%), so it must build normally."""
+    result = build(_snapshot(), _decision(Structure.BULL_PUT_SPREAD), _PUT_CREDIT_CHAIN)
+    assert isinstance(result, SpreadPlan)
+
+
 def test_debit_exceeding_max_fraction_of_width_rejected() -> None:
     """P0 remediation (Task 4, docs/audit_report_v2.md §9 item 4): a debit
     vertical whose net_mid already exceeds MAX_DEBIT_FRACTION_OF_WIDTH (0.60)

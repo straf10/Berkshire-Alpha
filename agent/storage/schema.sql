@@ -228,6 +228,28 @@ CREATE TABLE IF NOT EXISTS reflections (
   verdict            TEXT    NOT NULL,   -- LOOSEN | HOLD | TIGHTEN
   argument           TEXT    NOT NULL,   -- the model's reasoning, prose
   proposed_change    TEXT,               -- e.g. 'VWM_Z_STRONG 0.45 -> 0.40', NULL when HOLD
-  ok                 INTEGER NOT NULL    -- 0 when the LLM call failed; row still written
+  ok                 INTEGER NOT NULL,   -- 0 when the LLM call failed; row still written
+  -- docs/fill_and_learning_plan.md P1-1: SELECTION | EXECUTION | EXIT --
+  -- which stage of the pipeline the model believes the constraint lives in.
+  stage              TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_reflections_session ON reflections(session_date DESC);
+
+-- docs/fill_and_learning_plan.md P2. An UNFILLED_REJECT trades row produces
+-- no outcome label on its own -- this table is that label. One row per
+-- management-tick re-quote of an unfilled entry's original legs, for as long
+-- as the contract hasn't expired: whether it would have filled at the
+-- natural (marketable) price, what a position entered there would mark at
+-- now, and the resulting hypothetical P&L per spread.
+CREATE TABLE IF NOT EXISTS counterfactuals (
+  id                INTEGER PRIMARY KEY,
+  trade_id          INTEGER NOT NULL REFERENCES trades(id),
+  ts_utc            TEXT    NOT NULL,
+  would_have_filled INTEGER NOT NULL,
+  entry_at_natural  REAL    NOT NULL,   -- signed, per share
+  ev_at_entry       REAL    NOT NULL,   -- dollars per spread, at entry_at_natural
+  mark_to_market    REAL    NOT NULL,   -- current signed net mid, per share
+  hypothetical_pnl  REAL    NOT NULL,   -- dollars per spread, entry_at_natural -> now
+  detail            TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_counterfactuals_trade ON counterfactuals(trade_id);

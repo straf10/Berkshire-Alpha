@@ -225,9 +225,13 @@ async def test_trade8_lly_headline_loss_now_provably_impossible() -> None:
 
 # ---------------------------------------------------------------------------
 # Trade 7 -- UBER BEAR_PUT_SPREAD, debit, width 1.00, mid 0.48, natural 0.56.
-# Relative cap (0.48 + 0.70*0.08 = 0.536) is already tighter than the new
-# width*0.6=0.60 absolute bound, so the clamp is a no-op here -- behaviour is
-# unchanged: the walk still rejects around 0.53, same as live.
+# p_success=0.5 with max_profit==max_loss makes ev_at_mid exactly 0, so the
+# EV-aware cap (P0-1) falls back to WALK_CAP_FRACTION exactly as before.
+# Relative cap (quantize(0.48 + 0.70*0.08) = 0.54) is already tighter than
+# the width*0.6=0.60 absolute bound, so that clamp is a no-op here.
+# docs/fill_and_learning_plan.md P0-2: the walk now spends its FULL budget
+# instead of stopping one fixed-nickel step short of it, so the final limit
+# lands exactly on the cap (0.54) rather than the old under-shoot (0.53).
 # ---------------------------------------------------------------------------
 async def test_trade7_uber_walk_cap_unaffected_still_rejects() -> None:
     plan = _plan(Structure.BEAR_PUT_SPREAD, is_credit=False, width=1.00, mid="0.48", natural="0.56", short_delta=0.0)
@@ -235,7 +239,7 @@ async def test_trade7_uber_walk_cap_unaffected_still_rejects() -> None:
     result = await walk_to_fill(broker, plan, 17, clock=FakeClock())
     assert result.status == "UNFILLED_REJECT"
     assert result.final_limit is not None
-    assert result.final_limit <= Decimal("0.536")
+    assert result.final_limit == Decimal("0.54")
     assert result.final_limit > Decimal("0.50")  # unaffected by the new width clamp
 
 

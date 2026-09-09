@@ -3,6 +3,7 @@ from __future__ import annotations
 from decimal import ROUND_HALF_UP, Decimal
 
 from agent.config import (
+    EV_RETENTION,
     WALK_CAP_CREDIT_SIGN_FLOOR,
     WALK_CAP_FRACTION,
     WALK_CAP_MAX_FRACTION_OF_WIDTH,
@@ -29,9 +30,19 @@ def quantize_cent(x: Decimal) -> Decimal:
 
 def walk_cap(
     *, mid: Decimal, natural: Decimal, width: float, is_closing: bool,
-    structure_is_credit: bool,
+    structure_is_credit: bool, ev_at_mid: Decimal | None = None,
 ) -> Decimal:
     """Pure: no I/O, no clock.
+
+    docs/fill_and_learning_plan.md P0-1: `ev_at_mid` (dollars per spread,
+    from the plan's own p_success/max_profit_per_spread/max_loss_per_spread)
+    replaces the flat WALK_CAP_FRACTION budget with the economically correct
+    stopping rule -- walk until the trade stops being worth doing. Only
+    applied on OPENING orders with a positive edge at mid; `natural` may sit
+    on either side of `mid`, so `gap` is signed and the walk still only ever
+    moves from mid TOWARD natural (frac is clamped to [0, 1]). Closing orders
+    and any plan with no usable EV (ev_at_mid is None, non-positive, or
+    gap == 0) fall back to WALK_CAP_FRACTION exactly as before.
 
     OPENING orders are bounded on the DIRECTION of the order being walked
     (mid's sign), because an opening plan's direction and its structure always
@@ -47,7 +58,16 @@ def walk_cap(
     whose value is bounded below by zero. That is not hypothetical -- see
     WALK_CAP_CREDIT_SIGN_FLOOR's config.py comment for the live 2026-09-03
     book that motivated this."""
-    cap = quantize_cent(mid + WALK_CAP_FRACTION * (natural - mid))
+    gap = natural - mid
+    frac = WALK_CAP_FRACTION
+    if not is_closing and ev_at_mid is not None and ev_at_mid > 0 and gap != 0:
+        # Dollars per share we may concede before the plan's own modelled
+        # edge is gone. ev_at_mid is dollars PER SPREAD (x100 already
+        # applied by the caller); divide back to $/share to compare against
+        # `gap`, which is $/share.
+        room = (ev_at_mid * (Decimal("1") - EV_RETENTION)) / Decimal("100")
+        frac = min(Decimal("1"), max(Decimal("0"), room / abs(gap)))
+    cap = quantize_cent(mid + frac * gap)
     width_dec = Decimal(str(width))
     if is_closing:
         if structure_is_credit:

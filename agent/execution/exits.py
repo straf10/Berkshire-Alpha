@@ -38,6 +38,10 @@ class OpenTrade:
     entry_net_mid: Decimal
     max_profit_per_spread: Decimal
     legs: tuple[Leg, ...]
+    # docs/fill_and_learning_plan.md P1-2: MIN_HOLD_S needs to know how long
+    # the position has been open. ISO-8601, the row's own ts_utc (submit
+    # time) -- close enough to entry for a 15-minute hold guard.
+    ts_utc: str = ""
 
 
 def _quantize(x: Decimal) -> Decimal:
@@ -59,6 +63,25 @@ def current_net_mid(trade: OpenTrade, quotes: dict[str, OptionQuote]) -> Decimal
         sign = 1 if leg.side == "BUY" else -1
         total += sign * Decimal(str(quote.mid))
     return total
+
+
+def current_net_width_pct(trade: OpenTrade, quotes: dict[str, OptionQuote]) -> float | None:
+    """docs/fill_and_learning_plan.md P1-2: same metric as
+    spread_builder._net_width_pct, computed off the LIVE quote for an
+    already-open position -- the sum of each leg's own bid-ask width divided
+    by abs(the position's current net mid). None if any leg's quote is
+    missing or the mid is degenerate (caller should hold, not act on a
+    partial/degenerate reprice)."""
+    mid = current_net_mid(trade, quotes)
+    if mid is None or mid == 0:
+        return None
+    total_width = Decimal("0")
+    for leg in trade.legs:
+        quote = quotes.get(leg.occ_symbol)
+        if quote is None:
+            return None
+        total_width += Decimal(str(quote.ask)) - Decimal(str(quote.bid))
+    return float(total_width / abs(mid))
 
 
 def build_closing_plan(trade: OpenTrade, quotes: dict[str, OptionQuote], spot: float) -> SpreadPlan | None:

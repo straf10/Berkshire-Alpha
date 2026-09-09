@@ -4,7 +4,13 @@ from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
 
-from agent.config import CREDIT_STOP_LOSS_PCT, DEBIT_STOP_LOSS_PCT, DTE_FORCE_CLOSE, PROFIT_TARGET_PCT_OF_MAX
+from agent.config import (
+    CREDIT_STOP_LOSS_PCT,
+    DEBIT_STOP_LOSS_PCT,
+    DTE_FORCE_CLOSE,
+    MIN_HOLD_S,
+    PROFIT_TARGET_PCT_OF_MAX,
+)
 
 # Deterministic, zero LLM calls (plan.md's management pass). Priority order:
 # unwind > time stop > profit target > stop loss -- matches plan.md's own
@@ -28,8 +34,18 @@ class ExitDecision:
 def evaluate_exit(
     *, is_credit: bool, entry_net_mid: Decimal, current_net_mid: Decimal,
     max_profit_per_spread: Decimal, dte: int, unwind_triggered: bool,
+    held_s: float = float("inf"), quote_wide: bool = False,
 ) -> ExitDecision:
-    """entry_net_mid/current_net_mid use the project's signed convention
+    """docs/fill_and_learning_plan.md P1-2. `held_s` (seconds since entry) and
+    `quote_wide` (the live quote's net width exceeded MAX_NET_SPREAD_WIDTH_PCT)
+    gate STOP_LOSS only -- UNWIND and TIME_STOP_2DTE are risk controls, not
+    P&L rules, and are never delayed or refused by either guard. Defaults
+    (held_s=inf, quote_wide=False) are permissive, so every existing caller
+    that doesn't pass them evaluates exactly as before. The 2026-09-08 fill
+    (QCOM #13) was stopped out 6m23s after entry off a single mid read on a
+    chain that was 23% wide at entry -- neither guard existed.
+
+    entry_net_mid/current_net_mid use the project's signed convention
     (+ = debit, - = credit) for the OPENING side of the trade -- i.e.
     current_net_mid is what it would cost to enter the same position now,
     not the closing leg-flipped price. A credit trade's current_net_mid is
@@ -59,6 +75,18 @@ def evaluate_exit(
             return ExitDecision(True, ExitReason.PROFIT_TARGET, f"{float(profit_pct_of_max):.1%} of max profit")
         loss_pct_of_credit = cost_to_close / entry_credit
         if loss_pct_of_credit >= CREDIT_STOP_LOSS_PCT:
+            if held_s < MIN_HOLD_S:
+                return ExitDecision(
+                    False, None,
+                    f"stop-loss condition met ({float(loss_pct_of_credit):.1%} of credit) but held only "
+                    f"{held_s:.0f}s < MIN_HOLD_S={MIN_HOLD_S:.0f}s -- holding",
+                )
+            if quote_wide:
+                return ExitDecision(
+                    False, None,
+                    f"stop-loss condition met ({float(loss_pct_of_credit):.1%} of credit) but the quote "
+                    "is too wide to trust as evidence -- holding",
+                )
             return ExitDecision(True, ExitReason.STOP_LOSS, f"cost_to_close is {float(loss_pct_of_credit):.1%} of credit received")
         return ExitDecision(False, None, "hold")
 
@@ -72,5 +100,17 @@ def evaluate_exit(
         return ExitDecision(True, ExitReason.PROFIT_TARGET, f"{float(profit_pct_of_max):.1%} of max profit")
     loss_pct_of_debit = (entry_debit - proceeds) / entry_debit
     if loss_pct_of_debit >= DEBIT_STOP_LOSS_PCT:
+        if held_s < MIN_HOLD_S:
+            return ExitDecision(
+                False, None,
+                f"stop-loss condition met (proceeds {float(1 - loss_pct_of_debit):.1%} of debit) but held "
+                f"only {held_s:.0f}s < MIN_HOLD_S={MIN_HOLD_S:.0f}s -- holding",
+            )
+        if quote_wide:
+            return ExitDecision(
+                False, None,
+                f"stop-loss condition met (proceeds {float(1 - loss_pct_of_debit):.1%} of debit) but the "
+                "quote is too wide to trust as evidence -- holding",
+            )
         return ExitDecision(True, ExitReason.STOP_LOSS, f"proceeds are only {float(1 - loss_pct_of_debit):.1%} of debit paid")
     return ExitDecision(False, None, "hold")

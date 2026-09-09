@@ -82,3 +82,58 @@ def test_degenerate_max_profit_holds_rather_than_divide_by_zero() -> None:
         max_profit_per_spread=Decimal("0"), dte=5, unwind_triggered=False,
     )
     assert not d.should_close
+
+
+def test_stop_loss_held_below_min_hold_s_does_not_fire() -> None:
+    """docs/fill_and_learning_plan.md P1-2: QCOM #13 (2026-09-08) was
+    stopped out 6m23s (383s) after entry -- MIN_HOLD_S=900 must hold it."""
+    d = evaluate_exit(
+        is_credit=True, entry_net_mid=Decimal("-0.90"), current_net_mid=Decimal("-1.80"),
+        max_profit_per_spread=Decimal("90"), dte=5, unwind_triggered=False, held_s=383.0,
+    )
+    assert not d.should_close
+
+
+def test_stop_loss_fires_once_min_hold_s_elapsed() -> None:
+    d = evaluate_exit(
+        is_credit=True, entry_net_mid=Decimal("-0.90"), current_net_mid=Decimal("-1.80"),
+        max_profit_per_spread=Decimal("90"), dte=5, unwind_triggered=False, held_s=901.0,
+    )
+    assert d.should_close and d.reason == ExitReason.STOP_LOSS
+
+
+def test_stop_loss_refused_on_wide_quote() -> None:
+    """docs/fill_and_learning_plan.md P1-2: a mid off a chain wider than
+    MAX_NET_SPREAD_WIDTH_PCT is not evidence -- hold and re-evaluate."""
+    d = evaluate_exit(
+        is_credit=True, entry_net_mid=Decimal("-0.90"), current_net_mid=Decimal("-1.80"),
+        max_profit_per_spread=Decimal("90"), dte=5, unwind_triggered=False,
+        held_s=901.0, quote_wide=True,
+    )
+    assert not d.should_close
+
+
+def test_unwind_and_time_stop_ignore_min_hold_and_wide_quote() -> None:
+    """UNWIND/TIME_STOP_2DTE are risk controls, not P&L rules -- neither
+    guard applies to them."""
+    unwind = evaluate_exit(
+        is_credit=True, entry_net_mid=Decimal("-0.90"), current_net_mid=Decimal("-1.80"),
+        max_profit_per_spread=Decimal("90"), dte=5, unwind_triggered=True,
+        held_s=1.0, quote_wide=True,
+    )
+    assert unwind.should_close and unwind.reason == ExitReason.UNWIND
+
+    time_stop = evaluate_exit(
+        is_credit=True, entry_net_mid=Decimal("-0.90"), current_net_mid=Decimal("-1.80"),
+        max_profit_per_spread=Decimal("90"), dte=1, unwind_triggered=False,
+        held_s=1.0, quote_wide=True,
+    )
+    assert time_stop.should_close and time_stop.reason == ExitReason.TIME_STOP_2DTE
+
+
+def test_debit_stop_loss_held_below_min_hold_s_does_not_fire() -> None:
+    d = evaluate_exit(
+        is_credit=False, entry_net_mid=Decimal("1.00"), current_net_mid=Decimal("0.40"),
+        max_profit_per_spread=Decimal("200"), dte=5, unwind_triggered=False, held_s=1.0,
+    )
+    assert not d.should_close

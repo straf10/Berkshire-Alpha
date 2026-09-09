@@ -74,5 +74,10 @@ class NewsAnalystOutput(BaseModel):
 
 class ReflectorOutput(BaseModel):
     verdict: Literal["LOOSEN", "HOLD", "TIGHTEN"]
+    # docs/fill_and_learning_plan.md P1-1: names WHERE the model thinks the
+    # money went. A verdict with no stage is how "TIGHTEN NO_REGIME" got
+    # produced on a day nothing was wrong with the regime filter -- the
+    # actual constraint was EXECUTION (the walk cap), not SELECTION.
+    stage: Literal["SELECTION", "EXECUTION", "EXIT"]
     argument: str = Field(..., min_length=40, max_length=1200)
     proposed_change: str | None = Field(default=None, max_length=120)

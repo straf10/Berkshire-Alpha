@@ -8,7 +8,9 @@ from typing import Awaitable, Callable, Final, Literal
 
 from agent.config import (
     PARTIAL_FILL_MAX_POLL_S,
+    WALK_MIN_STEPS,
     WALK_POLL_INTERVAL_S,
+    WALK_REQUOTE_EVERY_STEPS,
     WALK_REST_S,
     WALK_STEP,
 )
@@ -20,6 +22,23 @@ from agent.tools.walk_cap import walk_cap
 logger = logging.getLogger(__name__)
 
 OrderIdSink = Callable[[str, int], Awaitable[None]]   # (order_id, step)
+_CENT: Final[Decimal] = Decimal("0.01")
+# docs/fill_and_learning_plan.md P0-3: re-quote callback, given the leg OCC
+# symbols and returning fresh (mid, natural) or None if any leg's quote is
+# unavailable. Optional so the existing tests and the closing path (which
+# already reprices every tick via build_closing_plan) can pass None and walk
+# exactly as before.
+RequoteFn = Callable[[SpreadPlan], Awaitable[tuple[Decimal, Decimal] | None]]
+
+
+def _ev_at_mid(plan: SpreadPlan) -> Decimal | None:
+    """Dollars per spread, from the plan's own modelled edge -- feeds
+    walk_cap's EV-aware budget (docs/fill_and_learning_plan.md P0-1). None
+    when p_success is unset (closing plans set it to 0.0, which correctly
+    produces a non-positive EV and falls back to WALK_CAP_FRACTION inside
+    walk_cap)."""
+    p = Decimal(str(plan.p_success))
+    return p * plan.max_profit_per_spread - (Decimal("1") - p) * plan.max_loss_per_spread
 
 
 @dataclass(frozen=True)
@@ -80,14 +99,14 @@ async def _poll_partial_until_terminal(
 
 async def walk_to_fill(
     broker: BrokerPort, plan: SpreadPlan, qty: int, *, clock: ClockPort,
-    on_order_id: OrderIdSink | None = None,
+    on_order_id: OrderIdSink | None = None, requote: RequoteFn | None = None,
 ) -> WalkResult:
     """Never raises -- every broker exception is caught, classified, and
     returned as a REJECTED result. An overnight crash loop would otherwise
     cost a full session."""
     events: list[WalkEvent] = []
     try:
-        return await _walk(broker, plan, qty, clock, events, on_order_id)
+        return await _walk(broker, plan, qty, clock, events, on_order_id, requote)
     except Exception:  # noqa: BLE001 -- deliberate: no reject path may raise out of the loop
         logger.exception(
             "walk_to_fill crashed for %s %s qty=%d -- returning REJECTED/UNKNOWN",
@@ -158,16 +177,18 @@ async def _emit_order_id(on_order_id: OrderIdSink | None, order_id: str, step: i
 
 async def _walk(
     broker: BrokerPort, plan: SpreadPlan, qty: int, clock: ClockPort, events: list[WalkEvent],
-    on_order_id: OrderIdSink | None = None,
+    on_order_id: OrderIdSink | None = None, requote: RequoteFn | None = None,
 ) -> WalkResult:
-    # mid/natural come from the plan, computed once from the cached chain --
-    # the walk does not re-quote (docs/day2_spine_plan.md Group 5).
+    # mid/natural come from the plan, computed once from the cached chain at
+    # submit time; re-quoted periodically below (P0-3) rather than never, as
+    # this docstring used to promise (docs/fill_and_learning_plan.md P0-3).
     mid = _quantize_cent(plan.net_mid)
     natural = _quantize_cent(plan.net_natural)
     is_closing_order = plan.legs[0].intent in (Intent.BUY_TO_CLOSE, Intent.SELL_TO_CLOSE)
+    ev_at_mid = None if is_closing_order else _ev_at_mid(plan)
     cap = walk_cap(
         mid=mid, natural=natural, width=plan.width, is_closing=is_closing_order,
-        structure_is_credit=STRUCTURE_IS_CREDIT[plan.structure],
+        structure_is_credit=STRUCTURE_IS_CREDIT[plan.structure], ev_at_mid=ev_at_mid,
     )
 
     # The cap bounds the WALK; without this min() it does not bound the FIRST
@@ -244,8 +265,34 @@ async def _walk(
                 RejectCode.UNFILLED_REJECT, tuple(events),
             )
 
-        # NEW / ACCEPTED -> replace one step further, unless the cap is reached.
-        if limit + WALK_STEP > cap:
+        # docs/fill_and_learning_plan.md P0-3: re-quote periodically rather
+        # than negotiating forever against a snapshot taken at submit time.
+        if requote is not None and step > 0 and step % WALK_REQUOTE_EVERY_STEPS == 0:
+            fresh = await requote(plan)
+            if fresh is not None:
+                new_mid, new_natural = _quantize_cent(fresh[0]), _quantize_cent(fresh[1])
+                new_ev_at_mid = None if is_closing_order else _ev_at_mid(plan)
+                # The market has moved against us enough that the plan's own
+                # modelled edge, repriced off the fresh mid, is gone -- do not
+                # keep paying up into a market that has left (P0-3).
+                if new_ev_at_mid is not None and new_ev_at_mid <= 0:
+                    await broker.cancel_order(order_id)
+                    events.append(WalkEvent(ts=clock.now(), step=step, action="CANCEL", order_id=order_id, limit=limit, status=state.status))
+                    return WalkResult(
+                        "UNFILLED_REJECT", order_id, limit, None, state.filled_qty, step,
+                        RejectCode.UNFILLED_REJECT, tuple(events),
+                    )
+                new_cap = walk_cap(
+                    mid=new_mid, natural=new_natural, width=plan.width, is_closing=is_closing_order,
+                    structure_is_credit=STRUCTURE_IS_CREDIT[plan.structure], ev_at_mid=new_ev_at_mid,
+                )
+                mid, natural, cap = new_mid, new_natural, new_cap
+
+        # docs/fill_and_learning_plan.md P0-2: stop only when the budget is
+        # actually spent, not when the NEXT fixed-size step would overshoot
+        # it. A 3-cent budget against a 5-cent WALK_STEP used to produce zero
+        # steps; it now produces three 1-cent steps.
+        if limit >= cap:
             await broker.cancel_order(order_id)
             events.append(WalkEvent(ts=clock.now(), step=step, action="CANCEL", order_id=order_id, limit=limit, status=state.status))
             return WalkResult(
@@ -253,7 +300,9 @@ async def _walk(
                 RejectCode.UNFILLED_REJECT, tuple(events),
             )
 
-        limit = _quantize_cent(limit + WALK_STEP)
+        headroom = abs(cap - limit)
+        adaptive_step = max(_CENT, min(WALK_STEP, _quantize_cent(headroom / WALK_MIN_STEPS)))
+        limit = min(cap, _quantize_cent(limit + adaptive_step))
         state = await broker.replace_order(order_id, limit)
         order_id = state.order_id  # replace mints a NEW id -- rebind every step
         step += 1

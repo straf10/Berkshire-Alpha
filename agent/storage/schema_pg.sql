@@ -191,6 +191,21 @@ CREATE TABLE IF NOT EXISTS reflections (
   verdict            TEXT    NOT NULL,
   argument           TEXT    NOT NULL,
   proposed_change    TEXT,
-  ok                 INTEGER NOT NULL
+  ok                 INTEGER NOT NULL,
+  stage              TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_reflections_session ON reflections(session_date DESC);
+
+-- docs/fill_and_learning_plan.md P2. See schema.sql's comment.
+CREATE TABLE IF NOT EXISTS counterfactuals (
+  id                SERIAL PRIMARY KEY,
+  trade_id          INTEGER NOT NULL REFERENCES trades(id),
+  ts_utc            TEXT    NOT NULL,
+  would_have_filled INTEGER NOT NULL,
+  entry_at_natural  REAL    NOT NULL,
+  ev_at_entry       REAL    NOT NULL,
+  mark_to_market    REAL    NOT NULL,
+  hypothetical_pnl  REAL    NOT NULL,
+  detail            TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_counterfactuals_trade ON counterfactuals(trade_id);

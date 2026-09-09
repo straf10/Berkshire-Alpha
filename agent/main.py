@@ -28,10 +28,12 @@ from agent.config import (
     LLM_SEMAPHORE_LIMIT,
     MACRO_TICKERS,
     MANAGEMENT_INTERVAL_S,
+    MAX_NET_SPREAD_WIDTH_PCT,
     MAX_RISK_PER_TRADE_PCT,
     NEWS_LOOKBACK_H,
     RECONCILE_MAX_CHAIN_HOPS,
     RECONCILE_MAX_S,
+    STOP_CONFIRM_TICKS,
     UNIVERSE,
     WALK_POLL_INTERVAL_S,
     Settings,
@@ -41,14 +43,16 @@ from agent.execution import cli_bridge
 from agent.execution.alpaca_client import AlpacaClients, probe_equity_feed
 from agent.execution.assignment import ReconcileResult, reconcile
 from agent.execution.broker import AlpacaBroker, BrokerPort, ClockPort, RealClock
-from agent.execution.exits import OpenTrade, build_closing_plan, current_net_mid
+from agent.execution.exits import OpenTrade, build_closing_plan, current_net_mid, current_net_width_pct
 from agent.execution.order_manager import (
     STRUCTURAL_CLOSE_REJECTS,
+    RequoteFn,
     close_legs_individually,
     walk_to_fill,
 )
 from agent.risk.assignment import AssignmentEvent, AssignmentStatus, detect_assignments
-from agent.risk.exits import evaluate_exit
+from agent.risk.counterfactual import ev_at_price, hypothetical_pnl
+from agent.risk.exits import ExitReason, evaluate_exit
 from agent.risk.gates import GateContext, GateDecision, evaluate
 from agent.risk.greeks import aggregate, build_exposures, marginal
 from agent.schemas.execution import (
@@ -80,6 +84,7 @@ from agent.tools.llm import LlmBudget, LlmClient, LlmPort, LlmUnavailable, load_
 from agent.tools.market_data import ChainCache, fetch_leg_snapshots, fetch_universe_bars
 from agent.tools.news import Headline, fetch_headlines
 from agent.tools.quant import compute_all
+from agent.tools.walk_cap import quantize_cent
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +198,28 @@ def _max_loss_from_fill(plan: SpreadPlan, fill_price: Decimal) -> Decimal:
     return f * 100
 
 
+def _requote_plan_fn(deps: "Deps") -> RequoteFn:
+    """docs/fill_and_learning_plan.md P0-3: re-fetches this plan's leg quotes
+    and recomputes (mid, natural) in the plan's OWN side convention (BUY leg
+    -> ask is natural, SELL leg -> bid is natural), mirroring
+    spread_builder._net_mid_and_natural. None if any leg's quote vanished --
+    the walk holds its current cap rather than acting on a partial reprice."""
+    async def _requote(plan: SpreadPlan) -> tuple[Decimal, Decimal] | None:
+        quotes = await fetch_leg_snapshots(deps.clients, [leg.occ_symbol for leg in plan.legs])
+        net_mid = Decimal("0")
+        net_natural = Decimal("0")
+        for leg in plan.legs:
+            quote = quotes.get(leg.occ_symbol)
+            if quote is None:
+                return None
+            sign = 1 if leg.side == "BUY" else -1
+            net_mid += sign * Decimal(str(quote.mid))
+            natural_price = Decimal(str(quote.ask)) if leg.side == "BUY" else Decimal(str(quote.bid))
+            net_natural += sign * natural_price
+        return net_mid, net_natural
+    return _requote
+
+
 async def _open_defined_risk(conn: aiosqlite.Connection) -> Decimal:
     """Sum of max_loss_per_spread x filled_qty over trades still open (docs/
     day3_llm_plan.md S1a) -- raw query, deliberately bypassing storage.read
@@ -216,13 +243,13 @@ async def _open_trades(conn: aiosqlite.Connection) -> list[OpenTrade]:
     precedent as _open_defined_risk."""
     cur = await conn.execute(
         """SELECT t.id, t.symbol, t.structure, t.expiry, t.filled_qty, t.final_limit,
-                  t.submitted_limit, t.legs_json, d.plan_json
+                  t.submitted_limit, t.fill_price, t.legs_json, d.plan_json, t.ts_utc
            FROM trades t JOIN decisions d ON d.id = t.decision_id
            WHERE t.closed_at IS NULL AND t.filled_qty > 0 AND t.status IN ('FILLED','PARTIAL_SUSPENDED')"""
     )
     rows = await cur.fetchall()
     open_trades: list[OpenTrade] = []
-    for trade_id, symbol, structure_s, expiry_s, filled_qty, final_limit, submitted_limit, legs_json, plan_json in rows:
+    for trade_id, symbol, structure_s, expiry_s, filled_qty, final_limit, submitted_limit, fill_price, legs_json, plan_json, trade_ts_utc in rows:
         if plan_json is None:
             continue
         # docs/review_2026-09-04.md P1-2: per-row, so one unparseable row does
@@ -241,12 +268,21 @@ async def _open_trades(conn: aiosqlite.Connection) -> list[OpenTrade]:
                 for leg in json.loads(legs_json)
             )
             structure = Structure(structure_s)
-            entry_price = Decimal(str(final_limit if final_limit is not None else submitted_limit))
+            # docs/fill_and_learning_plan.md P0-5: the ACTUAL fill, not the
+            # limit -- a walk that improves off the submitted/final limit by
+            # even a few cents mispriced the stop-loss trigger and
+            # realized_pnl by that amount x100 x qty (main.py:244 was the
+            # limit before this fix).
+            entry_price = Decimal(str(
+                fill_price if fill_price is not None
+                else (final_limit if final_limit is not None else submitted_limit)
+            ))
             open_trades.append(OpenTrade(
                 trade_id=trade_id, symbol=symbol, structure=structure,
                 regime=Regime.CREDIT if STRUCTURE_IS_CREDIT[structure] else Regime.DEBIT,
                 expiry=date.fromisoformat(expiry_s), qty=int(filled_qty), entry_net_mid=entry_price,
                 max_profit_per_spread=Decimal(str(plan_data["max_profit_per_spread"])), legs=legs,
+                ts_utc=trade_ts_utc,
             ))
         except Exception:  # noqa: BLE001 -- deliberate: see above
             logger.exception(
@@ -255,6 +291,76 @@ async def _open_trades(conn: aiosqlite.Connection) -> list[OpenTrade]:
                 "an operator repairs it", trade_id, symbol,
             )
     return open_trades
+
+
+async def _counterfactual_tick(deps: Deps, conn: aiosqlite.Connection, session: SessionPlan) -> None:
+    """docs/fill_and_learning_plan.md P2. An UNFILLED_REJECT produces no
+    outcome label today: the plan is discarded and nothing further is ever
+    recorded about it. For every trade still sitting UNFILLED_REJECT whose
+    contract hasn't expired, re-quote its original legs and record whether it
+    would have filled at the natural (marketable) price, the EV that price
+    implied, what a position entered there would mark at now, and the
+    resulting hypothetical P&L -- so every rejection becomes a labelled
+    example instead of a blank one."""
+    cur = await conn.execute(
+        """SELECT t.id, t.structure, t.expiry, t.legs_json, d.plan_json
+           FROM trades t JOIN decisions d ON d.id = t.decision_id
+           WHERE t.status = 'UNFILLED_REJECT' AND t.closed_at IS NULL"""
+    )
+    rows = await cur.fetchall()
+    if not rows:
+        return
+
+    for trade_id, structure_s, expiry_s, legs_json, plan_json in rows:
+        if plan_json is None:
+            continue
+        try:
+            expiry = date.fromisoformat(expiry_s)
+            if expiry < session.session_date:
+                continue  # expired -- nothing left to learn from re-quoting a dead contract
+            plan_data = json.loads(plan_json)
+            legs = tuple(
+                Leg(
+                    occ_symbol=leg["occ_symbol"], strike=float(leg["strike"]), right=leg["right"],
+                    side=leg["side"], ratio_qty=int(leg["ratio_qty"]), intent=Intent(leg["intent"]),
+                    delta=float(leg["delta"]), vega=float(leg["vega"]), bid=float(leg["bid"]), ask=float(leg["ask"]),
+                )
+                for leg in json.loads(legs_json)
+            )
+            is_credit = STRUCTURE_IS_CREDIT[Structure(structure_s)]
+            width = Decimal(str(plan_data["width"]))
+            p_success_v = Decimal(str(plan_data["p_success"]))
+            natural = quantize_cent(Decimal(str(plan_data["net_natural"])))
+        except Exception:  # noqa: BLE001 -- one malformed row must not stop the rest
+            logger.exception("counterfactual_tick: trade %d could not be reconstructed -- skipped", trade_id)
+            continue
+
+        quotes = await fetch_leg_snapshots(deps.clients, [leg.occ_symbol for leg in legs])
+        current_mid = Decimal("0")
+        if any(leg.occ_symbol not in quotes for leg in legs):
+            continue  # a leg's quote is gone -- retry next tick rather than record a partial reprice
+        for leg in legs:
+            sign = 1 if leg.side == "BUY" else -1
+            current_mid += sign * Decimal(str(quotes[leg.occ_symbol].mid))
+        current_mid = quantize_cent(current_mid)
+
+        ev_at_entry = ev_at_price(is_credit=is_credit, price=natural, width=width, p_success=p_success_v)
+        pnl = hypothetical_pnl(is_credit=is_credit, entry_price=natural, current_price=current_mid)
+
+        await storage_write.insert_counterfactual(conn, storage_write.CounterfactualRow(
+            trade_id=trade_id, ts_utc=datetime.now(timezone.utc).isoformat(),
+            # `natural` IS the marketable price at rejection time, so entering
+            # there would always have filled by construction -- the field
+            # exists for a future counterfactual (e.g. a re-quoted natural
+            # that has since moved past what the walk could ever have paid)
+            # rather than being a live branch today.
+            would_have_filled=True, entry_at_natural=natural, ev_at_entry=ev_at_entry,
+            mark_to_market=current_mid, hypothetical_pnl=pnl,
+            detail=(
+                f"entered at natural {natural} (EV@natural {float(ev_at_entry):.2f}/spread); "
+                f"now marks {current_mid}, hypothetical P&L {float(pnl):+.2f}/spread"
+            ),
+        ))
 
 
 _SUBMITTED_STATUSES = frozenset({AssignmentStatus.FLATTENED, AssignmentStatus.PENDING, AssignmentStatus.REJECTED})
@@ -660,12 +766,54 @@ async def _exit_one_trade(
         logger.warning("exit_tick: %s trade %d missing a live quote -- holding, retry next tick", trade.symbol, trade.trade_id)
         return
 
+    # docs/fill_and_learning_plan.md P1-2: how long the position has been
+    # open, and whether the live quote is too wide to trust as a stop-loss
+    # trigger. Both gate STOP_LOSS only -- see evaluate_exit's docstring.
+    held_s = float("inf")
+    if trade.ts_utc:
+        try:
+            entered_at = datetime.fromisoformat(trade.ts_utc)
+            if entered_at.tzinfo is None:
+                entered_at = entered_at.replace(tzinfo=timezone.utc)
+            held_s = (datetime.now(timezone.utc) - entered_at).total_seconds()
+        except ValueError:
+            pass
+    width_pct = current_net_width_pct(trade, quotes)
+    quote_wide = width_pct is not None and width_pct > MAX_NET_SPREAD_WIDTH_PCT
+
     dte = (trade.expiry - session.session_date).days
     decision = evaluate_exit(
         is_credit=STRUCTURE_IS_CREDIT[trade.structure], entry_net_mid=trade.entry_net_mid,
         current_net_mid=mid, max_profit_per_spread=trade.max_profit_per_spread,
-        dte=dte, unwind_triggered=unwind,
+        dte=dte, unwind_triggered=unwind, held_s=held_s, quote_wide=quote_wide,
     )
+
+    # docs/fill_and_learning_plan.md P1-2: STOP_LOSS must additionally hold on
+    # STOP_CONFIRM_TICKS consecutive ticks before it actually acts -- a single
+    # noisy mark is not enough to terminate a position (evaluate_exit's
+    # held_s/quote_wide guards handle the first tick; this handles the rest).
+    # UNWIND/TIME_STOP_2DTE/PROFIT_TARGET all act immediately, unconfirmed.
+    confirm_key = str(trade.trade_id)
+    if decision.should_close and decision.reason == ExitReason.STOP_LOSS:
+        pending = await _read_state_value(conn, "stop_confirm_ticks") or {}
+        ticks = int(pending.get(confirm_key, 0)) + 1
+        if ticks < STOP_CONFIRM_TICKS:
+            pending[confirm_key] = ticks
+            await storage_write.put_state(conn, "stop_confirm_ticks", pending)
+            logger.info(
+                "exit_tick: %s trade %d STOP_LOSS condition met (%d/%d ticks) -- holding for confirmation",
+                trade.symbol, trade.trade_id, ticks, STOP_CONFIRM_TICKS,
+            )
+            return
+        if confirm_key in pending:
+            del pending[confirm_key]
+            await storage_write.put_state(conn, "stop_confirm_ticks", pending)
+    elif not decision.should_close:
+        pending = await _read_state_value(conn, "stop_confirm_ticks") or {}
+        if confirm_key in pending:
+            del pending[confirm_key]
+            await storage_write.put_state(conn, "stop_confirm_ticks", pending)
+
     if not decision.should_close:
         return
 
@@ -966,6 +1114,28 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
         shortlisted_symbols = {c.snapshot.symbol for c in candidates}
         print(_format_macro_line(macro_snapshot, macro_tuning))
 
+        # docs/fill_and_learning_plan.md P0-4: check the NET spread width
+        # before a shortlisted candidate consumes any debate budget -- a
+        # chain this wide (GS/ARM/UNH-class, 2026-09-08) cannot be filled
+        # profitably regardless of what the LLM argues. The same check runs
+        # again, authoritatively, inside build()/build_from_proposal() below
+        # (a WIDE_NET_SPREAD candidate excluded here still needs a decisions
+        # row with that gate_reason, which the existing build_failure branch
+        # produces once it is no longer in outcomes_by_symbol).
+        wide_net_spread_symbols: set[str] = set()
+        for c in candidates:
+            q = c.snapshot
+            rd = select(q, assigned_regimes.get(q.symbol, Regime.NO_TRADE), skew_thresh, macro_tuning.vwm_bar)
+            if rd.regime == Regime.NO_TRADE or rd.structure is None:
+                continue
+            chain = chain_cache.get(q.symbol)
+            if chain is None:
+                continue
+            if build(q, rd, chain) == BuildFailure.WIDE_NET_SPREAD:
+                wide_net_spread_symbols.add(q.symbol)
+        if wide_net_spread_symbols:
+            candidates = [c for c in candidates if c.snapshot.symbol not in wide_net_spread_symbols]
+
         positions = await _tracked(conn, "ALPACA_CLI", "list_positions", cli_bridge.list_positions())
         exposures = await build_exposures(positions, deps.clients, spots)
         portfolio = aggregate(exposures, account.equity)
@@ -1197,7 +1367,9 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
                 async def _sink(order_id: str, step: int) -> None:
                     await storage_write.update_trade_order_id(conn, trade_id, order_id=order_id, step=step)
 
-                result = await walk_to_fill(deps.broker, plan, qty_val, clock=deps.clock, on_order_id=_sink)
+                result = await walk_to_fill(
+                    deps.broker, plan, qty_val, clock=deps.clock, on_order_id=_sink, requote=_requote_plan_fn(deps),
+                )
                 if result.filled_qty:
                     # docs/audit_report_v2.md §6/Task 3: recompute risk from the
                     # ACTUAL fill, not the pre-walk plan -- plan.max_loss_per_spread
@@ -1346,6 +1518,7 @@ async def _management_tick(deps: Deps, session: SessionPlan, conn: aiosqlite.Con
     parked = await _read_state_value(conn, "legged_close_pending") or {}
     skip = frozenset(assignment.trade_ids) | {int(tid) for tid in parked}
     await exit_tick(deps, session, conn, spots, skip_trade_ids=skip)
+    await _counterfactual_tick(deps, conn, session)
     await storage_write.put_state(conn, "account", {
         "equity": str(account.equity), "last_equity": str(account.last_equity),
         "buying_power": str(account.buying_power), "cash": str(account.cash),
@@ -1423,7 +1596,8 @@ async def _session_trades(conn: aiosqlite.Connection, session_date: str) -> list
     Feeds reflector.digest's outcome block (docs/review.md Task 7); same
     raw-query convention as _session_decisions above."""
     cur = await conn.execute(
-        "SELECT t.symbol, t.submitted_limit, t.fill_price, t.realized_pnl, t.closed_at "
+        "SELECT t.symbol, t.submitted_limit, t.fill_price, t.realized_pnl, t.closed_at, "
+        "t.status, t.final_limit, d.plan_json "
         "FROM trades t JOIN decisions d ON t.decision_id = d.id WHERE d.session_date = ?",
         (session_date,),
     )
@@ -1455,6 +1629,7 @@ def _reflection_row(result: reflector.ReflectionResult) -> storage_write.Reflect
         ),
         proposed_change=output.proposed_change if output is not None else None,
         ok=result.ok,
+        stage=output.stage if output is not None else None,
     )
 
 

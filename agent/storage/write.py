@@ -189,6 +189,23 @@ class ReflectionRow:
     argument: str
     proposed_change: str | None
     ok: bool
+    # docs/fill_and_learning_plan.md P1-1: SELECTION | EXECUTION | EXIT, or
+    # None when the LLM call failed (ok=False) or predates this field.
+    stage: str | None = None
+
+
+@dataclass(frozen=True)
+class CounterfactualRow:
+    """docs/fill_and_learning_plan.md P2. One re-quote of an unfilled entry's
+    original legs -- see schema.sql's `counterfactuals` table comment."""
+    trade_id: int
+    ts_utc: str
+    would_have_filled: bool
+    entry_at_natural: Decimal
+    ev_at_entry: Decimal
+    mark_to_market: Decimal
+    hypothetical_pnl: Decimal
+    detail: str
 
 
 @dataclass(frozen=True)
@@ -366,12 +383,12 @@ async def insert_reflection(conn: aiosqlite.Connection, r: ReflectionRow) -> int
     await conn.execute(
         """INSERT INTO reflections
            (ts_utc, session_date, decisions_examined, binding_constraint, constraint_count,
-            verdict, argument, proposed_change, ok)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            verdict, argument, proposed_change, ok, stage)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(session_date) DO NOTHING""",
         (
             r.ts_utc, r.session_date, r.decisions_examined, r.binding_constraint,
-            r.constraint_count, r.verdict, r.argument, r.proposed_change, int(r.ok),
+            r.constraint_count, r.verdict, r.argument, r.proposed_change, int(r.ok), r.stage,
         ),
     )
     await conn.commit()
@@ -379,6 +396,20 @@ async def insert_reflection(conn: aiosqlite.Connection, r: ReflectionRow) -> int
     row = await cur.fetchone()
     assert row is not None
     return int(row[0])
+
+
+async def insert_counterfactual(conn: aiosqlite.Connection, r: CounterfactualRow) -> None:
+    await conn.execute(
+        """INSERT INTO counterfactuals
+           (trade_id, ts_utc, would_have_filled, entry_at_natural, ev_at_entry,
+            mark_to_market, hypothetical_pnl, detail)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            r.trade_id, r.ts_utc, int(r.would_have_filled), float(r.entry_at_natural),
+            float(r.ev_at_entry), float(r.mark_to_market), float(r.hypothetical_pnl), r.detail,
+        ),
+    )
+    await conn.commit()
 
 
 async def insert_greeks_snapshot(conn: aiosqlite.Connection, g: GreeksRow) -> int:

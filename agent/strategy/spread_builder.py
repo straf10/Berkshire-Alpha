@@ -10,6 +10,7 @@ from agent.config import (
     LONG_LEG_STRIKE_OFFSET,
     LONG_LEG_STRIKE_OFFSET_FALLBACK,
     MAX_DEBIT_FRACTION_OF_WIDTH,
+    MAX_NET_SPREAD_WIDTH_PCT,
     SHORT_DELTA_BAND,
     SHORT_DELTA_TARGET,
 )
@@ -44,6 +45,13 @@ class BuildFailure(StrEnum):
     ZERO_OR_NEGATIVE_WIDTH = "ZERO_OR_NEGATIVE_WIDTH"
     NON_POSITIVE_MAX_LOSS = "NON_POSITIVE_MAX_LOSS"
     DEBIT_EXCEEDS_MAX_FRACTION_OF_WIDTH = "DEBIT_EXCEEDS_MAX_FRACTION_OF_WIDTH"
+    # docs/fill_and_learning_plan.md P0-4: gates the NET spread, not the leg.
+    # MAX_QUOTE_SPREAD_PCT passes both legs of a chain whose composed spread
+    # cannot be filled profitably -- leg widths add in absolute terms while
+    # leg mids subtract, so two 24%-wide legs can compose a 130%-wide net
+    # market. Checked at build time, before either the debate stage or the
+    # walk ever sees the plan.
+    WIDE_NET_SPREAD = "WIDE_NET_SPREAD"
 
 
 def _quantize(x: Decimal) -> Decimal:
@@ -95,6 +103,21 @@ def _find_long_debit(
     itm_side = [q for q in side if (q.strike <= spot if right == "C" else q.strike >= spot)]
     pool = itm_side if itm_side else list(side)
     return min(pool, key=lambda q: (abs(q.strike - spot), q.strike))
+
+
+def _net_width_pct(short: OptionQuote, long: OptionQuote, net_mid: Decimal) -> float:
+    """(net_natural - net_bidside) / abs(net_mid) -- the round-trip cost of
+    entering then immediately exiting the vertical, as a fraction of its own
+    mid. Algebraically this is just the sum of each leg's own bid-ask width
+    (net_natural = long.ask - short.bid; net_bidside = long.bid - short.ask;
+    their difference is (long.ask-long.bid) + (short.ask-short.bid)), which
+    is why MAX_QUOTE_SPREAD_PCT -- a PER-LEG check -- cannot catch this: two
+    legs each comfortably inside 25% can still sum to a net width nobody can
+    trade, because leg widths add while leg mids subtract."""
+    if net_mid == 0:
+        return math.inf
+    total_width = (short.ask - short.bid) + (long.ask - long.bid)
+    return total_width / abs(float(net_mid))
 
 
 def _sign(side: Literal["BUY", "SELL"]) -> int:
@@ -151,6 +174,8 @@ def build(q: QuantSnapshot, d: RegimeDecision, chain: ChainSnapshot) -> SpreadPl
     net_mid, net_natural = _net_mid_and_natural(short, long)
     if is_credit != (net_mid < 0):
         return BuildFailure.SIGN_MISMATCH
+    if _net_width_pct(short, long, net_mid) > MAX_NET_SPREAD_WIDTH_PCT:
+        return BuildFailure.WIDE_NET_SPREAD
 
     width = abs(short.strike - long.strike)
     if width <= 0:
@@ -240,6 +265,8 @@ def build_from_proposal(
     net_mid, net_natural = _net_mid_and_natural(short, long)
     if is_credit != (net_mid < 0):
         return BuildFailure.SIGN_MISMATCH
+    if _net_width_pct(short, long, net_mid) > MAX_NET_SPREAD_WIDTH_PCT:
+        return BuildFailure.WIDE_NET_SPREAD
 
     width = abs(short.strike - long.strike)
     if width <= 0:

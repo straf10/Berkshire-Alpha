@@ -210,7 +210,7 @@ class ScriptedLlm:
         return self._result
 
 
-_OUTPUT = ReflectorOutput(verdict="HOLD", argument="a" * 50, proposed_change=None)
+_OUTPUT = ReflectorOutput(verdict="HOLD", stage="SELECTION", argument="a" * 50, proposed_change=None)
 
 
 async def test_reflect_single_call() -> None:

@@ -128,23 +128,46 @@ async def test_fill_at_mid_no_walk() -> None:
 
 
 async def test_walk_steps_by_five_cents() -> None:
+    """docs/fill_and_learning_plan.md P0-2: the step size is now adaptive --
+    a full nickel while there's plenty of headroom, shrinking as the walk
+    nears its cap so it can spend the FULL budget instead of stopping one
+    fixed-size step short of it (the old behaviour)."""
     broker = MockBroker([_state("o1", OrderStatus.NEW)])  # repeats forever
-    result = await walk_to_fill(broker, _debit_plan("2.06", "2.40"), 1, clock=FakeClock())
+    plan = _debit_plan("2.06", "2.40")
+    result = await walk_to_fill(broker, plan, 1, clock=FakeClock())
     limits = [limit for _, limit in broker.replaced]
-    assert limits[0] == Decimal("2.11")
-    assert limits[1] == Decimal("2.16")
+    assert limits[0] == Decimal("2.11")   # plenty of headroom -- still a full nickel
     for a, b in zip(limits, limits[1:]):
-        assert b - a == Decimal("0.05")
+        assert Decimal("0") < b - a <= Decimal("0.05")
+    # p_success=0.30 makes ev_at_mid negative, so the EV-aware cap (P0-1)
+    # falls back to WALK_CAP_FRACTION exactly as before.
+    cap = walk_cap(
+        mid=plan.net_mid, natural=plan.net_natural, width=plan.width, is_closing=False,
+        structure_is_credit=False, ev_at_mid=None,
+    )
     assert result.status == "UNFILLED_REJECT"
+    assert result.final_limit == cap
 
 
 async def test_walk_direction_credit() -> None:
+    """docs/fill_and_learning_plan.md P0-1: this plan's own p_success/
+    max_profit/max_loss make ev_at_mid positive (0.72*90 - 0.28*210 = 6.0),
+    so the EV-aware cap -- not the flat WALK_CAP_FRACTION -- sets the budget
+    here; the walk still steps toward `natural` (less negative)."""
     broker = MockBroker([_state("o1", OrderStatus.NEW)])
-    result = await walk_to_fill(broker, _credit_plan("-0.90", "-0.60"), 1, clock=FakeClock())
+    plan = _credit_plan("-0.90", "-0.60")
+    result = await walk_to_fill(broker, plan, 1, clock=FakeClock())
     limits = [limit for _, limit in broker.replaced]
-    assert limits[0] == Decimal("-0.85")
-    assert limits[1] == Decimal("-0.80")
+    assert limits, "the walk never replaced"
+    for a, b in zip(limits, limits[1:]):
+        assert b > a
+    ev_at_mid = Decimal("0.72") * Decimal("90") - Decimal("0.28") * Decimal("210")
+    cap = walk_cap(
+        mid=plan.net_mid, natural=plan.net_natural, width=plan.width, is_closing=False,
+        structure_is_credit=True, ev_at_mid=ev_at_mid,
+    )
     assert result.status == "UNFILLED_REJECT"
+    assert result.final_limit == cap
 
 
 async def test_walk_cap_at_seventy_percent() -> None:
@@ -156,12 +179,25 @@ async def test_walk_cap_at_seventy_percent() -> None:
     assert result.status == "UNFILLED_REJECT"
 
 
-async def test_tight_spread_zero_steps() -> None:
+async def test_tight_spread_walks_in_cent_steps() -> None:
+    """docs/fill_and_learning_plan.md P0-2: a 4-cent budget against a 5-cent
+    WALK_STEP used to produce zero steps (limit + WALK_STEP > cap was
+    immediately true) and a cancel with no price improvement at all. It now
+    walks in cent-sized steps and spends the whole budget instead."""
     broker = MockBroker([_state("o1", OrderStatus.NEW)])
-    result = await walk_to_fill(broker, _debit_plan("2.06", "2.10"), 1, clock=FakeClock())
-    assert result.steps == 0
+    plan = _debit_plan("2.06", "2.10")
+    result = await walk_to_fill(broker, plan, 1, clock=FakeClock())
+    assert result.steps > 0
     assert result.status == "UNFILLED_REJECT"
-    assert broker.replaced == []
+    assert broker.replaced != []
+    limits = [limit for _, limit in broker.replaced]
+    for a, b in zip(limits, limits[1:]):
+        assert Decimal("0") < b - a <= Decimal("0.05")
+    cap = walk_cap(
+        mid=plan.net_mid, natural=plan.net_natural, width=plan.width, is_closing=False,
+        structure_is_credit=False, ev_at_mid=None,
+    )
+    assert result.final_limit == cap
     assert len(broker.cancelled) == 1
 
 

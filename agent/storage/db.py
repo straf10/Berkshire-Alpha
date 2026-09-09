@@ -119,3 +119,13 @@ async def _migrate(conn: aiosqlite.Connection) -> None:
     # is possible since the mechanism truly wasn't persisted anywhere.
     if "exit_reason" not in await _column_names(conn, "trades"):
         await conn.execute("ALTER TABLE trades ADD COLUMN exit_reason TEXT")
+
+    # docs/fill_and_learning_plan.md P1-1. ReflectorOutput.stage (SELECTION |
+    # EXECUTION | EXIT) says WHERE in the pipeline the model believes the
+    # constraint lives -- a verdict with no stage is how "TIGHTEN NO_REGIME"
+    # got produced on a day nothing was wrong with the regime filter. NULL
+    # for every pre-existing row: no reflection before this column existed
+    # was ever asked to name a stage.
+    reflections_cols = await _column_names(conn, "reflections")
+    if reflections_cols and "stage" not in reflections_cols:
+        await conn.execute("ALTER TABLE reflections ADD COLUMN stage TEXT")

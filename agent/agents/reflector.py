@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import json
+import statistics
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 from typing import Any, Final, Mapping, Sequence
 
 from agent.agents.prompts import REFLECTOR_SYSTEM
+from agent.config import FILL_RATE_FLOOR, MIN_FILL_SAMPLE
+from agent.schemas.execution import STRUCTURE_IS_CREDIT, Structure
 from agent.schemas.llm import ReflectorOutput
 from agent.tools.llm import LlmPort, LlmUnavailable, LlmValidationDropped
+from agent.tools.walk_cap import quantize_cent, walk_cap
 
 # Day 4 (docs/day4_action_plan.md Step 5). Post-market critique agent. Same
 # agent/agents/* contract as analysts.py/researchers.py/trader.py/risk_team.py:
@@ -24,6 +30,14 @@ from agent.tools.llm import LlmPort, LlmUnavailable, LlmValidationDropped
 # future reflection cannot recommend loosening them either.
 REFLECTOR_DENYLIST: Final[frozenset[str]] = frozenset({
     "DEGENERATE_CHAIN", "MAX_QUOTE_SPREAD_PCT", "NO_CHAIN",
+    # docs/fill_and_learning_plan.md P0-4/P1-1: WIDE_NET_SPREAD is the same
+    # class of liquidity guardrail as the three above -- it exists because a
+    # chain this wide cannot be filled profitably, not because the agent is
+    # too picky. FILL_RATE, below, is deliberately NOT in this set: it names
+    # an execution-layer failure the Reflector should be free to report and
+    # argue about (within a bounded proposed_change), unlike a liquidity gate
+    # it must never argue to loosen.
+    "WIDE_NET_SPREAD",
 })
 
 
@@ -63,6 +77,48 @@ class SessionDigest:
     avg_slippage_vs_mid: float = 0.0                # mean (fill_price - submitted_limit), signed, over filled trades
     worst_trade: tuple[str, float] | None = None    # (symbol, realized_pnl) of the worst closed trade
 
+    # docs/fill_and_learning_plan.md P1-1: execution-layer facts, computed
+    # from `trades` rows regardless of what `decisions.action` says --
+    # `approved` (== the old `entered`) counts ENTER decisions, which is true
+    # at approval time but says nothing about whether the trade ever reached
+    # the market. On 2026-09-08 this was "10 entered, 1 FILLED" reported as
+    # simply "10 entered".
+    approved: int = 0
+    submitted: int = 0
+    filled: int = 0
+    unfilled_reject: int = 0
+    fill_rate: float = 1.0
+    cap_bound_rejects: int = 0        # UNFILLED_REJECT rows where final_limit == the walk's own computed cap
+    median_cap_headroom: float | None = None   # abs(cap - mid), over cap_bound_rejects
+    median_net_width_pct: float | None = None  # over WIDE_NET_SPREAD gate rejections this session
+
+
+def _recompute_cap(t: Mapping[str, Any]) -> tuple[Decimal, Decimal] | None:
+    """Recomputes the SAME cap the live walk used, from the trade's stored
+    plan_json -- (cap, mid), or None if plan_json is absent/unparseable.
+    Pure: no I/O. docs/fill_and_learning_plan.md P1-1's cap_bound_rejects
+    diagnostic (`final_limit == cap`) would have named the 2026-09-08 bug
+    outright: 9 of 9 unfilled rejections landed exactly on their cap."""
+    plan_json = t.get("plan_json")
+    if not plan_json:
+        return None
+    try:
+        p = json.loads(plan_json)
+        mid = quantize_cent(Decimal(str(p["net_mid"])))
+        natural = quantize_cent(Decimal(str(p["net_natural"])))
+        structure = Structure(p["structure"])
+        ps = Decimal(str(p["p_success"]))
+        max_profit = Decimal(str(p["max_profit_per_spread"]))
+        max_loss = Decimal(str(p["max_loss_per_spread"]))
+        ev_at_mid = ps * max_profit - (Decimal("1") - ps) * max_loss
+        cap = walk_cap(
+            mid=mid, natural=natural, width=float(p["width"]), is_closing=False,
+            structure_is_credit=STRUCTURE_IS_CREDIT[structure], ev_at_mid=ev_at_mid,
+        )
+        return cap, mid
+    except Exception:  # noqa: BLE001 -- a malformed row costs itself, not the digest
+        return None
+
 
 def digest(rows: Sequence[Mapping[str, Any]], trades: Sequence[Mapping[str, Any]] = ()) -> SessionDigest:
     """Pure. `rows` are decisions rows for one session_date; `trades` are the
@@ -88,26 +144,68 @@ def digest(rows: Sequence[Mapping[str, Any]], trades: Sequence[Mapping[str, Any]
         sorted(counts.items(), key=lambda kv: (-kv[1], first_seen[kv[0]]))
     )
 
-    # P1 remediation: the binding constraint the Reflector argues about must
-    # never be a liquidity/execution guardrail (REFLECTOR_DENYLIST) -- reject
-    # candidacy, don't just downrank it, or a session dominated by
-    # DEGENERATE_CHAIN rejections would still hand the model the next-most-
-    # common reason to build a "loosen this" argument around.
-    candidates = {r: c for r, c in counts.items() if r not in REFLECTOR_DENYLIST}
-    if not candidates:
-        binding_constraint = None
-        constraint_count = 0
-        observed_range = None
-        threshold = None
+    # docs/fill_and_learning_plan.md P1-1: execution facts, computed from
+    # `trades` regardless of `decisions.action` -- a decision can be
+    # ENTER/APPROVED and still never reach the market.
+    approved = sum(1 for row in rows if row["action"] == "ENTER")
+    submitted = len(trades)
+    filled_trades = [t for t in trades if t.get("status") == "FILLED"]
+    filled_count = len(filled_trades)
+    unfilled_rejects = [t for t in trades if t.get("status") == "UNFILLED_REJECT"]
+    fill_rate = (filled_count / submitted) if submitted else 1.0
+
+    cap_headrooms: list[float] = []
+    cap_bound_rejects = 0
+    for t in unfilled_rejects:
+        recomputed = _recompute_cap(t)
+        if recomputed is None:
+            continue
+        cap, mid = recomputed
+        final_limit = t.get("final_limit")
+        if final_limit is not None and quantize_cent(Decimal(str(final_limit))) == cap:
+            cap_bound_rejects += 1
+        cap_headrooms.append(float(abs(cap - mid)))
+    median_cap_headroom = statistics.median(cap_headrooms) if cap_headrooms else None
+
+    wide_spread_rows = [
+        row for row in rows if row["gate_reason"] == "WIDE_NET_SPREAD" and row["observed_value"] is not None
+    ]
+    median_net_width_pct = (
+        statistics.median(row["observed_value"] for row in wide_spread_rows) if wide_spread_rows else None
+    )
+
+    # P1 remediation: FILL_RATE is checked BEFORE the gate_reason histogram
+    # -- a session where the agent could not get filled has exactly one
+    # binding constraint, and it is not whatever gate_reason happens to be
+    # most common upstream of execution (docs/fill_and_learning_plan.md
+    # P1-1: on 2026-09-08 the Reflector argued to tighten NO_REGIME on a day
+    # execution, not selection, was the entire problem).
+    if submitted >= MIN_FILL_SAMPLE and fill_rate < FILL_RATE_FLOOR:
+        binding_constraint = "FILL_RATE"
+        constraint_count = len(unfilled_rejects)
+        observed_range = (fill_rate, fill_rate)
+        threshold = FILL_RATE_FLOOR
     else:
-        binding_constraint = min(candidates, key=lambda reason: (-candidates[reason], first_seen[reason]))
-        constraint_count = candidates[binding_constraint]
-        binding_rows = [row for row in rows if row["gate_reason"] == binding_constraint]
-        observed = [row["observed_value"] for row in binding_rows if row["observed_value"] is not None]
-        observed_range = (min(observed), max(observed)) if observed else None
-        threshold = next(
-            (row["threshold_value"] for row in binding_rows if row["threshold_value"] is not None), None
-        )
+        # P1 remediation: the binding constraint the Reflector argues about must
+        # never be a liquidity/execution guardrail (REFLECTOR_DENYLIST) -- reject
+        # candidacy, don't just downrank it, or a session dominated by
+        # DEGENERATE_CHAIN rejections would still hand the model the next-most-
+        # common reason to build a "loosen this" argument around.
+        candidates = {r: c for r, c in counts.items() if r not in REFLECTOR_DENYLIST}
+        if not candidates:
+            binding_constraint = None
+            constraint_count = 0
+            observed_range = None
+            threshold = None
+        else:
+            binding_constraint = min(candidates, key=lambda reason: (-candidates[reason], first_seen[reason]))
+            constraint_count = candidates[binding_constraint]
+            binding_rows = [row for row in rows if row["gate_reason"] == binding_constraint]
+            observed = [row["observed_value"] for row in binding_rows if row["observed_value"] is not None]
+            observed_range = (min(observed), max(observed)) if observed else None
+            threshold = next(
+                (row["threshold_value"] for row in binding_rows if row["threshold_value"] is not None), None
+            )
 
     # M2 remediation (docs/review.md Task 7): realized_pnl/closed_at are only
     # meaningful once a trade has actually closed -- wins/realized_pnl/
@@ -124,9 +222,10 @@ def digest(rows: Sequence[Mapping[str, Any]], trades: Sequence[Mapping[str, Any]
     )
     worst_trade_pair = (worst_trade["symbol"], worst_trade["realized_pnl"]) if worst_trade is not None else None
 
-    filled = [t for t in trades if t["fill_price"] is not None]
+    slippage_rows = [t for t in trades if t["fill_price"] is not None]
     avg_slippage_vs_mid = (
-        sum(t["fill_price"] - t["submitted_limit"] for t in filled) / len(filled) if filled else 0.0
+        sum(t["fill_price"] - t["submitted_limit"] for t in slippage_rows) / len(slippage_rows)
+        if slippage_rows else 0.0
     )
 
     return SessionDigest(
@@ -143,6 +242,14 @@ def digest(rows: Sequence[Mapping[str, Any]], trades: Sequence[Mapping[str, Any]
         wins=wins,
         avg_slippage_vs_mid=avg_slippage_vs_mid,
         worst_trade=worst_trade_pair,
+        approved=approved,
+        submitted=submitted,
+        filled=filled_count,
+        unfilled_reject=len(unfilled_rejects),
+        fill_rate=fill_rate,
+        cap_bound_rejects=cap_bound_rejects,
+        median_cap_headroom=median_cap_headroom,
+        median_net_width_pct=median_net_width_pct,
     )
 
 
@@ -185,10 +292,34 @@ def _prompt(d: SessionDigest) -> str:
             f"average fill slippage vs mid {d.avg_slippage_vs_mid:+.3f} per share."
         )
 
+    # docs/fill_and_learning_plan.md P1-1: execution facts, always shown when
+    # anything was submitted -- "N approved" is not the same claim as "N
+    # reached the market", and conflating them is exactly what produced the
+    # 2026-09-08 TIGHTEN-NO_REGIME verdict on a day execution was the entire
+    # problem.
+    execution_block = ""
+    if d.submitted > 0:
+        cap_detail = ""
+        if d.cap_bound_rejects > 0:
+            headroom = f"{d.median_cap_headroom:.3f}" if d.median_cap_headroom is not None else "n/a"
+            cap_detail = (
+                f" Of the unfilled rejections, {d.cap_bound_rejects} stopped exactly at the "
+                f"walk's own computed cap (median unspent headroom {headroom})."
+            )
+        width_detail = (
+            f" Median net spread width on WIDE_NET_SPREAD rejections: {d.median_net_width_pct:.1%}."
+            if d.median_net_width_pct is not None else ""
+        )
+        execution_block = (
+            f"\nExecution: {d.submitted} submitted, {d.filled} FILLED, {d.unfilled_reject} unfilled-rejected "
+            f"({d.fill_rate:.1%} fill rate).{cap_detail}{width_detail}"
+        )
+
     return (
         f"Session {d.session_date.isoformat()}: {d.decisions_examined} candidates evaluated, "
-        f"{d.entered} entered.\n"
+        f"{d.approved} approved, {d.submitted} submitted, {d.filled} FILLED ({d.fill_rate:.1%} fill rate).\n"
         f"{constraint_block}"
+        f"{execution_block}"
         f"{outcome_block}"
     )
 

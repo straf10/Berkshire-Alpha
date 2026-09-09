@@ -121,6 +121,17 @@ DTE_FORCE_CLOSE: Final[int] = 2
 PROFIT_TARGET_PCT_OF_MAX: Final[Decimal] = Decimal("0.50")
 CREDIT_STOP_LOSS_PCT: Final[Decimal] = Decimal("1.00")   # 100% of credit received
 DEBIT_STOP_LOSS_PCT: Final[Decimal] = Decimal("0.50")    # 50% of debit paid
+# docs/fill_and_learning_plan.md P1-2. The one 2026-09-08 fill (QCOM #13) was
+# stopped out 6m23s after entry on a SINGLE noisy mid read off a chain that
+# was 23% wide at entry -- a single mark on a wide quote is not evidence
+# against an 86%-probability position with three days left to work.
+# MIN_HOLD_S: no STOP_LOSS in the first 15 minutes of a position's life
+# (UNWIND and TIME_STOP_2DTE are risk controls, not P&L rules, and are exempt).
+MIN_HOLD_S: Final[float] = 900.0
+# STOP_CONFIRM_TICKS: the stop condition must hold on this many consecutive
+# management ticks (~MANAGEMENT_INTERVAL_S apart) before the position is
+# actually closed, so a single bad mark cannot terminate a position by itself.
+STOP_CONFIRM_TICKS: Final[int] = 2
 # plan.md: "Thu 3 Sep, 22:30 EEST (15:30 ET) -- end-of-competition unwind."
 # Hackathon-judging-window marker only. session.is_entry_frozen and
 # is_unwind_triggered were retired to always return False once the project
@@ -167,6 +178,35 @@ DRAWDOWN_TERMINAL_PCT: Final[float] = -0.12
 KELLY_FRACTION: Final[float] = 0.25
 WALK_STEP: Final[Decimal] = Decimal("0.05")
 WALK_REST_S: Final[float] = 15.0
+# docs/fill_and_learning_plan.md P0-2. A 3-cent budget against a 5-cent
+# WALK_STEP produced zero steps (limit + WALK_STEP > cap never true once cap
+# is only 3 cents from mid) -- the walk cancelled without ever improving its
+# price. WALK_MIN_STEPS is the minimum number of steps a walk should take to
+# spend its FULL budget, so the per-step size shrinks on a thin budget instead
+# of the walk giving up outright.
+WALK_MIN_STEPS: Final[int] = 4
+# docs/fill_and_learning_plan.md P0-3. The walk prices off a quote snapshot
+# that can be up to ~10 minutes stale by the time it gives up (measured
+# 2026-09-08). Re-fetch the leg quotes and recompute mid/natural/cap every
+# WALK_REQUOTE_EVERY_STEPS replace steps (~45s at WALK_REST_S=15).
+WALK_REQUOTE_EVERY_STEPS: Final[int] = 3
+# docs/fill_and_learning_plan.md P0-1. The walk cap used to be a flat 70% of
+# the mid-to-natural gap regardless of what the trade was worth -- on a tight,
+# liquid quote that budget was smaller than one WALK_STEP, so the best-quoted
+# trades of the day got zero price improvement and a guaranteed cancel, while
+# an untradeable 130%-wide chain got the same 70% budget and 18 steps of
+# patience. The correct stopping rule is economic, not a fixed fraction: walk
+# until the trade stops being worth doing. EV_RETENTION is the fraction of the
+# plan's own modelled edge (p_success x max_profit - (1-p_success) x max_loss,
+# evaluated AT MID) the walk must preserve; it may spend the rest buying a
+# fill. 0.50 = "give up at most half the edge to get filled". Replayed against
+# 2026-09-08's 10 approved trades: 6 additional fills (NVDA x2, BA, JPM,
+# QCOM x2) reach a marketable price under this rule, and the 3 that are
+# EV-negative at natural (GS, ARM, UNH) are still correctly refused -- not by
+# accident, but because paying their full spread destroys the edge.
+EV_RETENTION: Final[Decimal] = Decimal("0.50")
+# Kept as the fallback bound for a plan with no usable p_success (closing
+# plans set p_success=0.0, so ev_at_mid is never computed for them).
 WALK_CAP_FRACTION: Final[Decimal] = Decimal("0.70")
 # P0 remediation (docs/audit_report_v2.md §4, 2026-09-01 LLY loss). The walk
 # cap above is PURELY RELATIVE -- 70% of the distance from mid to natural --
@@ -238,6 +278,21 @@ WALK_CAP_CREDIT_SIGN_FLOOR: Final[Decimal] = Decimal("-0.01")
 # greeks, non-positive/inverted quotes) count toward DEGENERATE_CHAIN_MAX_DROP
 # (docs/review.md P0-4).
 MAX_QUOTE_SPREAD_PCT: Final[float] = 0.25   # (ask - bid) / mid
+# docs/fill_and_learning_plan.md P0-4. MAX_QUOTE_SPREAD_PCT gates each LEG
+# independently -- two legs comfortably inside 25% can still compose a net
+# spread nobody can trade, because leg widths ADD in absolute terms while leg
+# mids SUBTRACT (a bull put's short and long premiums partially cancel, so
+# the same dollar width is a much larger fraction of the smaller net mid).
+# Measured on 2026-09-08's 10 approved trades the separation is clean: every
+# trade that was still EV-positive at the full natural price was <=46% net
+# width; every trade that was EV-negative at natural (GS, ARM, UNH) was
+# >=88%. 0.50 sits in the gap with margin on both sides. Applied at BUILD
+# time (spread_builder.build / build_from_proposal), before the debate stage
+# -- a chain this wide cannot be filled profitably regardless of what the LLM
+# argues, so it must never consume debate budget. Denylisted in
+# REFLECTOR_DENYLIST for the same reason MAX_QUOTE_SPREAD_PCT is: it is a
+# liquidity guardrail, not a tunable knob.
+MAX_NET_SPREAD_WIDTH_PCT: Final[float] = 0.50   # (net_natural - net_bidside) / abs(net_mid)
 # P0 remediation (docs/audit_report_v2.md §9 item 4). Defence in depth BEHIND
 # Task 1 (the walk-cap fix), not a substitute for it: this rejects a debit
 # vertical whose entry MID is already structurally overpriced, before it ever
@@ -425,6 +480,15 @@ LLM_DAILY_SPEND_CEILING_USD: Final[Decimal] = Decimal("4.00")
 # calls/session at the widened 50-name universe. 400 is a runaway guard, not
 # a budget -- the real ceiling is LLM_DAILY_SPEND_CEILING_USD.
 LLM_MAX_CALLS_PER_SESSION: Final[int] = 400
+# docs/fill_and_learning_plan.md P1-1. The Reflector's digest previously
+# counted `decisions.action == ENTER` as "entered", which is true at
+# approval time but says nothing about whether the trade ever reached the
+# market -- on 2026-09-08, "10 entered" was reported for a session where 1
+# trade filled. FILL_RATE lets execution become the binding constraint
+# instead of always deferring to the gate_reason histogram, which can never
+# name an execution failure since the walk emits no gate reason at all.
+MIN_FILL_SAMPLE: Final[int] = 5
+FILL_RATE_FLOOR: Final[float] = 0.50
 CONSENSUS_HIGH_THRESHOLD: Final[float] = 0.85
 DEBATE_MAX_ROUNDS: Final[int] = 2
 DEBATE_CANDIDATES: Final[int] = 4
