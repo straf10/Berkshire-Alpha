@@ -143,14 +143,18 @@ async def test_decision_chain_serves_full_chain(tmp_path) -> None:
 
 async def test_decision_chain_attaches_walk_cap_from_plan(tmp_path) -> None:
     """docs/review.md Task 4: /decisions/{id} attaches a `walk_cap` to each
-    trade, computed by the real agent.tools.walk_cap.walk_cap() (the same
-    function order_manager._walk calls) from the decision's plan_json --
-    never re-derived from scratch, so the M3 walk-timeline chart and the live
-    walk can never disagree. Numbers are the real 09-01 LLY trade (decision
-    149 in production): mid=1.94, natural=8.84, width=5.0, opening (BUY_TO_OPEN/
-    SELL_TO_OPEN) BEAR_PUT_SPREAD -> is_closing=False -> the P0-2/P0-3-clamped
-    cap of $3.00 (width * WALK_CAP_MAX_FRACTION_OF_WIDTH == 5.0 * 0.60), not
-    the pre-remediation unclamped $6.77 (mid + WALK_CAP_FRACTION*(natural-mid))."""
+    trade. This trade row predates `trades.final_cap` (docs/fill_and_learning_plan.md
+    S5 Task 1/2), so read._walk_cap_for_trade falls back to recomputing from
+    plan_json via the real agent.tools.walk_cap.walk_cap() -- now correctly
+    passing ev_at_mid (S5 Task 2 fixed the fallback path's previous omission
+    of it, which silently reproduced the pre-P0-1 flat-0.70 cap). Numbers are
+    the real 09-01 LLY trade (decision 149 in production): mid=1.94,
+    natural=8.84, width=5.0, p_success=0.4744989445350674, max_profit=306,
+    max_loss=194 -> ev_at_mid = 0.4745*306 - 0.5255*194 = +43.22/spread (a
+    positive edge), so the EV-aware cap applies: room = 43.22*(1-EV_RETENTION)/100
+    = 0.2161/share, gap = natural-mid = 6.90, frac = 0.2161/6.90 = 0.03132,
+    cap = 1.94 + 0.03132*6.90 = $2.16 -- inside the P0-2/P0-3 width clamp
+    (width * WALK_CAP_MAX_FRACTION_OF_WIDTH == $3.00), which never binds here."""
     db_path = str(tmp_path / "test_agent.db")
     await storage_db.init_db(db_path)
 
@@ -187,7 +191,7 @@ async def test_decision_chain_attaches_walk_cap_from_plan(tmp_path) -> None:
     # decision_detail is called directly here (not through FastAPI's routing),
     # so walk_cap arrives as the raw Decimal read.py returns -- the HTTP path's
     # jsonable_encoder is what turns it into a JSON float for the frontend.
-    assert detail["trades"][0]["walk_cap"] == Decimal("3.00")
+    assert detail["trades"][0]["walk_cap"] == Decimal("2.16")
 
 
 async def test_assignments_endpoint_serves_rows(tmp_path) -> None:
@@ -450,6 +454,40 @@ async def test_reflections_endpoint(tmp_path) -> None:
     assert rows[0]["session_date"] == "2026-08-31"
     assert rows[0]["binding_constraint"] == "NO_REGIME"
     assert rows[0]["verdict"] == "HOLD"
+
+
+async def test_counterfactuals_endpoint(tmp_path) -> None:
+    """docs/fill_and_learning_plan.md S5 Task 3: /counterfactuals exposes
+    what main._counterfactual_tick has been writing since P2 with no read
+    path anywhere."""
+    db_path = str(tmp_path / "test_agent.db")
+    await storage_db.init_db(db_path)
+
+    async with storage_db.connect(db_path) as conn:
+        decision_id = await storage_write.insert_decision(conn, storage_write.DecisionRow(
+            ts_utc=datetime.now(timezone.utc).isoformat(), cycle_id="c", session_date="2026-09-09",
+            symbol="AAPL", mode="quant-only", regime="CREDIT", structure="BULL_PUT_SPREAD",
+            action="ENTER", gate_reason="APPROVED", gate_detail="APPROVED", observed_value=None,
+            threshold_value=None, qty=1, equity_feed="iex", earnings_armed=False, quant_json="{}",
+            plan_json=None,
+        ))
+        trade_id = await storage_write.insert_trade(conn, storage_write.TradeRow(
+            decision_id=decision_id, ts_utc="t", symbol="AAPL", structure="BULL_PUT_SPREAD",
+            expiry="2026-09-11", legs_json="[]", qty=1, submitted_limit=Decimal("-0.80"),
+        ))
+        await storage_write.insert_counterfactual(conn, storage_write.CounterfactualRow(
+            trade_id=trade_id, ts_utc="t2", would_have_filled=True, entry_at_natural=Decimal("-0.80"),
+            ev_at_entry=Decimal("14.00"), mark_to_market=Decimal("-0.94"), hypothetical_pnl=Decimal("-14.00"),
+            detail="entered at natural -0.80; now marks -0.94",
+        ))
+
+    from agent.api import app as api_app
+
+    async with storage_db.connect(db_path) as conn:
+        rows = await api_app.counterfactuals(limit=10, session_date=None, conn=conn)
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "AAPL"
+    assert rows[0]["hypothetical_pnl"] == -14.00
 
 
 async def test_funnel_endpoint_empty_db(tmp_path) -> None:

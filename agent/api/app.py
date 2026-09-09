@@ -163,6 +163,17 @@ async def reflections(limit: int = 30, conn: aiosqlite.Connection = Depends(get_
     return await read.latest_reflections(conn, min(limit, 200))
 
 
+@app.get("/counterfactuals")
+async def counterfactuals(
+    limit: int = 200, session_date: str | None = None, conn: aiosqlite.Connection = Depends(get_conn)
+) -> list[dict[str, Any]]:
+    """docs/fill_and_learning_plan.md S5 Task 3: exposes what
+    main._counterfactual_tick has been recording since P2 -- for every
+    UNFILLED_REJECT trade, whether it would have filled at the natural price
+    and what it would be worth now. Newest first."""
+    return await read.counterfactuals(conn, min(limit, 200), session_date)
+
+
 def _jsonable(value: Any) -> Any:
     if isinstance(value, (Decimal, date)):
         return str(value)
@@ -257,6 +268,9 @@ async def agent_settings() -> dict[str, Any]:
             # portfolio delta/vega caps functional when the feed zeroes them.
             "greeks_bs_fallback_rate": c.RISK_FREE_RATE,
             "expired_ledger_reconciled": True,
+            # docs/fill_and_learning_plan.md S5 Task 5 (P2-1): confirms the
+            # unfilled-entry retry path is in the running image.
+            "max_entry_retry_attempts": c.MAX_ENTRY_RETRY_ATTEMPTS,
         },
         "regime_thresholds": {
             "rsi_period": c.RSI_PERIOD,

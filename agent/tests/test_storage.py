@@ -422,6 +422,101 @@ async def test_migrate_adds_exit_reason_to_legacy_trades(tmp_path) -> None:
         assert cols.count("exit_reason") == 1
 
 
+async def test_migrate_adds_final_cap_to_legacy_trades(tmp_path) -> None:
+    """docs/fill_and_learning_plan.md S5 Task 1. Same guarded ALTER TABLE
+    pattern as cli_verified/exit_reason above."""
+    from agent.storage.db import _migrate
+
+    db_path = str(tmp_path / "legacy.db")
+    await _seed_legacy_db(db_path)  # a pre-Task-1 trades table, no final_cap column
+
+    async with connect(db_path) as conn:
+        await _migrate(conn)
+        await conn.commit()
+        cur = await conn.execute("PRAGMA table_info(trades)")
+        cols = [row[1] for row in await cur.fetchall()]
+        assert cols.count("final_cap") == 1
+
+        await _migrate(conn)  # idempotent
+        await conn.commit()
+        cur = await conn.execute("PRAGMA table_info(trades)")
+        cols = [row[1] for row in await cur.fetchall()]
+        assert cols.count("final_cap") == 1
+
+
+async def test_update_trade_result_persists_final_cap(tmp_path) -> None:
+    """docs/fill_and_learning_plan.md S5 Task 1: both branches of
+    update_trade_result (with and without max_loss_per_spread) must write
+    WalkResult.final_cap, not just final_limit/fill_price."""
+    from agent.execution.order_manager import WalkResult
+
+    db_path = str(tmp_path / "agent.db")
+    await init_db(db_path)
+    async with connect(db_path) as conn:
+        decision_id = await write.insert_decision(conn, write.DecisionRow(
+            ts_utc="t", cycle_id="c", session_date="2026-08-31", symbol="SPY", mode="quant-only",
+            regime="CREDIT", structure="BULL_PUT_SPREAD", action="ENTER", gate_reason="APPROVED",
+            gate_detail="APPROVED", observed_value=None, threshold_value=None, qty=1,
+            equity_feed="iex", earnings_armed=False, quant_json="{}", plan_json=None,
+        ))
+        trade_id = await write.insert_trade(conn, write.TradeRow(
+            decision_id=decision_id, ts_utc="t", symbol="SPY", structure="BULL_PUT_SPREAD",
+            expiry="2026-09-04", legs_json="[]", qty=1, submitted_limit=Decimal("-0.90"),
+        ))
+
+        result = WalkResult(
+            status="UNFILLED_REJECT", order_id="o1", final_limit=Decimal("-0.85"), fill_price=None,
+            filled_qty=0, steps=3, reject_code=None, events=(), final_cap=Decimal("-0.85"),
+        )
+        await write.update_trade_result(conn, trade_id, result)
+        cur = await conn.execute("SELECT final_cap FROM trades WHERE id = ?", (trade_id,))
+        assert (await cur.fetchone())[0] == -0.85
+
+        result_with_loss = WalkResult(
+            status="FILLED", order_id="o2", final_limit=Decimal("-0.80"), fill_price=Decimal("-0.80"),
+            filled_qty=1, steps=4, reject_code=None, events=(), final_cap=Decimal("-0.75"),
+        )
+        await write.update_trade_result(conn, trade_id, result_with_loss, max_loss_per_spread=Decimal("210"))
+        cur = await conn.execute("SELECT final_cap FROM trades WHERE id = ?", (trade_id,))
+        assert (await cur.fetchone())[0] == -0.75
+
+
+async def test_counterfactuals_read_joins_symbol_and_structure(tmp_path) -> None:
+    """docs/fill_and_learning_plan.md S5 Task 3: main._counterfactual_tick has
+    been writing this table since P2 with no read path anywhere -- this is
+    the read path, joined to trades/decisions so a bare trade_id is usable
+    from the dashboard."""
+    db_path = str(tmp_path / "agent.db")
+    await init_db(db_path)
+    async with connect(db_path) as conn:
+        decision_id = await write.insert_decision(conn, write.DecisionRow(
+            ts_utc="t", cycle_id="c", session_date="2026-09-09", symbol="AAPL", mode="quant-only",
+            regime="CREDIT", structure="BULL_PUT_SPREAD", action="ENTER", gate_reason="APPROVED",
+            gate_detail="APPROVED", observed_value=None, threshold_value=None, qty=1,
+            equity_feed="iex", earnings_armed=False, quant_json="{}", plan_json=None,
+        ))
+        trade_id = await write.insert_trade(conn, write.TradeRow(
+            decision_id=decision_id, ts_utc="t", symbol="AAPL", structure="BULL_PUT_SPREAD",
+            expiry="2026-09-11", legs_json="[]", qty=1, submitted_limit=Decimal("-0.80"),
+        ))
+        await write.insert_counterfactual(conn, write.CounterfactualRow(
+            trade_id=trade_id, ts_utc="t2", would_have_filled=True, entry_at_natural=Decimal("-0.80"),
+            ev_at_entry=Decimal("14.00"), mark_to_market=Decimal("-0.94"), hypothetical_pnl=Decimal("-14.00"),
+            detail="entered at natural -0.80; now marks -0.94",
+        ))
+
+        rows = await read.counterfactuals(conn)
+        assert len(rows) == 1
+        assert rows[0]["symbol"] == "AAPL"
+        assert rows[0]["structure"] == "BULL_PUT_SPREAD"
+        assert rows[0]["session_date"] == "2026-09-09"
+        assert rows[0]["would_have_filled"] == 1
+
+        # session_date filter
+        assert await read.counterfactuals(conn, session_date="2026-09-08") == []
+        assert len(await read.counterfactuals(conn, session_date="2026-09-09")) == 1
+
+
 async def test_close_trade_persists_exit_reason(tmp_path) -> None:
     """P2 remediation (docs/audit_report_v2.md §9 item 10): exit_reason had
     zero write-path consumers before this -- close_trade is now the sole

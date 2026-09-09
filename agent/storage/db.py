@@ -129,3 +129,11 @@ async def _migrate(conn: aiosqlite.Connection) -> None:
     reflections_cols = await _column_names(conn, "reflections")
     if reflections_cols and "stage" not in reflections_cols:
         await conn.execute("ALTER TABLE reflections ADD COLUMN stage TEXT")
+
+    # docs/fill_and_learning_plan.md S5 Task 1. final_cap is the walk-enforced
+    # cap at the moment WalkResult was returned, not the cap the original
+    # plan_json recomputes -- P0-3's mid-walk re-quote can move it. NULL for
+    # every pre-existing row: readers fall back to recomputing from plan_json
+    # only when this is NULL.
+    if "final_cap" not in await _column_names(conn, "trades"):
+        await conn.execute("ALTER TABLE trades ADD COLUMN final_cap REAL")

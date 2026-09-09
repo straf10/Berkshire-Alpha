@@ -103,7 +103,15 @@ execution fact is the binding constraint (or, when every observed gate reason is
 liquidity/execution guardrail and the fill rate is healthy, an explicit statement that none is \
 eligible), the range of observed values against that constraint's threshold, and -- when the \
 constraint is execution -- how many unfilled rejections stopped exactly at the walk's own computed \
-price cap and the net spread width on any WIDE_NET_SPREAD rejections. When at least one trade \
+price cap and the net spread width on any WIDE_NET_SPREAD rejections. When any unfilled entry was \
+re-quoted after rejection, you are also given counterfactual evidence: how many were sampled, how \
+many would have filled at the natural price, the total forgone P&L from those that would have \
+filled (gains missed by refusing), and the total avoided loss among those (losses dodged by \
+refusing) -- reported as two separate numbers, never netted, because a sum near zero is consistent \
+with either a well-calibrated refusal price or an even split of missed gains and dodged losses, and \
+those call for opposite arguments. This is the only evidence that can tell you whether EV_RETENTION \
+(the fraction of a plan's modelled edge the walk cap is allowed to spend chasing a fill) is priced \
+right; do not propose changing it without it. When at least one trade \
 closed this session, you are also given its realized outcome -- closed trade count, win count, \
 total realized P&L, the worst single trade, and average fill slippage versus mid. A LOW FILL RATE \
 is an EXECUTION problem, not a SELECTION problem: "N approved" is not the same claim as "N reached \

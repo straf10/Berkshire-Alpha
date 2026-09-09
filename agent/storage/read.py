@@ -23,22 +23,37 @@ _CLOSING_INTENTS = {"BUY_TO_CLOSE", "SELL_TO_CLOSE"}
 _MAX_HISTORY_HOURS = 168
 
 
-def _walk_cap_for_trade(plan_json: str | None) -> Decimal | None:
-    """The cap the live walk actually enforced for this trade's plan,
-    computed by the SAME walk_cap() the walk itself calls (docs/review.md
-    Task 4) -- never re-derived from the raw mid/natural/width here, so the
-    walk-timeline chart and the live walk can never disagree. None when the
-    decision has no plan (e.g. NO_TRADE).
+def _walk_cap_for_trade(plan_json: str | None, final_cap: float | None = None) -> Decimal | None:
+    """The cap the live walk actually enforced for this trade's plan. None
+    when the decision has no plan (e.g. NO_TRADE).
+
+    docs/fill_and_learning_plan.md S5 Task 2: prefers the persisted
+    `trades.final_cap` -- the walk's OWN cap after any P0-3 mid-walk
+    re-quote. This docstring used to claim recomputing from plan_json alone
+    meant "the walk-timeline chart and the live walk can never disagree";
+    that stopped being true the moment a re-quote could move the cap, and
+    the M3 chart was drawing the wrong line as a result. Falls back to
+    recomputing from plan_json (now correctly passing ev_at_mid, which this
+    fallback used to omit -- silently reproducing the pre-P0-1 flat-0.70
+    cap) only for rows written before `final_cap` existed.
 
     Returns Decimal, not float -- test_money_boundary_is_explicit bans an
     explicit Decimal->float conversion in this module (that boundary is
     write.py's alone, for the DB bind params it constructs). The FastAPI
     route layer's own jsonable_encoder does the float conversion at the
     actual HTTP response boundary instead."""
+    if final_cap is not None:
+        return Decimal(str(final_cap))
     if plan_json is None:
         return None
     plan = json.loads(plan_json)
     is_closing = plan["legs"][0]["intent"] in _CLOSING_INTENTS
+    ev_at_mid = None
+    if not is_closing:
+        p = Decimal(str(plan["p_success"]))
+        max_profit = Decimal(str(plan["max_profit_per_spread"]))
+        max_loss = Decimal(str(plan["max_loss_per_spread"]))
+        ev_at_mid = p * max_profit - (Decimal("1") - p) * max_loss
     return walk_cap(
         mid=Decimal(str(plan["net_mid"])), natural=Decimal(str(plan["net_natural"])),
         width=plan["width"], is_closing=is_closing,
@@ -47,6 +62,7 @@ def _walk_cap_for_trade(plan_json: str | None) -> Decimal | None:
         # execution code, so this keeps the read-only API's dependency graph
         # clean (test_api_import_graph).
         structure_is_credit=STRUCTURE_IS_CREDIT[Structure(plan["structure"])],
+        ev_at_mid=ev_at_mid,
     )
 
 
@@ -402,6 +418,34 @@ async def latest_reflections(conn: aiosqlite.Connection, limit: int = 30) -> lis
     return [dict(row) for row in await cur.fetchall()]
 
 
+async def counterfactuals(
+    conn: aiosqlite.Connection, limit: int = 200, session_date: str | None = None
+) -> list[dict[str, Any]]:
+    """docs/fill_and_learning_plan.md S5 Task 3. main._counterfactual_tick has
+    been writing to this table since the P2 round with no read path anywhere
+    -- the entire learning signal (would an UNFILLED_REJECT have filled at
+    natural, and what would it be worth now) was invisible outside the raw
+    DB. Joined to `trades`/`decisions` so each row carries `symbol`,
+    `structure` and the session date -- a bare `trade_id` is not usable from
+    the dashboard. Newest first, like `latest_reflections`."""
+    where = ""
+    params: tuple[Any, ...] = ()
+    if session_date is not None:
+        where = "WHERE d.session_date = ?"
+        params = (session_date,)
+
+    cur = await conn.execute(
+        f"""SELECT c.*, t.symbol, t.structure, d.session_date
+           FROM counterfactuals c
+           JOIN trades t ON t.id = c.trade_id
+           JOIN decisions d ON d.id = t.decision_id
+           {where}
+           ORDER BY c.ts_utc DESC LIMIT ?""",
+        (*params, limit),
+    )
+    return [dict(row) for row in await cur.fetchall()]
+
+
 async def decision_chain(conn: aiosqlite.Connection, decision_id: int) -> dict[str, Any]:
     """decision + analyst_outputs + debates + debate_summary + proposal +
     risk_votes + trade + llm_calls -- the full reasoning chain in one request
@@ -413,7 +457,7 @@ async def decision_chain(conn: aiosqlite.Connection, decision_id: int) -> dict[s
     trades = [dict(row) for row in await cur.fetchall()]
     plan_json = decision_row["plan_json"] if decision_row is not None else None
     for t in trades:
-        t["walk_cap"] = _walk_cap_for_trade(plan_json)
+        t["walk_cap"] = _walk_cap_for_trade(plan_json, t.get("final_cap"))
 
     cur = await conn.execute(
         "SELECT * FROM debates WHERE decision_id = ? ORDER BY round", (decision_id,)

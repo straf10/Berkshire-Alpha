@@ -607,3 +607,95 @@ rotted into a request for expiries five days in the past and failed as `assert 0
 Now derived from `date.today()`.
 
 **Suite: 589 passed** (572 before this round, +17 new).
+
+## 6. 2026-09-10 follow-up round: making EV_RETENTION measurable
+
+Six tasks from the handoff written after the 2026-09-09 P0-3 fix (see `memory.md`,
+2026-09-09 "later" entries). None of `agent/tools/walk_cap.py` was touched this round —
+the 2026-09-08 replay assertions (§3) and the 7/10-reach-market finding depend only on
+that function and remain valid unchanged.
+
+### 6.1 Task 1 — `WalkResult.final_cap`
+
+`_walk` reassigns its local `cap` on a P0-3 re-quote, but nothing downstream ever saw
+the moved value — both cap diagnostics recomputed from the ORIGINAL `plan_json`, which
+is exactly what P0-3 made stale. `WalkResult` gained `final_cap: Decimal | None`, set
+from all eight `_walk` return paths (`REJECTED` at submit, `FILLED`, `PARTIALLY_FILLED`
+→`FILLED`, `PARTIAL_SUSPENDED`, `REJECTED` at poll, `CANCELED`-externally, the P0-3
+requote-EV-died cancel, and cap-exhausted) plus `None` on the blanket-`except` in
+`walk_to_fill` (a crashed walk has no meaningful cap). The requote-EV-died path needed
+its `new_cap` computed BEFORE the early cancel return, not after, so that return could
+carry it too. `trades.final_cap REAL` added to both schemas, migrated via the existing
+guarded-`ALTER`/`ADD COLUMN IF NOT EXISTS` pattern in `db.py`/`db_pg.py`, and written by
+both branches of `write.update_trade_result`.
+
+### 6.2 Task 2 — Both cap diagnostics read the persisted value
+
+`reflector._recompute_cap` and `read._walk_cap_for_trade` now both prefer
+`trades.final_cap`, falling back to recomputing from `plan_json` only when it is `NULL`
+(pre-Task-1 rows). `read._walk_cap_for_trade`'s fallback was ALSO silently omitting
+`ev_at_mid` — it recomputed the pre-P0-1 flat-`WALK_CAP_FRACTION` cap even for rows where
+the live walk used the EV-aware budget, exactly the bug the module's own docstring
+claimed couldn't happen ("the walk-timeline chart and the live walk can never
+disagree"). Fixed and the docstring corrected. `test_decision_chain_attaches_walk_cap_from_plan`
+asserted the old (wrong) $3.00 value for a trade whose real numbers give an EV-aware cap
+of $2.16 — the plan's own edge (p_success 0.4745, max_profit 306, max_loss 194 →
+ev_at_mid +43.22/spread) is positive, so the EV-aware branch applies and the width clamp
+never binds; updated.
+
+### 6.3 Task 3 — `/counterfactuals` read path
+
+`main._counterfactual_tick` has written to the `counterfactuals` table since the P2
+round with no read path anywhere in `agent/storage/read.py` or `agent/api/app.py` — the
+entire learning signal was invisible outside a raw DB query. Added
+`read.counterfactuals()` (joins `trades`/`decisions` for `symbol`/`structure`/
+`session_date`, optional `session_date` filter, same `limit` clamp convention as
+`/reflections`) and `GET /counterfactuals`.
+
+### 6.4 Task 4 — Counterfactuals feed the Reflector digest
+
+`main._session_trades` now also selects `t.final_cap` and attaches each trade's LATEST
+counterfactual sample (a second query keyed on the fetched trade ids, ASC-ordered so the
+last write wins). `SessionDigest` gained `counterfactual_n`, `would_have_filled_n`,
+`forgone_pnl` and `avoided_loss`, computed in Python from `t["counterfactual"]` over
+`UNFILLED_REJECT` trades. `forgone_pnl` and `avoided_loss` are surfaced as two separate
+numbers in `_prompt`'s execution block and explicitly never netted — a sum near zero is
+consistent with either well-calibrated refusals or an even split of missed gains and
+dodged losses. `REFLECTOR_SYSTEM` already named `EV_RETENTION` (valid range 0.25-0.75)
+as an EXECUTION-stage `proposed_change` target from the P1-1 round; extended with a
+sentence describing the new counterfactual evidence and instructing the model not to
+propose changing `EV_RETENTION` without it. `REFLECTOR_DENYLIST` untouched.
+
+### 6.5 Task 5 — Retry unfilled entries (P2-1)
+
+Never built until now; the 2026-09-09 AAPL trade was independently re-approved through
+three full funnel passes (14:15, 15:47, 17:16) to rediscover the identical plan. An
+EV-positive plan that dies `UNFILLED_REJECT` is now queued to `agent_state["pending_entries"]`
+(`{symbol: [{"plan_json", "attempts"}]}`). `main._retry_pending_entries` runs at the top
+of `scan_cycle`, immediately after `budget` loads and BEFORE the LLM pipeline gate — it
+re-quotes each pending entry's original legs via the same `_requote_plan_fn` P0-3 already
+built, drops the entry if `risk.counterfactual.ev_at_price` at the fresh mid has gone
+non-positive, otherwise re-runs the FULL `evaluate()` risk gate (current portfolio/
+open-underlyings/aggregate-risk state, not a bypass) before submitting. New
+`_spreadplan_from_json` reconstructs a `SpreadPlan` from a stored snapshot — legal
+because `_build_mleg_request` only ever reads `occ_symbol`/`ratio_qty`/`side`/`intent`
+off each leg, never bid/ask, so only `net_mid`/`net_natural` need refreshing before a
+retry. `MAX_ENTRY_RETRY_ATTEMPTS = 3` (config.py, published in `/config`); a quote
+outage (not a verdict on the trade) is retried next scan without burning an attempt.
+Fill bookkeeping (recompute risk from the actual fill, fold into the running portfolio/
+open-underlyings state, halt entries on a post-fill risk breach) was factored out of the
+original candidate loop into `_apply_fill_bookkeeping` so both call sites share it
+rather than duplicating it. `running_open_underlyings` still only updates on an actual
+FILL, matching the rest of `scan_cycle` — no slot is reserved on mere approval, which is
+what let 2026-09-08 approve 3x QCOM and 2x NVDA against `MAX_POSITIONS_PER_UNDERLYING = 1`
+in the first place; reserving one here that is never released would starve the book the
+same way.
+
+### 6.6 Task 6 — `EV_RETENTION` calibration: explicitly NOT done this round
+
+Gated on Tasks 3/4 running live first. `EV_RETENTION` stays at `0.50`.
+
+**Suite: 601 passed** (588 immediately before this round — one below the 589 this
+document's §5.6 recorded, pre-existing and untouched by this round — +13 new: 1 in
+`test_order_manager.py`, 4 in `test_reflector.py`, 3 in `test_storage.py`, 1 in
+`test_api.py`, 4 in `test_main.py`).

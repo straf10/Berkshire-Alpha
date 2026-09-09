@@ -222,6 +222,37 @@ async def test_requote_does_not_cancel_plan_that_never_had_positive_ev() -> None
     assert result.status == "UNFILLED_REJECT"
 
 
+async def test_final_cap_persists_the_requoted_value_not_the_original_plan() -> None:
+    """docs/fill_and_learning_plan.md S5 Task 1: WalkResult.final_cap must
+    reflect the cap actually enforced after a P0-3 mid-walk re-quote, not the
+    cap the ORIGINAL plan_json would recompute -- reflector._recompute_cap
+    and read._walk_cap_for_trade both used to silently disagree with the
+    live walk the moment a re-quote moved the cap (on 2026-09-09 that made
+    the digest report "1 of 4 unfilled rejections stopped at the cap" when
+    the true answer was 4 of 4)."""
+    plan = SpreadPlan(
+        symbol="TST", structure=Structure.BULL_PUT_SPREAD, regime=Regime.CREDIT, expiry=EXPIRY, dte=4,
+        legs=(_leg("SELL", -0.28), _leg("BUY", -0.10)), width=3.0,
+        net_mid=Decimal("-2.00"), net_natural=Decimal("-0.50"),
+        max_profit_per_spread=Decimal("100"), max_loss_per_spread=Decimal("50"),
+        p_success=0.90, spot=100.0, short_leg_delta=0.28,
+    )
+    original_cap = walk_cap(
+        mid=plan.net_mid, natural=plan.net_natural, width=plan.width, is_closing=False,
+        structure_is_credit=True, ev_at_mid=Decimal("85"),
+    )
+    broker = MockBroker([_state("o1", OrderStatus.NEW)])  # never fills -- repeats NEW
+
+    async def requote(_plan: SpreadPlan) -> tuple[Decimal, Decimal]:
+        return Decimal("-1.90"), Decimal("-0.40")  # a favourable move -- edge stays positive
+
+    result = await walk_to_fill(broker, plan, 1, clock=FakeClock(), requote=requote)
+    assert result.status == "UNFILLED_REJECT"
+    assert result.final_cap is not None
+    assert result.final_cap != original_cap
+    assert result.final_limit == result.final_cap
+
+
 async def test_walk_cap_at_seventy_percent() -> None:
     broker = MockBroker([_state("o1", OrderStatus.NEW)])
     result = await walk_to_fill(broker, _debit_plan("2.00", "3.00"), 1, clock=FakeClock())

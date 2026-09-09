@@ -501,6 +501,16 @@ LLM_MAX_CALLS_PER_SESSION: Final[int] = 400
 # name an execution failure since the walk emits no gate reason at all.
 MIN_FILL_SAMPLE: Final[int] = 5
 FILL_RATE_FLOOR: Final[float] = 0.50
+# docs/fill_and_learning_plan.md S5 Task 5 (P2-1). Every UNFILLED_REJECT
+# used to be discarded outright -- the next scan rediscovered the identical
+# trade from scratch through a full funnel pass (screen -> shortlist ->
+# debate -> gate), burning the whole per-cycle LLM budget to re-approve the
+# same plan. On 2026-09-09 AAPL was independently re-approved 3x this way
+# (14:15, 15:47, 17:16). MAX_ENTRY_RETRY_ATTEMPTS caps how many scans a
+# pending unfilled entry gets re-quoted and re-attempted before it is
+# dropped for the rest of the session -- it must still re-pass every risk
+# gate each time; this is a retry budget, not a bypass.
+MAX_ENTRY_RETRY_ATTEMPTS: Final[int] = 3
 CONSENSUS_HIGH_THRESHOLD: Final[float] = 0.85
 DEBATE_MAX_ROUNDS: Final[int] = 2
 DEBATE_CANDIDATES: Final[int] = 4

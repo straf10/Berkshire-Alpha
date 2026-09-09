@@ -54,7 +54,13 @@ CREATE TABLE IF NOT EXISTS trades (
   -- P2 remediation (docs/audit_report_v2.md §9 item 10): ExitReason
   -- (agent/risk/exits.py) had zero write-path consumers before this --
   -- written by close_trade alongside closed_at, NULL until this row closes.
-  exit_reason     TEXT
+  exit_reason     TEXT,
+  -- docs/fill_and_learning_plan.md S5 Task 1: the walk-enforced cap at the
+  -- moment WalkResult was returned, not the cap the original plan_json
+  -- implies -- P0-3's mid-walk re-quote can move it. NULL for rows written
+  -- before this column existed; readers fall back to recomputing from
+  -- plan_json in that case only.
+  final_cap       REAL
 );
 CREATE INDEX IF NOT EXISTS ix_trades_ts ON trades(ts_utc DESC);
 CREATE INDEX IF NOT EXISTS ix_trades_open ON trades(closed_at) WHERE closed_at IS NULL;

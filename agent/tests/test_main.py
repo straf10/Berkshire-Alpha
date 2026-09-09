@@ -2756,3 +2756,144 @@ async def test_unexpired_rows_are_never_touched(tmp_path) -> None:
         )
         assert closed == 0
         assert await main_module._open_defined_risk(conn, "2026-09-09") == Decimal("900")
+
+
+_RETRY_PLAN_JSON = json.dumps({
+    "symbol": "AAPL", "structure": "BULL_PUT_SPREAD", "regime": "CREDIT", "expiry": "2026-09-11",
+    "dte": 2, "legs": [
+        {"occ_symbol": "AAPL1", "strike": 220.0, "right": "P", "side": "SELL", "ratio_qty": 1,
+         "intent": "SELL_TO_OPEN", "delta": -0.28, "vega": 0.05, "bid": 1.0, "ask": 1.1},
+        {"occ_symbol": "AAPL2", "strike": 215.0, "right": "P", "side": "BUY", "ratio_qty": 1,
+         "intent": "BUY_TO_OPEN", "delta": -0.10, "vega": 0.05, "bid": 0.5, "ask": 0.6},
+    ], "width": 5.0, "net_mid": "-0.90", "net_natural": "-0.80", "max_profit_per_spread": "90",
+    "max_loss_per_spread": "410", "p_success": 0.72, "spot": 220.0, "short_leg_delta": 0.28,
+})
+
+
+def test_spreadplan_from_json_roundtrips_legs_and_decimals() -> None:
+    """docs/fill_and_learning_plan.md S5 Task 5: the retry path reconstructs
+    a SpreadPlan from a stored plan_json snapshot -- legs, Decimal money
+    fields, and the date/enum fields must all survive the round trip."""
+    plan = main_module._spreadplan_from_json(_RETRY_PLAN_JSON)
+    assert plan.symbol == "AAPL"
+    assert plan.net_mid == Decimal("-0.90")
+    assert plan.max_loss_per_spread == Decimal("410")
+    assert len(plan.legs) == 2
+    assert plan.legs[0].occ_symbol == "AAPL1"
+    assert plan.expiry == date(2026, 9, 11)
+
+
+async def test_retry_pending_entries_drops_entry_when_fresh_ev_non_positive(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guard from the brief: re-check EV at the fresh quote and drop the
+    pending entry if it has gone non-positive -- must not reach the risk
+    gate or submit anything once the edge is gone."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    async with storage_db.connect(db_path) as conn:
+        await storage_write.put_state(
+            conn, "pending_entries", {"AAPL": [{"plan_json": _RETRY_PLAN_JSON, "attempts": 1}]},
+        )
+
+    async def fake_fetch_leg_snapshots(clients, occ_symbols):
+        # The credit has collapsed to near zero (net_mid ~ -0.05) -- almost
+        # all the width is now at risk for almost no premium, driving EV at
+        # the fresh mid deep negative: 0.72*5 - 0.28*495 = -135/spread.
+        return {
+            "AAPL1": SimpleNamespace(mid=1.00, bid=1.00, ask=1.00),
+            "AAPL2": SimpleNamespace(mid=0.95, bid=0.95, ask=0.95),
+        }
+
+    monkeypatch.setattr(main_module, "fetch_leg_snapshots", fake_fetch_leg_snapshots)
+
+    clients = FakeClients()
+    broker = MockBroker([])
+    clock = _FastClock(datetime(2026, 9, 9, 15, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+    session = await main_module.current_or_next_session(clients)
+
+    async with storage_db.connect(db_path) as conn:
+        _, _, _ = await main_module._retry_pending_entries(
+            deps, conn, session, cycle_id="c1", ts_utc="t", earnings_armed=False,
+            chain_cache=None, account=FAKE_ACCOUNT, budget=SimpleNamespace(exhausted=False),
+            day_pnl_pct=0.0, drawdown_pct=0.0, buying_power=Decimal("100000"),
+            past_entry_cutoff=False, reduce_only=False,
+            running_portfolio=SimpleNamespace(position_keys=frozenset(), delta_dollars=0.0, vega_dollars=0.0,
+                                               delta_limit=1.0, vega_limit=1.0),
+            running_open_underlyings=frozenset(), aggregate_risk=Decimal("0"),
+        )
+        assert broker.submitted == []
+        pending = await main_module._read_state_value(conn, "pending_entries")
+        assert pending == {}  # dropped -- the edge is gone
+        cur = await conn.execute("SELECT COUNT(*) FROM decisions")
+        assert (await cur.fetchone())[0] == 0  # never reached the gate/decision-row step
+
+
+async def test_retry_pending_entries_respects_per_symbol_attempt_cap(tmp_path) -> None:
+    """An entry that already spent MAX_ENTRY_RETRY_ATTEMPTS attempts is
+    dropped for the rest of the session without even re-quoting it."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    async with storage_db.connect(db_path) as conn:
+        await storage_write.put_state(
+            conn, "pending_entries",
+            {"AAPL": [{"plan_json": _RETRY_PLAN_JSON, "attempts": main_module.MAX_ENTRY_RETRY_ATTEMPTS}]},
+        )
+
+    clients = FakeClients()
+    broker = MockBroker([])
+    clock = _FastClock(datetime(2026, 9, 9, 15, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+    session = await main_module.current_or_next_session(clients)
+
+    async with storage_db.connect(db_path) as conn:
+        await main_module._retry_pending_entries(
+            deps, conn, session, cycle_id="c1", ts_utc="t", earnings_armed=False,
+            chain_cache=None, account=FAKE_ACCOUNT, budget=SimpleNamespace(exhausted=False),
+            day_pnl_pct=0.0, drawdown_pct=0.0, buying_power=Decimal("100000"),
+            past_entry_cutoff=False, reduce_only=False,
+            running_portfolio=SimpleNamespace(position_keys=frozenset(), delta_dollars=0.0, vega_dollars=0.0,
+                                               delta_limit=1.0, vega_limit=1.0),
+            running_open_underlyings=frozenset(), aggregate_risk=Decimal("0"),
+        )
+        assert broker.submitted == []
+        pending = await main_module._read_state_value(conn, "pending_entries")
+        assert pending == {}
+
+
+async def test_retry_pending_entries_keeps_entry_without_burning_an_attempt_when_quote_missing(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A leg quote vanishing this scan is a data outage, not a verdict on the
+    trade -- it must be retried next scan with the SAME attempt count."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    async with storage_db.connect(db_path) as conn:
+        await storage_write.put_state(
+            conn, "pending_entries", {"AAPL": [{"plan_json": _RETRY_PLAN_JSON, "attempts": 1}]},
+        )
+
+    async def fake_fetch_leg_snapshots(clients, occ_symbols):
+        return {}  # both legs' quotes gone
+
+    monkeypatch.setattr(main_module, "fetch_leg_snapshots", fake_fetch_leg_snapshots)
+
+    clients = FakeClients()
+    broker = MockBroker([])
+    clock = _FastClock(datetime(2026, 9, 9, 15, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+    session = await main_module.current_or_next_session(clients)
+
+    async with storage_db.connect(db_path) as conn:
+        await main_module._retry_pending_entries(
+            deps, conn, session, cycle_id="c1", ts_utc="t", earnings_armed=False,
+            chain_cache=None, account=FAKE_ACCOUNT, budget=SimpleNamespace(exhausted=False),
+            day_pnl_pct=0.0, drawdown_pct=0.0, buying_power=Decimal("100000"),
+            past_entry_cutoff=False, reduce_only=False,
+            running_portfolio=SimpleNamespace(position_keys=frozenset(), delta_dollars=0.0, vega_dollars=0.0,
+                                               delta_limit=1.0, vega_limit=1.0),
+            running_open_underlyings=frozenset(), aggregate_risk=Decimal("0"),
+        )
+        pending = await main_module._read_state_value(conn, "pending_entries")
+        assert pending == {"AAPL": [{"plan_json": _RETRY_PLAN_JSON, "attempts": 1}]}

@@ -275,7 +275,8 @@ async def update_trade_result(
     if max_loss_per_spread is not None:
         await conn.execute(
             """UPDATE trades SET status=?, final_order_id=?, final_limit=?, fill_price=?,
-               filled_qty=?, walk_steps=?, reject_code=?, events_json=?, max_loss_per_spread=? WHERE id=?""",
+               filled_qty=?, walk_steps=?, reject_code=?, events_json=?, max_loss_per_spread=?,
+               final_cap=? WHERE id=?""",
             (
                 r.status, r.order_id,
                 float(r.final_limit) if r.final_limit is not None else None,
@@ -283,19 +284,21 @@ async def update_trade_result(
                 r.filled_qty, r.steps, r.reject_code,
                 json.dumps([e.__dict__ for e in r.events], default=str),
                 float(max_loss_per_spread),
+                float(r.final_cap) if r.final_cap is not None else None,
                 trade_id,
             ),
         )
     else:
         await conn.execute(
             """UPDATE trades SET status=?, final_order_id=?, final_limit=?, fill_price=?,
-               filled_qty=?, walk_steps=?, reject_code=?, events_json=? WHERE id=?""",
+               filled_qty=?, walk_steps=?, reject_code=?, events_json=?, final_cap=? WHERE id=?""",
             (
                 r.status, r.order_id,
                 float(r.final_limit) if r.final_limit is not None else None,
                 float(r.fill_price) if r.fill_price is not None else None,
                 r.filled_qty, r.steps, r.reject_code,
                 json.dumps([e.__dict__ for e in r.events], default=str),
+                float(r.final_cap) if r.final_cap is not None else None,
                 trade_id,
             ),
         )

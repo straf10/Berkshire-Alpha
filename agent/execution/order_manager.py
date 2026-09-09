@@ -61,6 +61,14 @@ class WalkResult:
     steps: int
     reject_code: RejectCode | None
     events: tuple[WalkEvent, ...]
+    # The walk-enforced cap AT THE MOMENT this result was returned -- not the
+    # cap implied by the original plan_json. P0-3 lets a re-quote move the cap
+    # mid-walk, so anything that recomputes the cap from the stored plan alone
+    # (reflector._recompute_cap, read._walk_cap_for_trade) silently disagrees
+    # with what the live walk actually enforced. Persisted so those two
+    # diagnostics can read the true value instead of re-deriving a stale one
+    # (docs/fill_and_learning_plan.md S5, Task 1).
+    final_cap: Decimal | None
 
 
 async def _rest_and_poll(
@@ -116,6 +124,7 @@ async def walk_to_fill(
         return WalkResult(
             status="REJECTED", order_id=stranded, final_limit=None, fill_price=None,
             filled_qty=0, steps=0, reject_code=RejectCode.UNKNOWN, events=tuple(events),
+            final_cap=None,  # a crashed walk has no meaningful cap
         )
 
 
@@ -206,7 +215,7 @@ async def _walk(
     if state.status == OrderStatus.REJECTED:
         return WalkResult(
             "REJECTED", order_id, limit, None, state.filled_qty, 0,
-            state.reject_code or RejectCode.UNKNOWN, tuple(events),
+            state.reject_code or RejectCode.UNKNOWN, tuple(events), final_cap=cap,
         )
 
     step = 0
@@ -214,7 +223,7 @@ async def _walk(
         state = await _rest_and_poll(broker, order_id, clock, events, step)
 
         if state.status == OrderStatus.FILLED:
-            return WalkResult("FILLED", order_id, limit, state.fill_avg_price, state.filled_qty, step, None, tuple(events))
+            return WalkResult("FILLED", order_id, limit, state.fill_avg_price, state.filled_qty, step, None, tuple(events), final_cap=cap)
 
         if state.status == OrderStatus.PARTIALLY_FILLED:
             events.append(
@@ -222,15 +231,15 @@ async def _walk(
             )
             state = await _poll_partial_until_terminal(broker, order_id, clock, events, step)
             if state is not None and state.status == OrderStatus.FILLED:
-                return WalkResult("FILLED", order_id, limit, state.fill_avg_price, state.filled_qty, step, None, tuple(events))
+                return WalkResult("FILLED", order_id, limit, state.fill_avg_price, state.filled_qty, step, None, tuple(events), final_cap=cap)
             filled_qty = state.filled_qty if state is not None else 0
             fill_price = state.fill_avg_price if state is not None else None
-            return WalkResult("PARTIAL_SUSPENDED", order_id, limit, fill_price, filled_qty, step, None, tuple(events))
+            return WalkResult("PARTIAL_SUSPENDED", order_id, limit, fill_price, filled_qty, step, None, tuple(events), final_cap=cap)
 
         if state.status == OrderStatus.REJECTED:
             return WalkResult(
                 "REJECTED", order_id, limit, None, state.filled_qty, step,
-                state.reject_code or RejectCode.UNKNOWN, tuple(events),
+                state.reject_code or RejectCode.UNKNOWN, tuple(events), final_cap=cap,
             )
 
         if state.status == OrderStatus.CANCELED:
@@ -262,7 +271,7 @@ async def _walk(
             )
             return WalkResult(
                 "UNFILLED_REJECT", order_id, limit, None, state.filled_qty, step,
-                RejectCode.UNFILLED_REJECT, tuple(events),
+                RejectCode.UNFILLED_REJECT, tuple(events), final_cap=cap,
             )
 
         # docs/fill_and_learning_plan.md P0-3: re-quote periodically rather
@@ -293,22 +302,25 @@ async def _walk(
                 # the very first time it re-quotes.
                 if not is_closing_order and ev_at_mid is not None and ev_at_mid > 0:
                     new_ev_at_mid = ev_at_mid - (new_mid - mid) * Decimal("100")
-                    # The market has moved against us enough that the plan's
-                    # own modelled edge, repriced off the fresh mid, is gone --
-                    # do not keep paying up into a market that has left (P0-3).
-                    if new_ev_at_mid <= 0:
-                        await broker.cancel_order(order_id)
-                        events.append(WalkEvent(ts=clock.now(), step=step, action="CANCEL", order_id=order_id, limit=limit, status=state.status))
-                        return WalkResult(
-                            "UNFILLED_REJECT", order_id, limit, None, state.filled_qty, step,
-                            RejectCode.UNFILLED_REJECT, tuple(events),
-                        )
                 else:
                     new_ev_at_mid = None if is_closing_order else ev_at_mid
+                # Computed before the cancel check below (not after) so the
+                # EV-died return path can still report the cap the fresh quote
+                # implies, rather than leaving final_cap on the stale value.
                 new_cap = walk_cap(
                     mid=new_mid, natural=new_natural, width=plan.width, is_closing=is_closing_order,
                     structure_is_credit=STRUCTURE_IS_CREDIT[plan.structure], ev_at_mid=new_ev_at_mid,
                 )
+                # The market has moved against us enough that the plan's own
+                # modelled edge, repriced off the fresh mid, is gone -- do not
+                # keep paying up into a market that has left (P0-3).
+                if not is_closing_order and ev_at_mid is not None and ev_at_mid > 0 and new_ev_at_mid <= 0:
+                    await broker.cancel_order(order_id)
+                    events.append(WalkEvent(ts=clock.now(), step=step, action="CANCEL", order_id=order_id, limit=limit, status=state.status))
+                    return WalkResult(
+                        "UNFILLED_REJECT", order_id, limit, None, state.filled_qty, step,
+                        RejectCode.UNFILLED_REJECT, tuple(events), final_cap=new_cap,
+                    )
                 mid, natural, cap = new_mid, new_natural, new_cap
                 ev_at_mid = new_ev_at_mid  # a LATER requote shifts from here, not the stale submit-time value
 
@@ -321,7 +333,7 @@ async def _walk(
             events.append(WalkEvent(ts=clock.now(), step=step, action="CANCEL", order_id=order_id, limit=limit, status=state.status))
             return WalkResult(
                 "UNFILLED_REJECT", order_id, limit, None, state.filled_qty, step,
-                RejectCode.UNFILLED_REJECT, tuple(events),
+                RejectCode.UNFILLED_REJECT, tuple(events), final_cap=cap,
             )
 
         headroom = abs(cap - limit)

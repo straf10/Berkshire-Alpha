@@ -92,19 +92,39 @@ class SessionDigest:
     median_cap_headroom: float | None = None   # abs(cap - mid), over cap_bound_rejects
     median_net_width_pct: float | None = None  # over WIDE_NET_SPREAD gate rejections this session
 
+    # docs/fill_and_learning_plan.md S5 Task 4: the payoff of P2's
+    # counterfactual re-quotes -- whether EV_RETENTION's refusals were
+    # actually calibrated. `forgone_pnl` and `avoided_loss` are reported
+    # SEPARATELY and never netted: a net figure near zero is consistent both
+    # with "the refusals were perfectly calibrated" and with "we missed $500
+    # and dodged $500", and those demand opposite responses from the model.
+    counterfactual_n: int = 0            # unfilled entries with >=1 counterfactual sample
+    would_have_filled_n: int = 0         # of those, how many would have filled at natural
+    forgone_pnl: float = 0.0             # summed hypothetical_pnl over would-have-filled entries
+    avoided_loss: float = 0.0            # same sum, restricted to negative values only
+
 
 def _recompute_cap(t: Mapping[str, Any]) -> tuple[Decimal, Decimal] | None:
-    """Recomputes the SAME cap the live walk used, from the trade's stored
-    plan_json -- (cap, mid), or None if plan_json is absent/unparseable.
-    Pure: no I/O. docs/fill_and_learning_plan.md P1-1's cap_bound_rejects
-    diagnostic (`final_limit == cap`) would have named the 2026-09-08 bug
-    outright: 9 of 9 unfilled rejections landed exactly on their cap."""
+    """The cap the live walk actually enforced -- (cap, mid), or None if
+    plan_json is absent/unparseable. Pure: no I/O.
+
+    docs/fill_and_learning_plan.md S5 Task 1/2: prefers the persisted
+    `trades.final_cap`, which is the walk's OWN final cap after any P0-3
+    mid-walk re-quote. Recomputing from plan_json alone (the old behaviour)
+    silently disagreed with the live walk the moment a re-quote moved the
+    cap -- on 2026-09-09 that made this diagnostic report "1 of 4 unfilled
+    rejections stopped at the cap" when the true answer was 4 of 4. Falls
+    back to recomputing from plan_json only for rows written before
+    `final_cap` existed (final_cap is NULL)."""
     plan_json = t.get("plan_json")
     if not plan_json:
         return None
     try:
         p = json.loads(plan_json)
         mid = quantize_cent(Decimal(str(p["net_mid"])))
+        final_cap = t.get("final_cap")
+        if final_cap is not None:
+            return quantize_cent(Decimal(str(final_cap))), mid
         natural = quantize_cent(Decimal(str(p["net_natural"])))
         structure = Structure(p["structure"])
         ps = Decimal(str(p["p_success"]))
@@ -166,6 +186,19 @@ def digest(rows: Sequence[Mapping[str, Any]], trades: Sequence[Mapping[str, Any]
             cap_bound_rejects += 1
         cap_headrooms.append(float(abs(cap - mid)))
     median_cap_headroom = statistics.median(cap_headrooms) if cap_headrooms else None
+
+    # docs/fill_and_learning_plan.md S5 Task 4: `t["counterfactual"]` is the
+    # latest P2 re-quote sample main._session_trades attaches to each
+    # UNFILLED_REJECT row, or None if none was ever recorded (e.g. the
+    # contract expired before the next management tick).
+    cf_sampled = [t for t in unfilled_rejects if t.get("counterfactual") is not None]
+    counterfactual_n = len(cf_sampled)
+    would_have_filled_pnls = [
+        t["counterfactual"]["hypothetical_pnl"] for t in cf_sampled if t["counterfactual"]["would_have_filled"]
+    ]
+    would_have_filled_n = len(would_have_filled_pnls)
+    forgone_pnl = sum(would_have_filled_pnls)
+    avoided_loss = sum(p for p in would_have_filled_pnls if p < 0)
 
     wide_spread_rows = [
         row for row in rows if row["gate_reason"] == "WIDE_NET_SPREAD" and row["observed_value"] is not None
@@ -250,6 +283,10 @@ def digest(rows: Sequence[Mapping[str, Any]], trades: Sequence[Mapping[str, Any]
         cap_bound_rejects=cap_bound_rejects,
         median_cap_headroom=median_cap_headroom,
         median_net_width_pct=median_net_width_pct,
+        counterfactual_n=counterfactual_n,
+        would_have_filled_n=would_have_filled_n,
+        forgone_pnl=forgone_pnl,
+        avoided_loss=avoided_loss,
     )
 
 
@@ -310,9 +347,19 @@ def _prompt(d: SessionDigest) -> str:
             f" Median net spread width on WIDE_NET_SPREAD rejections: {d.median_net_width_pct:.1%}."
             if d.median_net_width_pct is not None else ""
         )
+        cf_detail = ""
+        if d.counterfactual_n > 0:
+            cf_detail = (
+                f"\nCounterfactuals (P2 re-quotes of unfilled entries): {d.counterfactual_n} sampled, "
+                f"{d.would_have_filled_n} would have filled at natural. Forgone P&L (gains missed by "
+                f"refusing) {d.forgone_pnl:+.2f}; avoided loss (losses dodged by refusing) "
+                f"{d.avoided_loss:+.2f}. These are reported separately and must NOT be netted -- a sum "
+                f"near zero can mean the refusals were well-calibrated OR that equal gains and losses "
+                f"were both missed, and those call for opposite responses."
+            )
         execution_block = (
             f"\nExecution: {d.submitted} submitted, {d.filled} FILLED, {d.unfilled_reject} unfilled-rejected "
-            f"({d.fill_rate:.1%} fill rate).{cap_detail}{width_detail}"
+            f"({d.fill_rate:.1%} fill rate).{cap_detail}{width_detail}{cf_detail}"
         )
 
     return (

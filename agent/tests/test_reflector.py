@@ -129,6 +129,83 @@ def test_digest_slippage_scoped_to_filled_trades_regardless_of_closed_status() -
     assert d.avg_slippage_vs_mid == pytest.approx(0.05)
 
 
+_PLAN_JSON = (
+    '{"symbol":"XYZ","structure":"BULL_PUT_SPREAD","regime":"CREDIT","expiry":"2026-09-10","dte":3,'
+    '"legs":[{"occ_symbol":"XYZ1","strike":100.0,"right":"P","side":"SELL","ratio_qty":1,'
+    '"intent":"SELL_TO_OPEN","delta":-0.28,"vega":0.05,"bid":1.0,"ask":1.1},'
+    '{"occ_symbol":"XYZ2","strike":97.0,"right":"P","side":"BUY","ratio_qty":1,'
+    '"intent":"BUY_TO_OPEN","delta":-0.10,"vega":0.05,"bid":0.5,"ask":0.6}],'
+    '"width":3.0,"net_mid":"-0.90","net_natural":"-0.60","max_profit_per_spread":"90",'
+    '"max_loss_per_spread":"210","p_success":0.72,"spot":100.0,"short_leg_delta":0.28}'
+)
+
+
+def test_recompute_cap_prefers_persisted_final_cap_over_recomputing() -> None:
+    """docs/fill_and_learning_plan.md S5 Task 1/2: `final_cap` is the cap the
+    live walk ACTUALLY enforced after any P0-3 mid-walk re-quote -- it must
+    win over recomputing from the (possibly stale) original plan_json."""
+    from decimal import Decimal
+
+    t = _trade("XYZ")
+    t["plan_json"] = _PLAN_JSON
+    t["final_cap"] = -0.55   # deliberately NOT what recomputing from plan_json alone gives
+    result = reflector._recompute_cap(t)
+    assert result is not None
+    cap, _mid = result
+    assert cap == Decimal("-0.55")
+
+
+def test_recompute_cap_falls_back_to_plan_json_when_final_cap_is_none() -> None:
+    """Rows written before `final_cap` existed (NULL) still get a cap, via
+    the same recomputation path as before -- now correctly EV-aware."""
+    from decimal import Decimal
+
+    from agent.tools.walk_cap import walk_cap
+
+    t = _trade("XYZ")
+    t["plan_json"] = _PLAN_JSON
+    t["final_cap"] = None
+    result = reflector._recompute_cap(t)
+    assert result is not None
+    cap, mid = result
+    assert mid == Decimal("-0.90")
+    ev_at_mid = Decimal("0.72") * Decimal("90") - Decimal("0.28") * Decimal("210")
+    expected_cap = walk_cap(
+        mid=Decimal("-0.90"), natural=Decimal("-0.60"), width=3.0,
+        is_closing=False, structure_is_credit=True, ev_at_mid=ev_at_mid,
+    )
+    assert cap == expected_cap
+
+
+def test_digest_cap_bound_rejects_uses_persisted_final_cap() -> None:
+    """On 2026-09-09 this diagnostic recomputed the cap from stale plan_json
+    and reported '1 of 4 unfilled rejections stopped at the cap' when the
+    true answer was 4 of 4 -- because P0-3's requote had moved every one of
+    them. Feeding `final_cap` in must fix the count."""
+    t = _trade("XYZ")
+    t.update(plan_json=_PLAN_JSON, final_cap=-0.55, final_limit=-0.55, status="UNFILLED_REJECT")
+    d = reflector.digest([_row("NO_REGIME")], [t])
+    assert d.cap_bound_rejects == 1
+
+
+def test_digest_counterfactual_fields_reported_separately_never_netted() -> None:
+    """docs/fill_and_learning_plan.md S5 Task 4: forgone_pnl and avoided_loss
+    must both be visible even when they cancel out in a naive net -- a net
+    near zero can mean either well-calibrated refusals or an even split of
+    missed gains and dodged losses, and those demand opposite responses."""
+    t1 = _trade("A")
+    t1.update(status="UNFILLED_REJECT", counterfactual={"would_have_filled": 1, "hypothetical_pnl": 500.0})
+    t2 = _trade("B")
+    t2.update(status="UNFILLED_REJECT", counterfactual={"would_have_filled": 1, "hypothetical_pnl": -500.0})
+    t3 = _trade("C")
+    t3.update(status="UNFILLED_REJECT", counterfactual=None)   # never sampled -- excluded from counterfactual_n
+    d = reflector.digest([_row("NO_REGIME")], [t1, t2, t3])
+    assert d.counterfactual_n == 2
+    assert d.would_have_filled_n == 2
+    assert d.forgone_pnl == pytest.approx(0.0)     # 500 + (-500): a net figure would look "calibrated"
+    assert d.avoided_loss == pytest.approx(-500.0)  # ...but half of that was a dodged loss, not a wash
+
+
 def test_digest_returns_none_when_every_reason_is_denylisted() -> None:
     """No fallback to the next-most-common gate when ALL observed reasons are
     denylisted -- must be a null/no-verdict result, not a silent pick."""

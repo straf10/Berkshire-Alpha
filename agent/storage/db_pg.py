@@ -158,3 +158,6 @@ async def init_db(dsn: str) -> None:
         await raw.execute("ALTER TABLE trades ADD COLUMN IF NOT EXISTS exit_reason TEXT")
         # docs/fill_and_learning_plan.md P1-1: same pattern as exit_reason above.
         await raw.execute("ALTER TABLE reflections ADD COLUMN IF NOT EXISTS stage TEXT")
+        # docs/fill_and_learning_plan.md S5 Task 1: same pattern -- the
+        # walk-enforced cap at the moment WalkResult was returned.
+        await raw.execute("ALTER TABLE trades ADD COLUMN IF NOT EXISTS final_cap REAL")

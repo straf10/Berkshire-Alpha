@@ -28,6 +28,7 @@ from agent.config import (
     LLM_SEMAPHORE_LIMIT,
     MACRO_TICKERS,
     MANAGEMENT_INTERVAL_S,
+    MAX_ENTRY_RETRY_ATTEMPTS,
     MAX_NET_SPREAD_WIDTH_PCT,
     MAX_RISK_PER_TRADE_PCT,
     NEWS_LOOKBACK_H,
@@ -47,6 +48,7 @@ from agent.execution.exits import OpenTrade, build_closing_plan, current_net_mid
 from agent.execution.order_manager import (
     STRUCTURAL_CLOSE_REJECTS,
     RequoteFn,
+    WalkResult,
     close_legs_individually,
     walk_to_fill,
 )
@@ -218,6 +220,221 @@ def _requote_plan_fn(deps: "Deps") -> RequoteFn:
             net_natural += sign * natural_price
         return net_mid, net_natural
     return _requote
+
+
+def _spreadplan_from_json(plan_json: str) -> SpreadPlan:
+    """Reconstructs a SpreadPlan from a `decisions.plan_json`/pending-entry
+    snapshot (docs/fill_and_learning_plan.md S5 Task 5). `_build_mleg_request`
+    (agent/execution/broker.py) only ever reads occ_symbol/ratio_qty/side/
+    intent off each leg, never bid/ask -- so the leg prices captured at the
+    ORIGINAL attempt are fine to carry through unchanged; only net_mid/
+    net_natural need to be refreshed before a retry, via `_requote_plan_fn`."""
+    p = json.loads(plan_json)
+    legs = tuple(
+        Leg(
+            occ_symbol=leg["occ_symbol"], strike=float(leg["strike"]), right=leg["right"],
+            side=leg["side"], ratio_qty=int(leg["ratio_qty"]), intent=Intent(leg["intent"]),
+            delta=float(leg["delta"]), vega=float(leg["vega"]), bid=float(leg["bid"]), ask=float(leg["ask"]),
+        )
+        for leg in p["legs"]
+    )
+    return SpreadPlan(
+        symbol=p["symbol"], structure=Structure(p["structure"]), regime=Regime(p["regime"]),
+        expiry=date.fromisoformat(p["expiry"]), dte=int(p["dte"]), legs=legs, width=float(p["width"]),
+        net_mid=Decimal(str(p["net_mid"])), net_natural=Decimal(str(p["net_natural"])),
+        max_profit_per_spread=Decimal(str(p["max_profit_per_spread"])),
+        max_loss_per_spread=Decimal(str(p["max_loss_per_spread"])),
+        p_success=float(p["p_success"]), spot=float(p["spot"]), short_leg_delta=float(p["short_leg_delta"]),
+    )
+
+
+async def _apply_fill_bookkeeping(
+    conn: aiosqlite.Connection, plan: SpreadPlan, trade_id: int, result: WalkResult, *,
+    account: Any, session: SessionPlan, running_portfolio: Any,
+    running_open_underlyings: frozenset[str], aggregate_risk: Decimal,
+) -> tuple[Any, frozenset[str], Decimal]:
+    """The bookkeeping a fill triggers regardless of which caller submitted
+    the order -- the original per-cycle candidate loop and the S5 Task 5
+    retry path below both need it, so it is factored out rather than
+    duplicated. Recomputes risk from the ACTUAL fill (docs/audit_report_v2.md
+    §6/Task 3), folds the fill into the running portfolio/open-underlyings
+    state so the NEXT candidate this cycle sees it (docs/review.md P1-8), and
+    halts entries for the session on a post-fill risk-cap breach."""
+    if result.fill_price is not None:
+        realized_max_loss = _max_loss_from_fill(plan, result.fill_price)
+        await storage_write.update_trade_result(conn, trade_id, result, max_loss_per_spread=realized_max_loss)
+    else:
+        # A filled order with no reported fill_price (Alpaca hasn't populated
+        # filled_avg_price yet at poll time) falls back to the pre-walk
+        # estimate rather than dropping it (docs/review.md P1-5).
+        realized_max_loss = plan.max_loss_per_spread
+        logger.warning(
+            "%s %s filled %d with fill_price=None -- falling back to pre-walk "
+            "max_loss_per_spread %s for risk accounting",
+            plan.symbol, plan.structure, result.filled_qty, realized_max_loss,
+        )
+        await storage_write.update_trade_result(conn, trade_id, result)
+    aggregate_risk += realized_max_loss * result.filled_qty
+
+    delta_add, vega_add = marginal(plan, result.filled_qty)
+    new_delta_dollars = running_portfolio.delta_dollars + delta_add
+    new_vega_dollars = running_portfolio.vega_dollars + vega_add
+    running_portfolio = dataclasses.replace(
+        running_portfolio,
+        delta_dollars=new_delta_dollars,
+        vega_dollars=new_vega_dollars,
+        delta_breached=abs(new_delta_dollars) > running_portfolio.delta_limit,
+        vega_breached=abs(new_vega_dollars) > running_portfolio.vega_limit,
+        position_keys=running_portfolio.position_keys | {(plan.symbol, plan.expiry)},
+    )
+    running_open_underlyings = running_open_underlyings | {plan.symbol}
+
+    if realized_max_loss * result.filled_qty > Decimal(str(MAX_RISK_PER_TRADE_PCT)) * account.equity:
+        logger.error(
+            "POST-FILL RISK BREACH %s %s: %s x %d = %s exceeds %.0f%% of equity %s -- halting entries",
+            plan.symbol, plan.structure, realized_max_loss, result.filled_qty,
+            realized_max_loss * result.filled_qty, MAX_RISK_PER_TRADE_PCT * 100, account.equity,
+        )
+        # Scoped to the session that tripped it, unlike startup_reconcile's
+        # sticky "entries_halted" (docs/review.md P1-2) -- a 1.25x tolerance
+        # band absorbs a rounding-scale breach without halting.
+        if realized_max_loss * result.filled_qty > Decimal("1.25") * Decimal(str(MAX_RISK_PER_TRADE_PCT)) * account.equity:
+            await storage_write.put_state(conn, "entries_halted_session", session.session_date.isoformat())
+
+    return running_portfolio, running_open_underlyings, aggregate_risk
+
+
+async def _retry_pending_entries(
+    deps: "Deps", conn: aiosqlite.Connection, session: SessionPlan, *,
+    cycle_id: str, ts_utc: str, earnings_armed: bool, chain_cache: ChainCache,
+    account: Any, budget: LlmBudget, day_pnl_pct: float, drawdown_pct: float,
+    buying_power: Decimal, past_entry_cutoff: bool, reduce_only: bool,
+    running_portfolio: Any, running_open_underlyings: frozenset[str], aggregate_risk: Decimal,
+) -> tuple[Any, frozenset[str], Decimal]:
+    """docs/fill_and_learning_plan.md S5 Task 5 (P2-1). Runs BEFORE the LLM
+    pipeline and the per-candidate loop, so a plan that already cleared
+    screen/shortlist/debate/gate once this session gets re-quoted and
+    re-attempted WITHOUT spending a fresh funnel pass's LLM budget to
+    rediscover it -- on 2026-09-09 AAPL was independently re-approved three
+    times this way (14:15, 15:47, 17:16), each a full 200-screen/15-debate
+    pass to reach the same trade.
+
+    Guards, per the brief: a per-symbol attempt cap of MAX_ENTRY_RETRY_ATTEMPTS,
+    then the entry is dropped for the rest of the session; EV is re-checked at
+    the fresh quote and the entry is dropped if it has gone non-positive; and
+    every retry must still pass evaluate()'s full risk gate -- it is a
+    re-attempt, not a bypass. `running_open_underlyings` only updates on an
+    actual FILL (never on a mere approval), matching the rest of scan_cycle --
+    do NOT reserve a slot on approval here either; a reservation that is
+    never released would starve the book exactly like the 2026-09-08
+    3x-QCOM/2x-NVDA-over-MAX_POSITIONS_PER_UNDERLYING episode this task's
+    write-up warns against."""
+    pending: dict[str, list[dict[str, Any]]] = await _read_state_value(conn, "pending_entries") or {}
+    if not pending:
+        return running_portfolio, running_open_underlyings, aggregate_risk
+
+    requote = _requote_plan_fn(deps)
+    remaining: dict[str, list[dict[str, Any]]] = {}
+
+    for symbol, entries in pending.items():
+        kept: list[dict[str, Any]] = []
+        for entry in entries:
+            attempts = int(entry.get("attempts", 0))
+            if attempts >= MAX_ENTRY_RETRY_ATTEMPTS:
+                continue  # attempt budget spent -- dropped for the rest of the session
+
+            try:
+                plan = _spreadplan_from_json(entry["plan_json"])
+            except Exception:
+                logger.exception("retry: pending entry for %s had an unparseable plan -- dropped", symbol)
+                continue
+
+            fresh = await requote(plan)
+            if fresh is None:
+                # A leg's quote vanished this scan -- try again next scan
+                # without burning an attempt (the fresh quote, not the
+                # symbol, was unavailable).
+                kept.append(entry)
+                continue
+            fresh_mid, fresh_natural = fresh
+            fresh_ev = ev_at_price(
+                is_credit=STRUCTURE_IS_CREDIT[plan.structure], price=fresh_mid,
+                width=Decimal(str(plan.width)), p_success=Decimal(str(plan.p_success)),
+            )
+            if fresh_ev <= 0:
+                logger.info(
+                    "retry: %s pending entry's edge is gone at the fresh quote (EV %.2f/spread) -- dropped",
+                    symbol, fresh_ev,
+                )
+                continue
+
+            retry_plan = dataclasses.replace(plan, net_mid=fresh_mid, net_natural=fresh_natural)
+            plan_json = json.dumps(dataclasses.asdict(retry_plan), default=str)
+            chain = chain_cache.get(symbol)
+            chain_symbols = chain.symbols() if chain is not None else frozenset()
+            ctx = GateContext(
+                equity=account.equity, buying_power=buying_power, day_pnl_pct=day_pnl_pct,
+                drawdown_pct=drawdown_pct, open_position_keys=running_portfolio.position_keys,
+                open_underlyings=running_open_underlyings, aggregate_defined_risk=aggregate_risk,
+                portfolio=running_portfolio, session_date=session.session_date,
+                past_entry_cutoff=past_entry_cutoff, reduce_only=reduce_only,
+                chain_symbols=chain_symbols, earnings_armed=earnings_armed,
+                llm_budget_exhausted=budget.exhausted, conviction=1.0,
+            )
+            gate_decision = evaluate(retry_plan, ctx)
+
+            row = storage_write.DecisionRow(
+                ts_utc=ts_utc, cycle_id=cycle_id, session_date=session.session_date.isoformat(),
+                symbol=symbol, mode="retry", regime=retry_plan.regime.value,
+                structure=retry_plan.structure.value, action="ENTER" if gate_decision.approved else "NO_TRADE",
+                gate_reason=gate_decision.reason.value, gate_detail=gate_decision.detail,
+                observed_value=gate_decision.observed_value, threshold_value=gate_decision.threshold_value,
+                qty=gate_decision.qty if gate_decision.approved else None, equity_feed=_feed_str(deps.feed),
+                earnings_armed=earnings_armed,
+                quant_json=json.dumps({"retry_attempt": attempts + 1}, default=str),
+                plan_json=plan_json,
+            )
+            decision_id = await storage_write.insert_decision(conn, row)
+
+            if not gate_decision.approved:
+                # Re-check every risk gate on every attempt -- a retry is not
+                # a bypass. Keep it for another attempt unless this was the last.
+                if attempts + 1 < MAX_ENTRY_RETRY_ATTEMPTS:
+                    kept.append({"plan_json": plan_json, "attempts": attempts + 1})
+                continue
+
+            qty_val = gate_decision.qty
+            trade_row = storage_write.TradeRow(
+                decision_id=decision_id, ts_utc=ts_utc, symbol=retry_plan.symbol,
+                structure=retry_plan.structure.value, expiry=retry_plan.expiry.isoformat(),
+                legs_json=json.dumps([dataclasses.asdict(leg) for leg in retry_plan.legs], default=str),
+                qty=qty_val, submitted_limit=retry_plan.net_mid,
+                max_loss_per_spread=retry_plan.max_loss_per_spread,
+            )
+            trade_id = await storage_write.insert_trade(conn, trade_row)
+
+            async def _sink(order_id: str, step: int) -> None:
+                await storage_write.update_trade_order_id(conn, trade_id, order_id=order_id, step=step)
+
+            result = await walk_to_fill(
+                deps.broker, retry_plan, qty_val, clock=deps.clock, on_order_id=_sink, requote=requote,
+            )
+            if result.filled_qty:
+                running_portfolio, running_open_underlyings, aggregate_risk = await _apply_fill_bookkeeping(
+                    conn, retry_plan, trade_id, result, account=account, session=session,
+                    running_portfolio=running_portfolio, running_open_underlyings=running_open_underlyings,
+                    aggregate_risk=aggregate_risk,
+                )
+            else:
+                await storage_write.update_trade_result(conn, trade_id, result)
+                if result.status == "UNFILLED_REJECT" and attempts + 1 < MAX_ENTRY_RETRY_ATTEMPTS:
+                    kept.append({"plan_json": plan_json, "attempts": attempts + 1})
+
+        if kept:
+            remaining[symbol] = kept
+
+    await storage_write.put_state(conn, "pending_entries", remaining)
+    return running_portfolio, running_open_underlyings, aggregate_risk
 
 
 async def _open_defined_risk(conn: aiosqlite.Connection, session_date: str) -> Decimal:
@@ -1278,6 +1495,31 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
         # session must still block new entries on the quant-only path.
         budget = await load_budget(conn, session.session_date.isoformat())
 
+        # docs/review.md P1-8: portfolio/open_underlyings are a cycle-start
+        # snapshot, so a cycle that approves several candidates in a row (up
+        # to SHORTLIST_MAX) used to have every one of them see the SAME stale
+        # counts -- MAX_CONCURRENT_POSITIONS and the portfolio delta/vega caps
+        # could not fire against fills made earlier in this same cycle.
+        # aggregate_risk was already updated in-loop; these two mirror that
+        # pattern with a running copy fed into GateContext below, updated
+        # after every fill via greeks.marginal(). Initialised here (moved up
+        # from just above the candidate loop) so the S5 Task 5 retry pass
+        # right below sees and updates the SAME running state the candidate
+        # loop later reads.
+        running_portfolio = portfolio
+        running_open_underlyings = open_underlyings
+
+        # docs/fill_and_learning_plan.md S5 Task 5 (P2-1): re-quote and
+        # re-attempt every pending unfilled entry from a prior scan BEFORE
+        # spending any LLM budget on rediscovering the same trade.
+        running_portfolio, running_open_underlyings, aggregate_risk = await _retry_pending_entries(
+            deps, conn, session, cycle_id=cycle_id, ts_utc=ts_utc, earnings_armed=earnings_armed,
+            chain_cache=chain_cache, account=account, budget=budget, day_pnl_pct=day_pnl_pct,
+            drawdown_pct=drawdown_pct, buying_power=buying_power, past_entry_cutoff=past_entry_cutoff,
+            reduce_only=reduce_only, running_portfolio=running_portfolio,
+            running_open_underlyings=running_open_underlyings, aggregate_risk=aggregate_risk,
+        )
+
         outcomes_by_symbol: dict[str, PipelineOutcome] = {}
         # Skip the LLM pipeline (a full ~24-30 call scan) when the cycle-level
         # deterministic gates would reject every candidate regardless of what
@@ -1336,17 +1578,6 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
                 # output must never be able to stop the deterministic spine
                 # by any other path either -- degrade to quant-only instead.
                 logger.exception("LLM pipeline raised an unexpected exception -- degrading to quant-only for this cycle")
-
-        # docs/review.md P1-8: portfolio/open_underlyings are a cycle-start
-        # snapshot, so a cycle that approves several candidates in a row (up
-        # to SHORTLIST_MAX) used to have every one of them see the SAME stale
-        # counts -- MAX_CONCURRENT_POSITIONS and the portfolio delta/vega caps
-        # could not fire against fills made earlier in this same cycle.
-        # aggregate_risk was already updated in-loop; these two mirror that
-        # pattern with a running copy fed into GateContext below, updated
-        # after every fill via greeks.marginal().
-        running_portfolio = portfolio
-        running_open_underlyings = open_underlyings
 
         for q in snapshots:
             regime_decision = select(q, assigned_regimes.get(q.symbol, Regime.NO_TRADE), skew_thresh, macro_tuning.vwm_bar)
@@ -1486,62 +1717,30 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
                     # is derived from net_mid and is stale the moment the walk
                     # moves the fill off mid (trade 8, LLY: gated on $194/spread,
                     # true post-fill risk was $665/spread, a 3.43x understatement).
-                    if result.fill_price is not None:
-                        realized_max_loss = _max_loss_from_fill(plan, result.fill_price)
-                        await storage_write.update_trade_result(conn, trade_id, result, max_loss_per_spread=realized_max_loss)
-                    else:
-                        # docs/review.md P1-5: a filled order with no reported
-                        # fill_price (Alpaca hasn't populated filled_avg_price
-                        # yet at poll time) used to contribute ZERO to
-                        # aggregate_risk -- worse than the pre-Task-3 behaviour,
-                        # which at least booked the modelled amount. Fall back
-                        # to the pre-walk estimate rather than dropping it.
-                        realized_max_loss = plan.max_loss_per_spread
-                        logger.warning(
-                            "%s %s filled %d with fill_price=None -- falling back to pre-walk "
-                            "max_loss_per_spread %s for risk accounting",
-                            plan.symbol, plan.structure, result.filled_qty, realized_max_loss,
-                        )
-                        await storage_write.update_trade_result(conn, trade_id, result)
-                    aggregate_risk += realized_max_loss * result.filled_qty
-
-                    # docs/review.md P1-8: fold this fill into the running
-                    # portfolio state so the NEXT candidate in this same cycle
-                    # sees it -- both MAX_CONCURRENT_POSITIONS/MAX_POSITIONS_
-                    # PER_UNDERLYING (via open_position_keys/open_underlyings)
-                    # and the portfolio delta/vega caps (via `portfolio`) are
-                    # read from GateContext, which is now built from these.
-                    delta_add, vega_add = marginal(plan, result.filled_qty)
-                    new_delta_dollars = running_portfolio.delta_dollars + delta_add
-                    new_vega_dollars = running_portfolio.vega_dollars + vega_add
-                    running_portfolio = dataclasses.replace(
-                        running_portfolio,
-                        delta_dollars=new_delta_dollars,
-                        vega_dollars=new_vega_dollars,
-                        delta_breached=abs(new_delta_dollars) > running_portfolio.delta_limit,
-                        vega_breached=abs(new_vega_dollars) > running_portfolio.vega_limit,
-                        position_keys=running_portfolio.position_keys | {(plan.symbol, plan.expiry)},
+                    running_portfolio, running_open_underlyings, aggregate_risk = await _apply_fill_bookkeeping(
+                        conn, plan, trade_id, result, account=account, session=session,
+                        running_portfolio=running_portfolio, running_open_underlyings=running_open_underlyings,
+                        aggregate_risk=aggregate_risk,
                     )
-                    running_open_underlyings = running_open_underlyings | {plan.symbol}
-
-                    if realized_max_loss * result.filled_qty > Decimal(str(MAX_RISK_PER_TRADE_PCT)) * account.equity:
-                        logger.error(
-                            "POST-FILL RISK BREACH %s %s: %s x %d = %s exceeds %.0f%% of equity %s -- halting entries",
-                            plan.symbol, plan.structure, realized_max_loss, result.filled_qty,
-                            realized_max_loss * result.filled_qty, MAX_RISK_PER_TRADE_PCT * 100, account.equity,
-                        )
-                        # docs/review.md P1-2: scoped to the session that
-                        # tripped it, unlike startup_reconcile's sticky
-                        # "entries_halted" -- ordinary credit-walk slippage on
-                        # a spread sized close to the risk ceiling is enough
-                        # to cross MAX_RISK_PER_TRADE_PCT, and that must not
-                        # silently disable entries for the rest of the
-                        # competition. A 1.25x tolerance band absorbs a
-                        # rounding-scale breach without halting.
-                        if realized_max_loss * result.filled_qty > Decimal("1.25") * Decimal(str(MAX_RISK_PER_TRADE_PCT)) * account.equity:
-                            await storage_write.put_state(conn, "entries_halted_session", session.session_date.isoformat())
                 else:
                     await storage_write.update_trade_result(conn, trade_id, result)
+                    # docs/fill_and_learning_plan.md S5 Task 5 (P2-1): an
+                    # EV-positive plan that died UNFILLED_REJECT is not
+                    # discarded -- it is queued so the NEXT scan re-quotes
+                    # and re-attempts it directly (via _retry_pending_entries)
+                    # instead of paying for a full funnel pass to rediscover
+                    # the identical trade.
+                    if result.status == "UNFILLED_REJECT":
+                        plan_ev_at_mid = ev_at_price(
+                            is_credit=STRUCTURE_IS_CREDIT[plan.structure], price=plan.net_mid,
+                            width=Decimal(str(plan.width)), p_success=Decimal(str(plan.p_success)),
+                        )
+                        if plan_ev_at_mid > 0:
+                            pending = await _read_state_value(conn, "pending_entries") or {}
+                            entries = pending.get(plan.symbol, [])
+                            entries.append({"plan_json": plan_json, "attempts": 1})
+                            pending[plan.symbol] = entries
+                            await storage_write.put_state(conn, "pending_entries", pending)
 
         await storage_write.put_state(conn, "account", {
             "equity": str(account.equity), "last_equity": str(account.last_equity),
@@ -1712,14 +1911,40 @@ async def _session_trades(conn: aiosqlite.Connection, session_date: str) -> list
     """Trades entered during session_date, via the decisions row that
     approved them -- trades carries no session_date column of its own.
     Feeds reflector.digest's outcome block (docs/review.md Task 7); same
-    raw-query convention as _session_decisions above."""
+    raw-query convention as _session_decisions above.
+
+    `final_cap` (docs/fill_and_learning_plan.md S5 Task 1) is the walk's own
+    cap after any P0-3 mid-walk re-quote -- reflector._recompute_cap prefers
+    it over recomputing from plan_json. Each row also carries its LATEST
+    `counterfactual` sample (S5 Task 4), or None if it never got one (e.g.
+    the contract expired before the next management tick re-quoted it)."""
     cur = await conn.execute(
-        "SELECT t.symbol, t.submitted_limit, t.fill_price, t.realized_pnl, t.closed_at, "
-        "t.status, t.final_limit, d.plan_json "
+        "SELECT t.id, t.symbol, t.submitted_limit, t.fill_price, t.realized_pnl, t.closed_at, "
+        "t.status, t.final_limit, t.final_cap, d.plan_json "
         "FROM trades t JOIN decisions d ON t.decision_id = d.id WHERE d.session_date = ?",
         (session_date,),
     )
-    return [dict(row) for row in await cur.fetchall()]
+    trades = [dict(row) for row in await cur.fetchall()]
+
+    trade_ids = [t["id"] for t in trades]
+    if trade_ids:
+        placeholders = ",".join("?" for _ in trade_ids)
+        cur = await conn.execute(
+            f"SELECT trade_id, would_have_filled, hypothetical_pnl, ts_utc FROM counterfactuals "
+            f"WHERE trade_id IN ({placeholders}) ORDER BY ts_utc ASC",
+            trade_ids,
+        )
+        # ASC order -> the last row seen per trade_id is the latest sample.
+        latest_by_trade: dict[int, dict[str, Any]] = {}
+        for row in await cur.fetchall():
+            latest_by_trade[row["trade_id"]] = dict(row)
+        for t in trades:
+            t["counterfactual"] = latest_by_trade.get(t["id"])
+    else:
+        for t in trades:
+            t["counterfactual"] = None
+
+    return trades
 
 
 def _reflection_row(result: reflector.ReflectionResult) -> storage_write.ReflectionRow:
