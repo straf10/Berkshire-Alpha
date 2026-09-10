@@ -197,6 +197,38 @@ CREATE TABLE IF NOT EXISTS reflections (
 );
 CREATE INDEX IF NOT EXISTS ix_reflections_session ON reflections(session_date DESC);
 
+-- docs/prompts/real_iv_surface_free.md Path B: production fetches a full real
+-- chain (strikes, bids, asks, IV, greeks) four times a day per universe name
+-- (ChainCache.load, agent/tools/market_data.py:270-300), uses it for one
+-- decision, and discards it -- nothing persisted the real chain until this
+-- table. Research data only: never read by any live decision path, so a
+-- write failure here is caught and logged, never allowed to block a trade
+-- (see main.py's scan_cycle, right after chain_cache.load()). One row per
+-- (cycle, contract) -- a full real IV surface, growing at zero marginal
+-- fetch cost, insurance against Path C (historical option bars) turning out
+-- to be gated by entitlement.
+CREATE TABLE IF NOT EXISTS chain_snapshots (
+  id           SERIAL PRIMARY KEY,
+  cycle_id     TEXT    NOT NULL,
+  ts_utc       TEXT    NOT NULL,
+  session_date TEXT    NOT NULL,
+  underlying   TEXT    NOT NULL,
+  occ_symbol   TEXT    NOT NULL,
+  expiry       TEXT    NOT NULL,
+  strike       REAL    NOT NULL,
+  right        TEXT    NOT NULL,
+  bid          REAL    NOT NULL,
+  ask          REAL    NOT NULL,
+  delta        REAL    NOT NULL,
+  gamma        REAL    NOT NULL,
+  theta        REAL    NOT NULL,
+  vega         REAL    NOT NULL,
+  iv           REAL    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_chain_snapshots_cycle ON chain_snapshots(cycle_id);
+CREATE INDEX IF NOT EXISTS ix_chain_snapshots_underlying_session
+  ON chain_snapshots(underlying, session_date);
+
 -- docs/fill_and_learning_plan.md P2. See schema.sql's comment.
 CREATE TABLE IF NOT EXISTS counterfactuals (
   id                SERIAL PRIMARY KEY,

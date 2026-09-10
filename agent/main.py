@@ -1456,6 +1456,35 @@ def _format_gate_line(gate_decision: GateDecision | None, *, mode: str, budget: 
     return f"       Gate: REJECTED ({gate_decision.reason.value}{detail})  mode={mode}{spend_str}"
 
 
+async def _persist_chain_snapshots(
+    conn: aiosqlite.Connection, chain_cache: ChainCache, cycle_id: str, ts_utc: str, session_date: date,
+) -> None:
+    """docs/prompts/real_iv_surface_free.md Path B: persist the real chain(s)
+    ChainCache.load just fetched (strikes, bids, asks, greeks, IV,
+    feed=indicative) before they are discarded -- production has fetched a
+    full real chain four times a day per universe name and thrown it away
+    after one decision cycle; nothing else in this file reads chain_cache
+    again once compute_all consumes it below.
+
+    Research data only, never a decision input: caught and logged rather
+    than raised, so a chain_snapshots write failure can never block a scan
+    or a trade (schema.sql's/schema_pg.sql's chain_snapshots comment)."""
+    rows = [
+        storage_write.ChainSnapshotRow(
+            cycle_id=cycle_id, ts_utc=ts_utc, session_date=session_date.isoformat(),
+            underlying=sym, occ_symbol=c.occ_symbol, expiry=c.expiry.isoformat(),
+            strike=c.strike, right=c.right, bid=c.bid, ask=c.ask,
+            delta=c.delta, gamma=c.gamma, theta=c.theta, vega=c.vega, iv=c.iv,
+        )
+        for sym in UNIVERSE
+        for c in (chain_cache.get(sym).contracts if chain_cache.get(sym) is not None else ())
+    ]
+    try:
+        await storage_write.insert_chain_snapshots(conn, rows)
+    except Exception:  # noqa: BLE001 -- deliberate: research data must never block a trade
+        logger.exception("chain_snapshots: write failed for cycle %s (%d rows) -- skipped", cycle_id, len(rows))
+
+
 async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list[GateDecision]:
     """One entry scan. Order is fixed by data dependency (docs/day2_spine_plan.md
     Group 6, extended by docs/day3_llm_plan.md Group 5 step 8): CLI health ->
@@ -1491,6 +1520,7 @@ async def scan_cycle(deps: Deps, session: SessionPlan, *, dry_run: bool) -> list
 
         chain_cache = ChainCache(deps.clients)
         await chain_cache.load(UNIVERSE, session.session_date, spots)
+        await _persist_chain_snapshots(conn, chain_cache, cycle_id, ts_utc, session.session_date)
 
         snapshots = compute_all(bars, chain_cache, session.session_date, session.trading_days)
         # docs/day4_action_plan.md Step 3. Same one-computation-per-cycle rule as

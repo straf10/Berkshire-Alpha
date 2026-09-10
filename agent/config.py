@@ -727,6 +727,27 @@ BACKTEST_CHAIN_SPREAD_PCT: Final[float] = 0.03              # synthetic bid/ask 
 BACKTEST_STRIKE_RANGE_PCT: Final[float] = 0.15               # synthetic strike grid, matches ChainCache's live bounds
 BACKTEST_STRIKE_INCREMENT: Final[float] = 1.0
 
+# docs/prompts/real_iv_surface_free.md Path C.2: agent/backtest/real_chain.py
+# prices off REAL historical option bar closes (trade prints), but a bar
+# carries no bid/ask -- OptionQuote.bid/.ask still has to be modeled, same as
+# the fully-synthetic chain's BACKTEST_CHAIN_SPREAD_PCT above. The prompt
+# asks to measure this from a small OptionQuotesRequest sample; the
+# installed alpaca-py (0.42.0, requirements.txt) has no historical
+# option-quotes request class at all (checked: alpaca.data.requests defines
+# OptionBarsRequest/OptionTradesRequest/OptionLatestQuoteRequest/
+# OptionLatestTradeRequest/OptionSnapshotRequest/OptionChainRequest -- no
+# "OptionQuotesRequest"). Measured instead from the closest real substitute:
+# the SAME live OptionChainRequest ChainCache.load already calls every cycle
+# (agent/tools/market_data.py:288-295), which does carry live bid/ask.
+# 2026-09-10, real 3-7 DTE chains, SPY/QQQ/AAPL/NVDA/AMD, feed=indicative,
+# every quote with a usable (bid>0, ask>=bid) market: n=3158,
+# median relative spread ((ask-bid)/mid) = 0.0441, mean 0.1482 (right-skewed
+# by far-OTM wide quotes, same shape MAX_QUOTE_SPREAD_PCT's own comment
+# describes for the live chain -- median is the read, not mean). Rounded to
+# 3 sig figs; not tuned to any backtest outcome, purely a live-market
+# measurement, logged as trial row 36 (docs/trial_ledger.md).
+REAL_CHAIN_SPREAD_PCT: Final[float] = 0.0441
+
 
 @dataclass(frozen=True)
 class Settings:

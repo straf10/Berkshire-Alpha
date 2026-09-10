@@ -21,7 +21,10 @@ from agent.storage import db
 
 # Row count in docs/trial_ledger.md as of the sealed window (docs/preregistration.md).
 # Bump only after adding a row there -- this constant must never lead the ledger.
-N_TRIALS: Final[int] = 35
+# 36: docs/prompts/real_iv_surface_free.md Path C's REAL_CHAIN_SPREAD_PCT (row 36) --
+# backtest-only, never read by the live decision path, but counted per row 33's
+# identical precedent (a new, measured backtest constant is still a trial).
+N_TRIALS: Final[int] = 36
 
 
 def min_track_record_length(sr: float, skew: float, kurtosis: float, alpha: float = 0.05) -> float:

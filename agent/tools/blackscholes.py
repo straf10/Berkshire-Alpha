@@ -93,6 +93,40 @@ def bs_vega(*, spot: float, strike: float, t_years: float, vol: float, rate: flo
     return spot * norm_pdf(d1) * math.sqrt(t_years) / 100.0
 
 
+def bs_gamma(*, spot: float, strike: float, t_years: float, vol: float, rate: float) -> float:
+    """Per 1.00 of underlying: phi(d1) / (S * sigma * sqrt(T)) -- same
+    (spot, strike, t_years, vol, rate) parameterisation as bs_delta/bs_vega,
+    added for agent/backtest/real_chain.py (docs/prompts/
+    real_iv_surface_free.md Path C.2), which needs gamma/theta derived from a
+    real price the same way delta/vega already are."""
+    if spot <= 0.0 or strike <= 0.0 or t_years <= 0.0 or vol <= 0.0:
+        return 0.0
+    d1, _ = _d1_d2(spot, strike, t_years, vol, rate)
+    return norm_pdf(d1) / (spot * vol * math.sqrt(t_years))
+
+
+def bs_theta(
+    *, spot: float, strike: float, t_years: float, vol: float, rate: float,
+    right: Literal["C", "P"],
+) -> float:
+    """Per CALENDAR day (annualised theta / 365), matching
+    agent/backtest/synthetic_chain._bs_quote's convention. At rate=0 (this
+    codebase's convention throughout -- no rate data) the two rate-driven
+    terms below vanish and this reduces to exactly synthetic_chain's own
+    -(S*phi(d1)*sigma)/(2*sqrt(T))/365 formula; the rate terms are kept in
+    for correctness if a nonzero rate is ever passed."""
+    if spot <= 0.0 or strike <= 0.0 or t_years <= 0.0 or vol <= 0.0:
+        return 0.0
+    d1, d2 = _d1_d2(spot, strike, t_years, vol, rate)
+    discount = math.exp(-rate * t_years)
+    decay = -(spot * norm_pdf(d1) * vol) / (2.0 * math.sqrt(t_years))
+    if right == "C":
+        rate_term = -rate * strike * discount * norm_cdf(d2)
+    else:
+        rate_term = rate * strike * discount * norm_cdf(-d2)
+    return (decay + rate_term) / 365.0
+
+
 def implied_vol(
     *, price: float, spot: float, strike: float, t_years: float, rate: float,
     right: Literal["C", "P"],

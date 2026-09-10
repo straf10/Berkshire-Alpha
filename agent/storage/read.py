@@ -481,6 +481,49 @@ async def counterfactuals(
     return rows
 
 
+async def decisions_quant_snapshots(conn: aiosqlite.Connection) -> list[dict[str, Any]]:
+    """symbol, session_date, quant_json for EVERY decisions row -- the source
+    table for scripts/real_vrp_tautology_test.py (docs/prompts/
+    real_iv_surface_free.md Path A). decisions.quant_json has carried the
+    real, feed=indicative chain's iv_atm/rv_20/vrp_ratio for every scan cycle
+    since production started; this is the one read path for that history.
+
+    Deliberately unlimited/unpaginated, unlike latest_decisions/latest_trades
+    -- those cap at `limit` because they back a dashboard's "most recent N"
+    view, but a regression needs the whole population, and silently
+    truncating it would understate `n` without any signal that it happened."""
+    cur = await conn.execute(
+        "SELECT symbol, session_date, quant_json FROM decisions ORDER BY session_date, symbol"
+    )
+    return [dict(row) for row in await cur.fetchall()]
+
+
+async def chain_snapshots(
+    conn: aiosqlite.Connection, *, underlying: str | None = None, session_date: str | None = None,
+    limit: int = 5000,
+) -> list[dict[str, Any]]:
+    """Rows from the `chain_snapshots` table (docs/prompts/
+    real_iv_surface_free.md Path B) -- the real, feed=indicative chain
+    ChainCache.load fetches every cycle, persisted instead of discarded.
+    Filters are optional and additive; `limit` defaults high (one session's
+    full universe is typically far under this) but still bounds an
+    unfiltered call the way every other read.py helper bounds its own scan."""
+    where = []
+    params: list[Any] = []
+    if underlying is not None:
+        where.append("underlying = ?")
+        params.append(underlying)
+    if session_date is not None:
+        where.append("session_date = ?")
+        params.append(session_date)
+    clause = f"WHERE {' AND '.join(where)}" if where else ""
+    params.append(limit)
+    cur = await conn.execute(
+        f"SELECT * FROM chain_snapshots {clause} ORDER BY ts_utc DESC LIMIT ?", params
+    )
+    return [dict(row) for row in await cur.fetchall()]
+
+
 async def decision_chain(conn: aiosqlite.Connection, decision_id: int) -> dict[str, Any]:
     """decision + analyst_outputs + debates + debate_summary + proposal +
     risk_votes + trade + llm_calls -- the full reasoning chain in one request

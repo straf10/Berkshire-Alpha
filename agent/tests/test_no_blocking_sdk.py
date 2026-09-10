@@ -18,6 +18,13 @@ ALLOWED = {
     Path("agent/execution/alpaca_client.py"),
     Path("agent/tools/market_data.py"),
     Path("agent/execution/broker.py"),
+    # docs/prompts/real_iv_surface_free.md Path C: assembles OptionBarsRequest/
+    # GetOptionContractsRequest the same way market_data.py assembles
+    # OptionChainRequest/OptionSnapshotRequest above -- backtest-only, never on
+    # the live decision path, but the same "business logic that builds SDK
+    # request objects, then hands them to alpaca_client.py's thin async
+    # wrappers" role market_data.py already has an exemption for.
+    Path("agent/backtest/real_chain.py"),
 }
 
 IMPORT_RE = re.compile(r"^\s*(from alpaca\.|import alpaca\b)")

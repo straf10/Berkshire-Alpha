@@ -612,3 +612,62 @@ async def insert_risk_vote(conn: aiosqlite.Connection, v: RiskVoteRow) -> int:
     await conn.commit()
     assert cur.lastrowid is not None
     return cur.lastrowid
+
+
+@dataclass(frozen=True)
+class ChainSnapshotRow:
+    """docs/prompts/real_iv_surface_free.md Path B -- one row per contract in
+    a real chain ChainCache.load already fetched (feed=indicative, strikes/
+    bids/asks/greeks/IV) and, before this table existed, threw away after one
+    decision cycle. Never read by any live decision path -- research data
+    only (schema.sql's/schema_pg.sql's chain_snapshots comment)."""
+    cycle_id: str
+    ts_utc: str
+    session_date: str
+    underlying: str
+    occ_symbol: str
+    expiry: str
+    strike: float
+    right: str
+    bid: float
+    ask: float
+    delta: float
+    gamma: float
+    theta: float
+    vega: float
+    iv: float
+
+
+# Rows per multi-row INSERT: 15 columns/row, so 300 rows is 4,500 bound
+# parameters -- comfortably under Postgres's ~65,535 protocol limit (asyncpg's
+# `_to_pg` renumbers every `?` to `$1.."$N` for one statement) with a wide
+# margin for a busier-than-expected cycle, while still being a small number of
+# statements rather than one per contract.
+_CHAIN_SNAPSHOT_BATCH = 300
+
+
+async def insert_chain_snapshots(conn: aiosqlite.Connection, rows: Sequence[ChainSnapshotRow]) -> None:
+    """Batched insert for one scan cycle's real chain(s) -- every symbol's
+    contracts in a handful of multi-row statements, never one INSERT per
+    contract. Caller (main.py's scan_cycle, right after chain_cache.load())
+    wraps this in try/except: a write failure here must never propagate and
+    block a trade, since this table is research data, not a decision input."""
+    if not rows:
+        return
+    for i in range(0, len(rows), _CHAIN_SNAPSHOT_BATCH):
+        batch = rows[i : i + _CHAIN_SNAPSHOT_BATCH]
+        placeholders = ", ".join(["(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"] * len(batch))
+        params: list[Any] = []
+        for r in batch:
+            params.extend((
+                r.cycle_id, r.ts_utc, r.session_date, r.underlying, r.occ_symbol, r.expiry,
+                r.strike, r.right, r.bid, r.ask, r.delta, r.gamma, r.theta, r.vega, r.iv,
+            ))
+        await conn.execute(
+            f"""INSERT INTO chain_snapshots
+               (cycle_id, ts_utc, session_date, underlying, occ_symbol, expiry,
+                strike, right, bid, ask, delta, gamma, theta, vega, iv)
+               VALUES {placeholders}""",
+            params,
+        )
+    await conn.commit()

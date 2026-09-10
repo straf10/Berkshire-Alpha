@@ -15,14 +15,20 @@ from alpaca.data.models.news import NewsSet
 from alpaca.data.models.snapshots import OptionsSnapshot
 from alpaca.data.requests import (
     NewsRequest,
+    OptionBarsRequest,
     OptionChainRequest,
     OptionSnapshotRequest,
     StockBarsRequest,
 )
 from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
-from alpaca.trading.models import Calendar, Clock, Order
-from alpaca.trading.requests import GetCalendarRequest, LimitOrderRequest, ReplaceOrderRequest
+from alpaca.trading.models import Calendar, Clock, Order, OptionContract
+from alpaca.trading.requests import (
+    GetCalendarRequest,
+    GetOptionContractsRequest,
+    LimitOrderRequest,
+    ReplaceOrderRequest,
+)
 
 from agent.config import Settings
 
@@ -86,6 +92,27 @@ class AlpacaClients:
 
     async def get_option_snapshot(self, req: OptionSnapshotRequest) -> dict[str, OptionsSnapshot]:
         return await asyncio.to_thread(self.option.get_option_snapshot, req)
+
+    async def get_option_bars(self, req: OptionBarsRequest) -> BarSet:
+        """docs/prompts/real_iv_surface_free.md Path C: `self.option`
+        (OptionHistoricalDataClient) was constructed here from the start but
+        never used for historical data until agent/backtest/real_chain.py --
+        every other use of this client was live snapshots/chains."""
+        return await asyncio.to_thread(self.option.get_option_bars, req)
+
+    async def get_option_contracts(
+        self, req: GetOptionContractsRequest,
+    ) -> tuple[list[OptionContract], str | None]:
+        """(contracts, next_page_token) -- the TRADING API's contract
+        directory (docs/prompts/real_iv_surface_free.md Path C.1), not the
+        data API every other method on this class wraps. Historical bars
+        need real OCC symbols for contracts that existed and have since
+        expired; `status=AssetStatus.INACTIVE` is mandatory to see them at
+        all (verified via a throwaway probe: the default/ACTIVE status
+        returns zero rows for an expiry that has already settled) --
+        callers here, not this thin wrapper, own picking that status."""
+        resp = await asyncio.to_thread(self.trading.get_option_contracts, req)
+        return list(resp.option_contracts), resp.next_page_token
 
     async def submit_order(self, req: LimitOrderRequest) -> Order:
         return await asyncio.to_thread(self.trading.submit_order, req)

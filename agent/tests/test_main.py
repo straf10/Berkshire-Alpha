@@ -201,6 +201,74 @@ async def test_dry_run_places_no_orders(tmp_path, monkeypatch: pytest.MonkeyPatc
         assert row[0] == len(main_module.UNIVERSE)
 
 
+async def test_scan_cycle_persists_chain_snapshots(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """docs/prompts/real_iv_surface_free.md Path B: the real chain(s)
+    ChainCache.load fetches (feed=indicative -- strikes, bids, asks, greeks,
+    IV) must land in chain_snapshots, not just get used for one decision and
+    discarded. FakeClients only serves real chain fixtures for SPY/NVDA/AMD,
+    so at minimum those three underlyings' contracts must show up, tagged
+    with this cycle's own cycle_id/session_date."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    _patch_cli(monkeypatch)
+
+    clients = FakeClients()
+    broker = MockBroker([])
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.scan_cycle(deps, session, dry_run=True)
+
+    async with storage_db.connect(db_path) as conn:
+        rows = await storage_read.chain_snapshots(conn)
+        cur = await conn.execute("SELECT DISTINCT cycle_id FROM decisions")
+        decision_cycle_ids = {r["cycle_id"] for r in await cur.fetchall()}
+
+    assert rows, "chain_snapshots should have at least one row for a cycle with real chain fixtures"
+    underlyings = {r["underlying"] for r in rows}
+    assert {"SPY", "NVDA", "AMD"} <= underlyings
+    assert {r["cycle_id"] for r in rows} <= decision_cycle_ids
+    for r in rows:
+        assert r["session_date"] == session.session_date.isoformat()
+        assert r["right"] in ("C", "P")
+
+
+async def test_chain_snapshot_write_failure_does_not_block_scan(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """chain_snapshots is research data (docs/prompts/real_iv_surface_free.md
+    Path B) -- a write failure there must be caught and logged, never allowed
+    to raise out of scan_cycle and block a trade. Forces insert_chain_snapshots
+    to raise and asserts the scan still completes and still writes every
+    decisions row, same as test_dry_run_places_no_orders's baseline count."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    _patch_cli(monkeypatch, positions=FAKE_POSITIONS)
+
+    async def _boom(conn, rows):
+        raise RuntimeError("simulated chain_snapshots write failure")
+
+    monkeypatch.setattr(main_module.storage_write, "insert_chain_snapshots", _boom)
+
+    clients = FakeClients()
+    broker = MockBroker([])
+    clock = _FastClock(datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+
+    session = await main_module.current_or_next_session(clients)
+    await main_module.scan_cycle(deps, session, dry_run=True)  # must not raise
+
+    async with storage_db.connect(db_path) as conn:
+        cur = await conn.execute("SELECT COUNT(*) FROM decisions")
+        row = await cur.fetchone()
+        assert row[0] == len(main_module.UNIVERSE)
+
+        cur = await conn.execute("SELECT COUNT(*) FROM chain_snapshots")
+        row = await cur.fetchone()
+        assert row[0] == 0  # the simulated failure means nothing was persisted this cycle
+
+
 async def test_scan_cycle_persists_macro_fields_and_excludes_macro_tickers(
     tmp_path, monkeypatch: pytest.MonkeyPatch, capsys,
 ) -> None:

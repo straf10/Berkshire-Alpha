@@ -120,6 +120,66 @@ async def test_decision_roundtrip(tmp_path) -> None:
     assert got["plan_json"] is None
 
 
+async def test_decisions_quant_snapshots_returns_full_history(tmp_path) -> None:
+    """docs/prompts/real_iv_surface_free.md Path A: scripts/
+    real_vrp_tautology_test.py needs EVERY decisions row's quant_json, not a
+    `latest_*`-style capped window -- a regression sample silently truncated
+    by a default `limit` would understate `n` with no signal it happened."""
+    db_path = str(tmp_path / "agent.db")
+    await init_db(db_path)
+    async with connect(db_path) as conn:
+        await write.insert_decision(conn, _decision_row(symbol="SPY", session_date="2026-08-31"))
+        await write.insert_decision(conn, _decision_row(symbol="QQQ", session_date="2026-09-01"))
+        rows = await read.decisions_quant_snapshots(conn)
+
+    assert len(rows) == 2
+    assert {r["symbol"] for r in rows} == {"SPY", "QQQ"}
+    assert rows[0]["session_date"] <= rows[1]["session_date"]  # ordered by session_date
+
+
+async def test_chain_snapshots_roundtrip(tmp_path) -> None:
+    """docs/prompts/real_iv_surface_free.md Path B: insert_chain_snapshots'
+    batched insert and read.chain_snapshots' filters round-trip correctly."""
+    db_path = str(tmp_path / "agent.db")
+    await init_db(db_path)
+    rows = [
+        write.ChainSnapshotRow(
+            cycle_id="cycle-1", ts_utc="2026-08-31T12:00:00Z", session_date="2026-08-31",
+            underlying="SPY", occ_symbol="SPY260904C00560000", expiry="2026-09-04",
+            strike=560.0, right="C", bid=1.20, ask=1.30,
+            delta=0.45, gamma=0.02, theta=-0.10, vega=0.30, iv=0.18,
+        ),
+        write.ChainSnapshotRow(
+            cycle_id="cycle-1", ts_utc="2026-08-31T12:00:00Z", session_date="2026-08-31",
+            underlying="QQQ", occ_symbol="QQQ260904P00480000", expiry="2026-09-04",
+            strike=480.0, right="P", bid=2.00, ask=2.10,
+            delta=-0.40, gamma=0.03, theta=-0.12, vega=0.35, iv=0.22,
+        ),
+    ]
+    async with connect(db_path) as conn:
+        await write.insert_chain_snapshots(conn, rows)
+
+        all_rows = await read.chain_snapshots(conn)
+        assert len(all_rows) == 2
+
+        spy_only = await read.chain_snapshots(conn, underlying="SPY")
+        assert len(spy_only) == 1
+        assert spy_only[0]["occ_symbol"] == "SPY260904C00560000"
+        assert spy_only[0]["iv"] == pytest.approx(0.18)
+
+        none_for_missing_session = await read.chain_snapshots(conn, session_date="2026-09-05")
+        assert none_for_missing_session == []
+
+
+async def test_insert_chain_snapshots_empty_is_a_noop(tmp_path) -> None:
+    db_path = str(tmp_path / "agent.db")
+    await init_db(db_path)
+    async with connect(db_path) as conn:
+        await write.insert_chain_snapshots(conn, [])  # must not raise or insert a malformed statement
+        rows = await read.chain_snapshots(conn)
+    assert rows == []
+
+
 async def test_trade_fk_enforced(tmp_path) -> None:
     db_path = str(tmp_path / "agent.db")
     await init_db(db_path)

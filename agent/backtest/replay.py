@@ -56,6 +56,8 @@ from agent.strategy import spread_builder, ticker_screener
 from agent.tools import quant
 from agent.tools.market_data import UniverseBars, fetch_daily_bars_range, fetch_session_minute_bars
 from agent.backtest import payoff
+from agent.backtest import real_chain as real_chain_mod
+from agent.backtest.real_chain import RealChainSource
 from agent.backtest.synthetic_chain import generate_chain, iv_forecast
 
 logger = logging.getLogger(__name__)
@@ -147,11 +149,22 @@ def _simulate(
     *, iv_multiplier: float = BACKTEST_IV_RV_MULTIPLIER, slippage_pct: Decimal = BACKTEST_SLIPPAGE_PCT,
     cross_section_n: int = CROSS_SECTION_N, vwm_z_strong: float = VWM_Z_STRONG,
     iv_term_window: int = BACKTEST_IV_TERM_WINDOW, iv_blend_weight: float = BACKTEST_IV_FORECAST_BLEND_WEIGHT,
+    chain_source: str = "synthetic", real_sources: dict[tuple[str, date], RealChainSource] | None = None,
 ) -> list[payoff.TradeResult]:
     """Pure -- no I/O, no imported-constant reads. Every parameter this sweep
     cares about is threaded through explicitly so patching agent.config can't
     silently no-op it (replay.py's from-import copies the value at import
-    time)."""
+    time).
+
+    docs/prompts/real_iv_surface_free.md Path C: `chain_source="real"` prices
+    every session's chain off agent.backtest.real_chain.generate_chain
+    instead of the synthetic Black-Scholes surface, using `real_sources` (a
+    dict of pre-fetched RealChainSource, keyed by (symbol, expiry) -- built
+    by `_load_real_chain_sources` BEFORE this function runs, since this
+    function itself stays pure/no-I/O). `real_sources` is required (not
+    optional in practice) when chain_source="real" -- a symbol/expiry pair
+    with no entry in it just gets None for that session's chain, same as any
+    other data gap (Path C.4)."""
     universe, trading_days, by_date = data.universe, data.trading_days, data.by_date
     daily_by_date = data.daily_by_date
 
@@ -192,6 +205,20 @@ def _simulate(
             if rv20 == 0.0:
                 chains[sym] = None
                 continue
+
+            if chain_source == "real":
+                # No iv_atm forecast needed here at all -- real_chain prices
+                # off real historical bar closes, never a trailing-RV-derived
+                # forecast. rv20 above is still needed regardless of chain
+                # source: quant.compute_all's vrp_ratio divides by it, and
+                # that deterministic signal layer runs unmodified either way.
+                source = (real_sources or {}).get((sym, target_expiry))
+                chains[sym] = (
+                    real_chain_mod.generate_chain(sym, session_date, target_expiry, closes[-1], source)
+                    if source is not None else None
+                )
+                continue
+
             # docs/strategy_audit_and_loop.md S0 Task B (fixed the ORIGINAL
             # constant-vrp_ratio tautology) + the 2026-09-10 follow-up (the
             # short-window-alone replacement was itself a biased-forecast
@@ -238,17 +265,60 @@ def _simulate(
     return results
 
 
+async def _load_real_chain_sources(
+    clients: AlpacaClients, data: _MarketData, *, cache_dir: str = real_chain_mod.DEFAULT_CACHE_DIR,
+) -> dict[tuple[str, date], RealChainSource]:
+    """docs/prompts/real_iv_surface_free.md Path C's I/O step, deliberately
+    kept OUT of _simulate (which stays pure/no-I/O, see its own docstring):
+    every distinct (symbol, target_expiry) pair the walk will actually use --
+    the SAME `_pick_expiry` call _simulate makes per session, run here first
+    so the fetch happens ONCE per pair rather than once per session
+    (real_chain.fetch's own cost-control contract, Path C.3), mirroring
+    `_load_market_data`'s "fetch once, walk N times" pattern for stock bars
+    one level up."""
+    pairs: set[tuple[str, date]] = set()
+    for session_date in data.session_dates:
+        target_expiry = _pick_expiry(session_date, data.trading_days)
+        if target_expiry is None:
+            continue
+        for sym in data.universe:
+            pairs.add((sym, target_expiry))
+
+    start, end = min(data.session_dates), max(data.session_dates)
+    sources: dict[tuple[str, date], RealChainSource] = {}
+    for sym, expiry in sorted(pairs):
+        # Spot hint for the discovery strike band: the last real close before
+        # this expiry (any session using this target_expiry has a spot within
+        # a few sessions of it, comfortably inside the 0.85x/1.15x band this
+        # feeds into -- same band ChainCache.load itself uses live).
+        prior_closes = [c for d, c in sorted(
+            {d: b.close for d, b in data.daily_by_date.get(sym, {}).items()}.items()
+        ) if d < expiry]
+        if not prior_closes:
+            logger.warning("real chain source: no prior close for %s before expiry %s -- skipped", sym, expiry)
+            continue
+        sources[(sym, expiry)] = await real_chain_mod.fetch(
+            clients, sym, expiry, prior_closes[-1], start, end, cache_dir=cache_dir,
+        )
+    return sources
+
+
 async def run_replay(
     clients: AlpacaClients, universe: tuple[str, ...], start: date, end: date,
     *, iv_multiplier: float = BACKTEST_IV_RV_MULTIPLIER, slippage_pct: Decimal = BACKTEST_SLIPPAGE_PCT,
     cross_section_n: int = CROSS_SECTION_N, vwm_z_strong: float = VWM_Z_STRONG,
     iv_term_window: int = BACKTEST_IV_TERM_WINDOW, iv_blend_weight: float = BACKTEST_IV_FORECAST_BLEND_WEIGHT,
+    chain_source: str = "synthetic", real_chain_cache_dir: str = real_chain_mod.DEFAULT_CACHE_DIR,
 ) -> list[payoff.TradeResult]:
     data = await _load_market_data(clients, universe, start, end)
+    real_sources = None
+    if chain_source == "real":
+        real_sources = await _load_real_chain_sources(clients, data, cache_dir=real_chain_cache_dir)
     return _simulate(
         data, iv_multiplier=iv_multiplier, slippage_pct=slippage_pct,
         cross_section_n=cross_section_n, vwm_z_strong=vwm_z_strong,
         iv_term_window=iv_term_window, iv_blend_weight=iv_blend_weight,
+        chain_source=chain_source, real_sources=real_sources,
     )
 
 
@@ -270,6 +340,15 @@ def _parse_args() -> argparse.Namespace:
             "sweep CROSS_SECTION_N x slippage_pct at the live VWM_Z_STRONG (docs/report.md's "
             "slippage sensitivity re-run) -- writes one sweep_slippage_<pct>.csv per slippage "
             "level to --out-dir, same 7-column schema as --param-sweep's sweep.csv"
+        ),
+    )
+    parser.add_argument(
+        "--chain-source", choices=("synthetic", "real"), default="synthetic",
+        help=(
+            "docs/prompts/real_iv_surface_free.md Path C: 'synthetic' (default) prices off the "
+            "Black-Scholes surface (synthetic_chain.py); 'real' prices off real historical option "
+            "bars (real_chain.py) -- fetches and caches to agent/backtest/cache/ before the first "
+            "session, so start small (one symbol, one month) before a wide sweep."
         ),
     )
     return parser.parse_args()
@@ -641,7 +720,7 @@ async def _amain() -> None:
         await _run_slippage_sweep(clients, tuple(args.universe), start, end, args.out_dir)
         return
 
-    trades = await run_replay(clients, tuple(args.universe), start, end)
+    trades = await run_replay(clients, tuple(args.universe), start, end, chain_source=args.chain_source)
     payoff.write_report(trades, args.out_dir)
 
     stats = payoff.regime_hit_rate(trades)
