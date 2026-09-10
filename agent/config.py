@@ -112,6 +112,10 @@ JUDGED_ACCOUNT_NUMBER: Final[str] = "PA3UM9X4MN5X"
 # entry thresholds. A 4-day sample's median VRP was 0.96 against the old 1.25
 # credit threshold, which is why the cross-section is ranked instead.
 VRP_CREDIT_MIN: Final[float] = 1.00
+# 2026-09-10 (docs/strategy_audit_and_loop.md §4 P3): considered for a
+# resize alongside VWM_Z_STRONG below and deliberately left unmoved -- see
+# the note at VWM_Z_STRONG's own definition for why (an IV/RV ratio has no
+# chain-free, live-measurable evidence source, unlike VWM_Z_STRONG).
 VRP_DEBIT_MAX: Final[float] = 1.00
 # docs/strategy_audit_and_loop.md §2 finding 3 / §4 P1: sizing.p_success()
 # floored vrp_ratio at 0.5 (never divided by less) but set no ceiling --
@@ -324,6 +328,22 @@ MAX_QUOTE_SPREAD_PCT: Final[float] = 0.25   # (ask - bid) / mid
 # argues, so it must never consume debate budget. Denylisted in
 # REFLECTOR_DENYLIST for the same reason MAX_QUOTE_SPREAD_PCT is: it is a
 # liquidity guardrail, not a tunable knob.
+# 2026-09-10 re-check (docs/strategy_audit_and_loop.md §2 row 9): the GS
+# BULL_PUT_SPREAD that "still built" a 65% mid-to-natural gap ($1.33 on a
+# $2.05 mid) is decision_id 784, submitted 2026-09-08T14:15 UTC -- this
+# WIDE_NET_SPREAD check did not exist until 5062f59 the next day, 09-09. Not
+# evidence of a live defect. Re-derived from that trade's own persisted leg
+# quotes (short 1012.5P 5.78/7.39, long 1005.0P 4.019/5.06) against the
+# CURRENT formula: total_width = 1.61 + 1.041 = 2.651, net_mid = -2.0455,
+# round_trip_pct = 2.651 / 2.0455 = 129.6% -- the deployed 0.50 threshold
+# rejects this chain outright if it recurred today (129.6% >> 50%), so the
+# guardrail already does its job. The 65% figure in the audit is a ONE-WAY
+# (mid-to-natural) percentage; round_trip_pct = 2 x one-way exactly (net_mid
+# is algebraically the midpoint of net_natural and net_bidside), which also
+# reconciles with the 46%/88% figures immediately above -- those were
+# already computed the same (round-trip) way this constant is checked, not
+# the one-way way the audit's GS headline number was. No formula or
+# threshold change follows from this re-check.
 MAX_NET_SPREAD_WIDTH_PCT: Final[float] = 0.50   # (net_natural - net_bidside) / abs(net_mid)
 # P0 remediation (docs/audit_report_v2.md §9 item 4). Defence in depth BEHIND
 # Task 1 (the walk-cap fix), not a substitute for it: this rejects a debit
@@ -388,7 +408,36 @@ VWM_Z_WINDOW: Final[int] = 60
 # defect was the unbounded walk cap (see WALK_CAP_MAX_FRACTION_OF_WIDTH
 # above), which is the causal fix. This constant only reduces how often a
 # marginal signal reaches an illiquid chain in the first place.
-VWM_Z_STRONG: Final[float] = 1.00
+#
+# Reverted 1.00 -> 0.75, 2026-09-10 (docs/strategy_audit_and_loop.md S3/S4
+# P3), decided from scripts/vwm_sensitivity.py ALONE (chain-free, 50 names x
+# 212 sessions = 10,600 real name-days off the same IEX feed the live agent
+# reads -- deliberately not replay.py, still chain-synthetic even after the
+# VRP-tautology fix, and not live marks, already shown biased/weak by §0
+# D2/E3). Re-run the day this reverted: median |vwm_z| 0.644, bar 0.75 admits
+# 43.5% of the tape ("selective, and still productive" per the note above,
+# not "most of the tape" the way 0.45 is at 63.3%). At 1.00 the bar rejected
+# 8 of 8 real DEBIT candidates on 2026-09-09 (max |vwm_z| observed: 0.594) --
+# not marginal admissions like the LLY trades, a complete closure of the
+# branch VWM_Z_STRONG exists to gate (regime.py:97). The coincidental
+# protection the 1.00 raise bought is no longer needed: the causal fix noted
+# above (WALK_CAP_MAX_FRACTION_OF_WIDTH / WALK_CAP_CREDIT_SIGN_FLOOR) already
+# ships and independently bounds a debit vertical's walk price, so this
+# constant can return to the value the tape itself always supported.
+#
+# VRP_DEBIT_MAX (definition above) was considered alongside this and left at
+# 1.00 -- deliberately NOT decided here. It is an IV/RV ratio, and
+# vwm_sensitivity.py is chain-free by construction (its own docstring: "no
+# options chain, no IV" -- see also replay.py's "Alpaca has no historical
+# options-chain-with-greeks endpoint"). No live, chain-free instrument can
+# measure it, so under the same "only trustworthy quantitative feedback"
+# rule that justifies moving VWM_Z_STRONG here (docs/strategy_audit_and_
+# loop.md §3.0), the honest action on VRP_DEBIT_MAX is to leave it at its
+# structurally-neutral value (1.00 = no premium either direction) rather
+# than fit it off replay.py's still-partially-synthetic chain or the live
+# marks §0 already disqualified -- a considered-and-kept trial, logged the
+# same way docs/trial_ledger.md row 4 logs a rejected alternative.
+VWM_Z_STRONG: Final[float] = 0.75
 SHORT_DELTA_TARGET: Final[float] = 0.275
 SHORT_DELTA_BAND: Final[tuple[float, float]] = (0.22, 0.33)
 # Day 4 (docs/day4_action_plan.md Step 9). skew_abs's 25-delta put lookup had
@@ -425,9 +474,27 @@ RV_WINSOR_Z: Final[float] = 3.0
 #                insertion order. Non-deterministic, and silent.
 # With UNIVERSE at 10 names the ceiling was n = 4 (8 assigned, 2 held out).
 # Day 4 Step 7 widened UNIVERSE to 50 and raised this 4 -> 6 (12% of 50,
-# still comfortably inside the ceiling) -- see docs/day4_action_plan.md §7.5.
+# "comfortably inside the ceiling" against that nominal denominator).
+#
+# Resized 6 -> 4, 2026-09-10 (docs/strategy_audit_and_loop.md S1/S2). "50" was
+# never the real denominator: the 3-7 DTE band crossed with the weekly expiry
+# calendar collapses the actually-live universe from ~47 names to 13 on
+# Wednesdays and Thursdays (40% of sessions, confirmed on three independent
+# live sessions) -- DTE_MAX stays 7 for now, a separate trial deliberately
+# not bundled here. Against the TRUE worst-case floor of 13, n=6 held out
+# only 1 of 13 names (2*6=12 <= 13): "comfortably inside the ceiling" against
+# 50 was, per the same partition argument above, very nearly 2n == U against
+# what the universe actually is 40% of the time (Finding S2 measured this
+# directly: 12 of 13 names received a regime that day). n=4 holds out 5 of 13
+# (2*4=8 <= 13) even on the worst day -- a real discriminating cross-section,
+# not a near pass-through -- at the honest cost of tightening the good-day
+# (~47-name) selectivity too, from 12.8% to 8.5% per side. That tightening is
+# accepted, not solved: a single static n cannot equalize selectivity across
+# a universe that oscillates 13-47 by weekday (S2's own conclusion) -- only
+# DTE_MAX (P0b, deferred) removes the oscillation itself. This is the honest
+# compromise available without it, not a claim the oscillation is fixed.
 # The assert below is the enforcement, not this comment.
-CROSS_SECTION_N: Final[int] = 6
+CROSS_SECTION_N: Final[int] = 4
 assert CROSS_SECTION_N * 2 <= len(UNIVERSE), (
     f"CROSS_SECTION_N={CROSS_SECTION_N} over a {len(UNIVERSE)}-name universe makes "
     "assign_regimes' CREDIT/DEBIT slices overlap -- see the partition argument above"

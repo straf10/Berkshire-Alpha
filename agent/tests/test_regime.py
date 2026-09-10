@@ -56,12 +56,17 @@ def test_regime_debit_requires_momentum() -> None:
 
 
 def test_vwm_gate_at_configured_bar() -> None:
-    # P1 remediation (docs/audit_report_v2.md §9 item 8): VWM_Z_STRONG raised
-    # 0.75 -> 1.00 after both LLY entries cleared the old bar by only 0.011.
-    assert VWM_Z_STRONG == 1.00
-    confirmed = select(replace(_BASE, vwm_z=1.05), Regime.DEBIT, _SKEW_THRESH, _VWM_BAR)
+    # P1 remediation (docs/audit_report_v2.md §9 item 8) raised VWM_Z_STRONG
+    # 0.75 -> 1.00 after both LLY entries cleared the old bar by only 0.011;
+    # reverted back 1.00 -> 0.75, 2026-09-10 (docs/strategy_audit_and_loop.md
+    # S3/S4 P3) -- decided from scripts/vwm_sensitivity.py alone, since 1.00
+    # rejected 8 of 8 real DEBIT candidates on 2026-09-09 and the walk-cap
+    # defect that motivated the raise is independently fixed. See
+    # VWM_Z_STRONG's own definition in config.py for the full rationale.
+    assert VWM_Z_STRONG == 0.75
+    confirmed = select(replace(_BASE, vwm_z=0.80), Regime.DEBIT, _SKEW_THRESH, _VWM_BAR)
     assert confirmed.regime == Regime.DEBIT
-    not_confirmed = select(replace(_BASE, vwm_z=0.95), Regime.DEBIT, _SKEW_THRESH, _VWM_BAR)
+    not_confirmed = select(replace(_BASE, vwm_z=0.70), Regime.DEBIT, _SKEW_THRESH, _VWM_BAR)
     assert not_confirmed.regime == Regime.NO_TRADE
 
 

@@ -63,11 +63,12 @@ def test_shortlist_max_exceeds_debate_candidates() -> None:
 
 
 def test_vwm_bar_stays_selective() -> None:
-    """Pin on the Step-6 sensitivity finding. Measured over 10,600 name-days,
-    |vwm_z| has median 0.651: a bar at 0.45 admits 63.6% of the tape, which is
-    not a momentum filter. A bar above 1.00 admits under a third and starves
-    the debit book. Anything inside this band is defensible; the shipped 0.75
-    admits 44.0%."""
+    """Pin on scripts/vwm_sensitivity.py. Re-measured 2026-09-10 over 10,600
+    name-days, |vwm_z| has median 0.644: a bar at 0.45 admits 63.3% of the
+    tape, which is not a momentum filter. A bar at 1.00 admits under a third
+    and starved the debit book completely on 2026-09-09 (8 of 8 real
+    candidates rejected). Anything inside this band is defensible; the
+    shipped 0.75 admits 43.5%."""
     assert 0.60 <= VWM_Z_STRONG <= 1.00
 
 

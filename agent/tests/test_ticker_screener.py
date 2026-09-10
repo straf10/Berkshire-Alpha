@@ -71,13 +71,14 @@ def test_shortlist_excludes_no_trade() -> None:
 
 def test_assign_regimes_ranks_cross_sectionally() -> None:
     """The persisted 29-Aug cross-section (docs/day4_track_ab_plan.md §1.3
-    sanity check), only 10 of the now-50-name UNIVERSE, so 2*CROSS_SECTION_N
-    (12) > len(ok) (10) and n shrinks to 10 // 2 = 5 (docs/day4_action_plan.md
-    §2 partition argument). Top 5 by VRP are AAPL/TSLA/SPY/MSFT/META, but
-    MSFT and META sit at or below VRP_CREDIT_MIN (1.00), so their sign guard
-    demotes them to NO_TRADE rather than CREDIT -> CREDIT {AAPL, TSLA, SPY}.
-    Bottom 5 by VRP are AMZN/GOOGL/QQQ/AMD/NVDA, all < 1.00 -> DEBIT
-    {AMZN, GOOGL, QQQ, AMD, NVDA}."""
+    sanity check), only 10 of the now-50-name UNIVERSE. 2*CROSS_SECTION_N (8,
+    resized 6 -> 4 2026-09-10, docs/strategy_audit_and_loop.md S1/S2) <=
+    len(ok) (10), so n stays the full CROSS_SECTION_N -- no shrink (see
+    test_assign_regimes_shrinks_symmetrically_when_thin for that branch).
+    Top 4 by VRP are AAPL/TSLA/SPY/MSFT, but MSFT sits at exactly
+    VRP_CREDIT_MIN (1.00), so its sign guard demotes it to NO_TRADE rather
+    than CREDIT -> CREDIT {AAPL, TSLA, SPY}. Bottom 4 by VRP are
+    GOOGL/QQQ/AMD/NVDA, all < 1.00 -> DEBIT {GOOGL, QQQ, AMD, NVDA}."""
     vrps = {
         "AAPL": 1.258, "TSLA": 1.040, "SPY": 1.021,
         "MSFT": 1.00, "META": 0.98, "AMZN": 0.95, "GOOGL": 0.90,
@@ -88,7 +89,7 @@ def test_assign_regimes_ranks_cross_sectionally() -> None:
     credit = {s for s, r in assigned.items() if r == Regime.CREDIT}
     debit = {s for s, r in assigned.items() if r == Regime.DEBIT}
     assert credit == {"AAPL", "TSLA", "SPY"}
-    assert debit == {"AMZN", "GOOGL", "QQQ", "AMD", "NVDA"}
+    assert debit == {"GOOGL", "QQQ", "AMD", "NVDA"}
 
 
 def test_assign_regimes_respects_sign_guards() -> None:
