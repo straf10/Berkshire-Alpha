@@ -668,6 +668,19 @@ BACKTEST_IV_RV_MULTIPLIER: Final[float] = 1.15             # synthetic ATM IV = 
 # over instead -- real variation sourced from the historical price path
 # itself, not a fabricated random draw, so replay stays exactly reproducible.
 BACKTEST_IV_TERM_WINDOW: Final[int] = 5                    # ~1 trading week vs RV_WINDOW's ~1 month
+# 2026-09-10 follow-up to the Task B fix above (docs/strategy_audit_and_
+# loop.md, VRP-neutrality proof): synthetic_chain.iv_forecast blends
+# short_term_rv(BACKTEST_IV_TERM_WINDOW) with RV_WINDOW=20 instead of using
+# the short window alone -- rv_5 alone is a noisy, biased forecast of
+# forward vol, and a VRP-ranked backtest priced off a biased forecast
+# measures the bias, not a premium (see the proof at iv_forecast's
+# docstring). 0.0 (pure RV_20) reintroduces a constant vrp_ratio -- the
+# ORIGINAL bug -- so this must stay > 0; the actual guarantee that matters
+# (P&L doesn't predictably correlate with the resulting vrp_ratio) is
+# checked empirically by test_synthetic_chain_is_not_exploitable, not by
+# this weight being "correct" in any absolute sense -- per the proof, no
+# forecast choice here can be validated against a surface it invented.
+BACKTEST_IV_FORECAST_BLEND_WEIGHT: Final[float] = 0.3
 BACKTEST_SKEW_SLOPE: Final[float] = 0.5                    # IV points of equity-style put skew per unit OTM moneyness
 BACKTEST_CHAIN_SPREAD_PCT: Final[float] = 0.03              # synthetic bid/ask width as a fraction of BS mid
 BACKTEST_STRIKE_RANGE_PCT: Final[float] = 0.15               # synthetic strike grid, matches ChainCache's live bounds

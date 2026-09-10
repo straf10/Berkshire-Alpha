@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import math
+import statistics
 from datetime import date, datetime, timezone
+from typing import Sequence
 
 from agent.config import (
+    ANNUALISATION_DAYS,
     BACKTEST_CHAIN_SPREAD_PCT,
+    BACKTEST_IV_FORECAST_BLEND_WEIGHT,
+    BACKTEST_IV_TERM_WINDOW,
     BACKTEST_SKEW_SLOPE,
     BACKTEST_STRIKE_INCREMENT,
     BACKTEST_STRIKE_RANGE_PCT,
@@ -13,6 +18,57 @@ from agent.schemas.market import ChainSnapshot, OptionQuote
 
 _SQRT_2 = math.sqrt(2.0)
 _SQRT_2PI = math.sqrt(2.0 * math.pi)
+
+
+def short_term_rv(closes: Sequence[float], window: int) -> float:
+    """Same annualised-stdev-of-log-returns estimator as quant.realised_vol_20
+    (agent/tools/quant.py), over a shorter trailing `window` instead of the
+    fixed RV_WINDOW=20. Deliberately NOT winsorised, unlike quant.
+    realised_vol_20: a short window is already narrow enough that clipping
+    outliers would throw away most of its signal, and this feeds only the
+    synthetic backtest chain, never the live signal path quant.py's
+    winsorisation protects. Caller guarantees len(closes) >= window + 1."""
+    recent = closes[-(window + 1):]
+    log_returns = [math.log(recent[i] / recent[i - 1]) for i in range(1, len(recent))]
+    return math.sqrt(ANNUALISATION_DAYS) * statistics.stdev(log_returns)
+
+
+def iv_forecast(
+    closes: Sequence[float], rv20: float, *,
+    window: int = BACKTEST_IV_TERM_WINDOW, blend_weight: float = BACKTEST_IV_FORECAST_BLEND_WEIGHT,
+) -> float:
+    """No-lookahead realized-vol forecast the synthetic chain's `iv_atm` is
+    built from (docs/strategy_audit_and_loop.md, 2026-09-10 follow-up proof).
+
+    Round 2 (docs/strategy_audit_and_loop.md S0 Task B) fixed the ORIGINAL
+    tautology -- iv_atm = rv20 * multiplier, the same rv20 vrp_ratio divides
+    by, pinning vrp_ratio to a constant for every trade -- by switching to a
+    short trailing window instead (blend_weight=1.0 below). That broke the
+    constant-ratio bug but replaced it with a subtler one: under the proof's
+    model (iv = F*(1+k), F a no-lookahead forecast with E[rv_fwd|info] = F),
+    the expected edge per unit of vega is E[rv_fwd] - iv = -k*F, uniform in
+    the selection signal -- so if F is BIASED (a stale/noisy short window is
+    a bad forecast of forward vol), what a VRP-ranked backtest actually
+    measures is that bias, not a real premium. rv_short alone is exactly
+    such a biased F.
+
+    This blends toward RV_WINDOW=20 instead -- "rv_20 alone is already a
+    better forecast of forward 3-7 day vol than rv_5, purely because it's
+    less noisy" -- without eliminating it (blend_weight=0.0 collapses
+    forecast=rv20 exactly, reintroducing a constant vrp_ratio just like the
+    original bug, since vrp_ratio = forecast*multiplier/rv20 = multiplier
+    when forecast==rv20). Neither endpoint is safe; the empirical guarantee
+    that actually matters -- realized P&L doesn't predictably correlate with
+    the resulting vrp_ratio -- is checked directly by
+    test_synthetic_chain_is_not_exploitable (agent/tests/test_replay.py),
+    not asserted by this docstring. Per the proof: ANY forecast choice here
+    just substitutes a different assumption for the market's real IV: this
+    function's job is to keep the harness NEUTRAL (measures nothing about
+    VRP either way), not to make VRP-based selection newly "work"."""
+    rv_short = short_term_rv(closes, window)
+    if rv_short == 0.0 or rv20 == 0.0:
+        return 0.0
+    return blend_weight * rv_short + (1.0 - blend_weight) * rv20
 
 
 def _norm_cdf(x: float) -> float:

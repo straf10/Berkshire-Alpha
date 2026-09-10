@@ -50,27 +50,27 @@ def _debit_call_spread(long_strike: float = 100.0, short_strike: float = 105.0) 
 
 def test_credit_spread_expires_worthless_is_near_max_profit() -> None:
     plan = _credit_put_spread()
-    result = payoff.settle(plan, _ENTRY, plan.net_natural, settle_spot=110.0)  # both puts OTM
+    result = payoff.settle(plan, _ENTRY, plan.net_natural, settle_spot=110.0, vrp_ratio=1.0)  # both puts OTM
     assert result.realized_pnl > 0
     assert result.realized_pnl <= float(plan.max_profit_per_spread)  # haircut-free fill caps at max_profit
 
 
 def test_credit_spread_expires_at_max_width_is_near_max_loss() -> None:
     plan = _credit_put_spread()
-    result = payoff.settle(plan, _ENTRY, plan.net_natural, settle_spot=80.0)  # both puts deep ITM
+    result = payoff.settle(plan, _ENTRY, plan.net_natural, settle_spot=80.0, vrp_ratio=1.0)  # both puts deep ITM
     assert result.realized_pnl < 0
     assert result.realized_pnl == -float(plan.max_loss_per_spread)
 
 
 def test_debit_spread_expires_at_max_profit() -> None:
     plan = _debit_call_spread()
-    result = payoff.settle(plan, _ENTRY, plan.net_natural, settle_spot=110.0)  # both calls ITM, at width
+    result = payoff.settle(plan, _ENTRY, plan.net_natural, settle_spot=110.0, vrp_ratio=1.0)  # both calls ITM, at width
     assert result.realized_pnl == float(plan.max_profit_per_spread)
 
 
 def test_debit_spread_expires_worthless_is_max_loss() -> None:
     plan = _debit_call_spread()
-    result = payoff.settle(plan, _ENTRY, plan.net_natural, settle_spot=90.0)  # both calls OTM
+    result = payoff.settle(plan, _ENTRY, plan.net_natural, settle_spot=90.0, vrp_ratio=1.0)  # both calls OTM
     assert result.realized_pnl == -float(plan.max_loss_per_spread)
 
 
@@ -86,15 +86,15 @@ def test_slippage_haircut_increases_debit_paid() -> None:
 
 def test_equity_curve_is_cumulative_by_expiry() -> None:
     plan = _credit_put_spread()
-    t1 = payoff.settle(plan, _ENTRY, plan.net_natural, settle_spot=110.0)
-    t2 = payoff.settle(plan, _ENTRY, plan.net_natural, settle_spot=80.0)
+    t1 = payoff.settle(plan, _ENTRY, plan.net_natural, settle_spot=110.0, vrp_ratio=1.0)
+    t2 = payoff.settle(plan, _ENTRY, plan.net_natural, settle_spot=80.0, vrp_ratio=1.0)
     curve = payoff.build_equity_curve([t1, t2])
     assert curve[-1][1] == t1.realized_pnl + t2.realized_pnl
 
 
 def test_regime_hit_rate_groups_by_regime() -> None:
-    credit_win = payoff.settle(_credit_put_spread(), _ENTRY, _credit_put_spread().net_natural, settle_spot=110.0)
-    debit_loss = payoff.settle(_debit_call_spread(), _ENTRY, _debit_call_spread().net_natural, settle_spot=90.0)
+    credit_win = payoff.settle(_credit_put_spread(), _ENTRY, _credit_put_spread().net_natural, settle_spot=110.0, vrp_ratio=1.0)
+    debit_loss = payoff.settle(_debit_call_spread(), _ENTRY, _debit_call_spread().net_natural, settle_spot=90.0, vrp_ratio=1.0)
     stats = payoff.regime_hit_rate([credit_win, debit_loss])
     assert stats["CREDIT"]["count"] == 1
     assert stats["CREDIT"]["win_rate"] == 1.0
@@ -103,11 +103,11 @@ def test_regime_hit_rate_groups_by_regime() -> None:
 
 
 def _win() -> payoff.TradeResult:
-    return payoff.settle(_credit_put_spread(), _ENTRY, _credit_put_spread().net_natural, settle_spot=110.0)
+    return payoff.settle(_credit_put_spread(), _ENTRY, _credit_put_spread().net_natural, settle_spot=110.0, vrp_ratio=1.0)
 
 
 def _loss() -> payoff.TradeResult:
-    return payoff.settle(_credit_put_spread(), _ENTRY, _credit_put_spread().net_natural, settle_spot=80.0)
+    return payoff.settle(_credit_put_spread(), _ENTRY, _credit_put_spread().net_natural, settle_spot=80.0, vrp_ratio=1.0)
 
 
 def test_window_stability_all_wins_gives_full_p_positive() -> None:
@@ -116,7 +116,7 @@ def test_window_stability_all_wins_gives_full_p_positive() -> None:
     # -- a window of identical pnls is the zero-dispersion edge case, skipped
     # by design, and would defeat this test.
     trades = [
-        payoff.settle(_credit_put_spread(), _ENTRY, Decimal(str(-1.00 - i * 0.01)), settle_spot=110.0)
+        payoff.settle(_credit_put_spread(), _ENTRY, Decimal(str(-1.00 - i * 0.01)), settle_spot=110.0, vrp_ratio=1.0)
         for i in range(12)
     ]
     stats = payoff.window_stability(trades, n_windows=6)
@@ -129,7 +129,7 @@ def test_window_stability_alternating_wins_and_losses_has_negative_sr_min() -> N
     for i in range(12):
         plan = _credit_put_spread()
         spot = 110.0 + i if i % 2 == 0 else 80.0 - i
-        trades.append(payoff.settle(plan, _ENTRY, plan.net_natural, settle_spot=spot))
+        trades.append(payoff.settle(plan, _ENTRY, plan.net_natural, settle_spot=spot, vrp_ratio=1.0))
     stats = payoff.window_stability(trades, n_windows=6)
     assert stats["sr_min"] < 0
 

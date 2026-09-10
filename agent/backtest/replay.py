@@ -26,18 +26,17 @@ import argparse
 import asyncio
 import csv
 import logging
-import math
 import os
 import statistics
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any, Sequence
+from typing import Any
 
 import pytz
 
 from agent.config import (
-    ANNUALISATION_DAYS,
+    BACKTEST_IV_FORECAST_BLEND_WEIGHT,
     BACKTEST_IV_RV_MULTIPLIER,
     BACKTEST_IV_TERM_WINDOW,
     BACKTEST_SLIPPAGE_PCT,
@@ -57,7 +56,7 @@ from agent.strategy import spread_builder, ticker_screener
 from agent.tools import quant
 from agent.tools.market_data import UniverseBars, fetch_daily_bars_range, fetch_session_minute_bars
 from agent.backtest import payoff
-from agent.backtest.synthetic_chain import generate_chain
+from agent.backtest.synthetic_chain import generate_chain, iv_forecast
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +74,7 @@ class _OpenTrade:
     plan: SpreadPlan
     entry_date: date
     entry_fill: Decimal
+    vrp_ratio: float  # the QuantSnapshot value assign_regimes ranked this trade on at entry
 
 
 class _ChainMap:
@@ -83,21 +83,6 @@ class _ChainMap:
 
     def get(self, symbol: str) -> ChainSnapshot | None:
         return self._chains.get(symbol)
-
-
-def _short_term_rv(closes: Sequence[float], window: int) -> float:
-    """Same annualised-stdev-of-log-returns estimator as quant.realised_vol_20
-    (agent/tools/quant.py), over a shorter trailing `window` instead of the
-    fixed RV_WINDOW=20 -- docs/strategy_audit_and_loop.md S0 Task B (the VRP
-    tautology). Deliberately NOT winsorised, unlike quant.realised_vol_20: a
-    short window is already narrow enough that clipping outliers would throw
-    away most of its signal, and this feeds only the synthetic backtest
-    chain, never the live signal path quant.py's winsorisation protects.
-    Caller guarantees len(closes) >= window + 1 (the RV_WINDOW=20 gate in
-    _simulate already covers BACKTEST_IV_TERM_WINDOW=5)."""
-    recent = closes[-(window + 1):]
-    log_returns = [math.log(recent[i] / recent[i - 1]) for i in range(1, len(recent))]
-    return math.sqrt(ANNUALISATION_DAYS) * statistics.stdev(log_returns)
 
 
 def _pick_expiry(session_date: date, trading_days: frozenset[date]) -> date | None:
@@ -161,6 +146,7 @@ def _simulate(
     data: _MarketData,
     *, iv_multiplier: float = BACKTEST_IV_RV_MULTIPLIER, slippage_pct: Decimal = BACKTEST_SLIPPAGE_PCT,
     cross_section_n: int = CROSS_SECTION_N, vwm_z_strong: float = VWM_Z_STRONG,
+    iv_term_window: int = BACKTEST_IV_TERM_WINDOW, iv_blend_weight: float = BACKTEST_IV_FORECAST_BLEND_WEIGHT,
 ) -> list[payoff.TradeResult]:
     """Pure -- no I/O, no imported-constant reads. Every parameter this sweep
     cares about is threaded through explicitly so patching agent.config can't
@@ -182,7 +168,7 @@ def _simulate(
                     logger.warning("no settlement bar for %s expiry %s -- keeping open", ot.plan.symbol, ot.plan.expiry)
                     still_open.append(ot)
                     continue
-                results.append(payoff.settle(ot.plan, ot.entry_date, ot.entry_fill, settle_bar.close))
+                results.append(payoff.settle(ot.plan, ot.entry_date, ot.entry_fill, settle_bar.close, ot.vrp_ratio))
             else:
                 still_open.append(ot)
         open_trades = still_open
@@ -206,19 +192,19 @@ def _simulate(
             if rv20 == 0.0:
                 chains[sym] = None
                 continue
-            # docs/strategy_audit_and_loop.md S0 Task B: iv_atm used to be
-            # rv20 * iv_multiplier -- the same rv20 vrp_ratio divides by below
-            # -- which pinned vrp_ratio to iv_multiplier for every name/
-            # session and made Regime.DEBIT (vrp_ratio <= VRP_DEBIT_MAX)
-            # structurally unreachable. rv_short is a genuine, deterministic
-            # term-structure signal (short trailing RV vs the 20-day one)
-            # computed from the real historical price path, so vrp_ratio now
-            # actually varies instead of being a constant in disguise.
-            rv_short = _short_term_rv(closes, BACKTEST_IV_TERM_WINDOW)
-            if rv_short == 0.0:
+            # docs/strategy_audit_and_loop.md S0 Task B (fixed the ORIGINAL
+            # constant-vrp_ratio tautology) + the 2026-09-10 follow-up (the
+            # short-window-alone replacement was itself a biased-forecast
+            # tautology -- see synthetic_chain.iv_forecast's docstring for
+            # the full proof). Blends the short window with RV_WINDOW=20
+            # instead of using either alone; test_synthetic_chain_is_not_
+            # exploitable (test_replay.py) is what actually certifies this
+            # doesn't correlate P&L with vrp_ratio, not this comment.
+            forecast = iv_forecast(closes, rv20, window=iv_term_window, blend_weight=iv_blend_weight)
+            if forecast == 0.0:
                 chains[sym] = None
                 continue
-            iv_atm = rv_short * iv_multiplier
+            iv_atm = forecast * iv_multiplier
             chains[sym] = generate_chain(sym, session_date, target_expiry, closes[-1], iv_atm)
 
         snapshots = quant.compute_all(bars, _ChainMap(chains), session_date, trading_days)
@@ -240,7 +226,9 @@ def _simulate(
             plan_or_fail = spread_builder.build(q, d, chain)
             if isinstance(plan_or_fail, SpreadPlan):
                 entry_fill = payoff.entry_fill_with_slippage(plan_or_fail.net_natural, slippage_pct)
-                open_trades.append(_OpenTrade(plan=plan_or_fail, entry_date=session_date, entry_fill=entry_fill))
+                open_trades.append(_OpenTrade(
+                    plan=plan_or_fail, entry_date=session_date, entry_fill=entry_fill, vrp_ratio=q.vrp_ratio,
+                ))
             else:
                 build_failures += 1
 
@@ -254,11 +242,13 @@ async def run_replay(
     clients: AlpacaClients, universe: tuple[str, ...], start: date, end: date,
     *, iv_multiplier: float = BACKTEST_IV_RV_MULTIPLIER, slippage_pct: Decimal = BACKTEST_SLIPPAGE_PCT,
     cross_section_n: int = CROSS_SECTION_N, vwm_z_strong: float = VWM_Z_STRONG,
+    iv_term_window: int = BACKTEST_IV_TERM_WINDOW, iv_blend_weight: float = BACKTEST_IV_FORECAST_BLEND_WEIGHT,
 ) -> list[payoff.TradeResult]:
     data = await _load_market_data(clients, universe, start, end)
     return _simulate(
         data, iv_multiplier=iv_multiplier, slippage_pct=slippage_pct,
         cross_section_n=cross_section_n, vwm_z_strong=vwm_z_strong,
+        iv_term_window=iv_term_window, iv_blend_weight=iv_blend_weight,
     )
 
 

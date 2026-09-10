@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import math
 import os
 import random
 import statistics
@@ -24,6 +25,15 @@ class TradeResult:
     realized_pnl: float              # dollars per spread
     max_profit_per_spread: Decimal
     max_loss_per_spread: Decimal
+    # docs/strategy_audit_and_loop.md (2026-09-10 follow-up): the value
+    # assign_regimes ranked this trade on at entry (quant.vrp_ratio, threaded
+    # verbatim from the QuantSnapshot that built it) -- carried through so
+    # pnl_vrp_slope can check the harness isn't exploitable. Its ABSENCE here
+    # is exactly why the Round-2 "fix" (replay.py's VRP tautology) shipped
+    # with no test able to catch that it had replaced one tautology with a
+    # subtler one: a synthetic chain priced off a stale/noisy forecast whose
+    # own noise -- not a real premium -- is what vrp_ratio was measuring.
+    vrp_ratio: float
 
 
 def entry_fill_with_slippage(net_natural: Decimal, slippage_pct: Decimal = BACKTEST_SLIPPAGE_PCT) -> Decimal:
@@ -36,11 +46,13 @@ def entry_fill_with_slippage(net_natural: Decimal, slippage_pct: Decimal = BACKT
 
 
 def settle(
-    plan: SpreadPlan, entry_date: date, entry_fill: Decimal, settle_spot: float,
+    plan: SpreadPlan, entry_date: date, entry_fill: Decimal, settle_spot: float, vrp_ratio: float,
 ) -> TradeResult:
     """Payoff-at-expiry model: entry cashflow (the haircut fill, x100) plus the
     intrinsic settlement value of each leg at `settle_spot`. No exit slippage --
-    expiry settlement, not a market order."""
+    expiry settlement, not a market order. `vrp_ratio` is the entry-time value
+    from the QuantSnapshot that built `plan`, carried through verbatim so it
+    can be checked against `realized_pnl` after the fact (pnl_vrp_slope)."""
     entry_cashflow = float(-entry_fill * 100)
 
     settlement_value = 0.0
@@ -63,6 +75,7 @@ def settle(
         realized_pnl=entry_cashflow + settlement_value,
         max_profit_per_spread=plan.max_profit_per_spread,
         max_loss_per_spread=plan.max_loss_per_spread,
+        vrp_ratio=vrp_ratio,
     )
 
 
@@ -199,6 +212,52 @@ def window_stability(trades: list[TradeResult], n_windows: int = 6) -> dict[str,
     }
 
 
+def pnl_vrp_regression(trades: list[TradeResult]) -> dict[str, float] | None:
+    """OLS of realized_pnl on vrp_ratio -- the harness-exploitability check
+    (docs/strategy_audit_and_loop.md, 2026-09-10 follow-up proof): under a
+    no-lookahead forecast F with E[rv_fwd | info] = F, the expected edge per
+    unit of vega is E[rv_fwd] - iv = F - F(1+k) = -k*F, which does NOT
+    depend on the selection signal -- credit earns +k*F, debit earns -k*F,
+    UNIFORMLY, and the VRP screen's true measured edge is exactly zero. A
+    synthetic chain whose IV is built from an actual no-lookahead estimator
+    must therefore show ~zero correlation between vrp_ratio and realized
+    P&L, regardless of how good that estimator is; a slope that is
+    statistically distinguishable from zero here means the harness is
+    manufacturing an edge out of its own IV assumption rather than measuring
+    one (test_synthetic_chain_is_not_exploitable pins this at build time;
+    the confirm-the-artifact diagnostic this proof shipped with also calls
+    this directly on the pre-fix data).
+
+    Returns {"slope", "stderr", "n"} -- `stderr` is the standard OLS slope
+    standard error (sqrt(residual_variance / Sxx)), so callers can test
+    statistical significance (e.g. |slope| < k*stderr) instead of an
+    arbitrary fixed or pnl-scaled tolerance; a bound in slope-standard-errors
+    is the same test regardless of sample size or how noisy the P&L happens
+    to be.
+
+    None for < 3 trades (need at least 1 residual degree of freedom, n - 2
+    > 0) or zero vrp_ratio variance across the set -- "no slope is
+    measurable" is a different claim from "the slope is zero", and treating
+    them the same would let an all-identical-vrp_ratio sample silently pass
+    a neutrality check it never actually tested."""
+    if len(trades) < 3:
+        return None
+    xs = [t.vrp_ratio for t in trades]
+    ys = [t.realized_pnl for t in trades]
+    n = len(trades)
+    mean_x, mean_y = statistics.fmean(xs), statistics.fmean(ys)
+    sxx = sum((x - mean_x) ** 2 for x in xs)
+    if sxx == 0.0:
+        return None
+    sxy = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+    slope = sxy / sxx
+    intercept = mean_y - slope * mean_x
+    sse = sum((y - (intercept + slope * x)) ** 2 for x, y in zip(xs, ys))
+    residual_var = sse / (n - 2)
+    stderr = math.sqrt(residual_var / sxx)
+    return {"slope": slope, "stderr": stderr, "n": float(n)}
+
+
 def write_report(trades: list[TradeResult], out_dir: str) -> None:
     os.makedirs(out_dir, exist_ok=True)
 
@@ -206,13 +265,13 @@ def write_report(trades: list[TradeResult], out_dir: str) -> None:
         w = csv.writer(f)
         w.writerow([
             "symbol", "structure", "regime", "entry_date", "expiry", "entry_fill",
-            "settle_spot", "realized_pnl", "max_profit_per_spread", "max_loss_per_spread",
+            "settle_spot", "realized_pnl", "max_profit_per_spread", "max_loss_per_spread", "vrp_ratio",
         ])
         for t in sorted(trades, key=lambda t: (t.entry_date, t.symbol)):
             w.writerow([
                 t.symbol, t.structure, t.regime.value, t.entry_date.isoformat(), t.expiry.isoformat(),
                 t.entry_fill, t.settle_spot, round(t.realized_pnl, 2),
-                t.max_profit_per_spread, t.max_loss_per_spread,
+                t.max_profit_per_spread, t.max_loss_per_spread, round(t.vrp_ratio, 4),
             ])
 
     with open(os.path.join(out_dir, "equity_curve.csv"), "w", newline="") as f:

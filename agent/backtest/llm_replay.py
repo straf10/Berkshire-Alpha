@@ -46,7 +46,9 @@ import httpx
 from agent.agents.pipeline import run_llm_pipeline
 from agent.config import (
     ACCOUNT_START_EQUITY,
+    BACKTEST_IV_FORECAST_BLEND_WEIGHT,
     BACKTEST_IV_RV_MULTIPLIER,
+    BACKTEST_IV_TERM_WINDOW,
     CROSS_SECTION_N,
     EARNINGS_VERIFIED_ON,
     LLM_SEMAPHORE_LIMIT,
@@ -73,7 +75,7 @@ from agent.tools.market_data import UniverseBars, fetch_daily_bars_range, fetch_
 from agent.tools.news import fetch_headlines
 from agent.backtest import payoff
 from agent.backtest.replay import _ChainMap, _pick_expiry, _to_utc
-from agent.backtest.synthetic_chain import generate_chain
+from agent.backtest.synthetic_chain import generate_chain, iv_forecast
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +107,7 @@ class SimOpenTrade:
     qty: int
     entry_date: date
     entry_fill: Decimal
+    vrp_ratio: float  # the QuantSnapshot value assign_regimes ranked this trade on at entry
 
 
 @dataclass
@@ -134,13 +137,14 @@ def _write_report(trades: list[SimTradeResult], out_dir: str) -> None:
         w = csv.writer(f)
         w.writerow([
             "symbol", "structure", "regime", "entry_date", "expiry", "qty", "entry_fill",
-            "settle_spot", "realized_pnl_per_spread", "realized_pnl_total",
+            "settle_spot", "realized_pnl_per_spread", "realized_pnl_total", "vrp_ratio",
         ])
         for st in sorted(trades, key=lambda st: (st.result.entry_date, st.result.symbol)):
             r = st.result
             w.writerow([
                 r.symbol, r.structure, r.regime.value, r.entry_date.isoformat(), r.expiry.isoformat(),
                 st.qty, r.entry_fill, r.settle_spot, round(r.realized_pnl, 2), round(r.realized_pnl * st.qty, 2),
+                round(r.vrp_ratio, 4),
             ])
 
     with open(os.path.join(out_dir, "equity_curve.csv"), "w", newline="") as f:
@@ -190,7 +194,7 @@ async def run_llm_backtest(
                         logger.warning("no settlement bar for %s expiry %s -- keeping open", ot.plan.symbol, ot.plan.expiry)
                         still_open.append(ot)
                         continue
-                    result = payoff.settle(ot.plan, ot.entry_date, ot.entry_fill, settle_bar.close)
+                    result = payoff.settle(ot.plan, ot.entry_date, ot.entry_fill, settle_bar.close, ot.vrp_ratio)
                     equity += Decimal(str(result.realized_pnl * ot.qty))
                     settled.append(SimTradeResult(result=result, qty=ot.qty))
                 else:
@@ -219,7 +223,18 @@ async def run_llm_backtest(
                 if rv20 == 0.0:
                     chains[sym] = None
                     continue
-                chains[sym] = generate_chain(sym, session_date, target_expiry, closes[-1], rv20 * BACKTEST_IV_RV_MULTIPLIER)
+                # 2026-09-10 (docs/strategy_audit_and_loop.md VRP-neutrality
+                # follow-up): this used to be rv20 * BACKTEST_IV_RV_MULTIPLIER
+                # -- the same rv20 vrp_ratio divides by -- pinning vrp_ratio
+                # to a constant for every name/session, the exact tautology
+                # replay.py's Task B fixed there but never here. Same
+                # blended, no-lookahead forecast replay.py now uses (see
+                # synthetic_chain.iv_forecast's docstring for the proof).
+                forecast = iv_forecast(closes, rv20, window=BACKTEST_IV_TERM_WINDOW, blend_weight=BACKTEST_IV_FORECAST_BLEND_WEIGHT)
+                if forecast == 0.0:
+                    chains[sym] = None
+                    continue
+                chains[sym] = generate_chain(sym, session_date, target_expiry, closes[-1], forecast * BACKTEST_IV_RV_MULTIPLIER)
             chain_map = _ChainMap(chains)
 
             snapshots = quant.compute_all(bars, chain_map, session_date, trading_days)
@@ -308,7 +323,9 @@ async def run_llm_backtest(
 
                     if action == "ENTER" and plan is not None and qty_val:
                         entry_fill = payoff.entry_fill_with_slippage(plan.net_natural)
-                        open_trades.append(SimOpenTrade(plan=plan, qty=qty_val, entry_date=session_date, entry_fill=entry_fill))
+                        open_trades.append(SimOpenTrade(
+                            plan=plan, qty=qty_val, entry_date=session_date, entry_fill=entry_fill, vrp_ratio=q.vrp_ratio,
+                        ))
                         entered_today += 1
                         await storage_write.insert_trade(conn, storage_write.TradeRow(
                             decision_id=decision_id, ts_utc=ts_utc, symbol=plan.symbol,
