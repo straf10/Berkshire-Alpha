@@ -21,7 +21,7 @@ from agent.storage import db
 
 # Row count in docs/trial_ledger.md as of the sealed window (docs/preregistration.md).
 # Bump only after adding a row there -- this constant must never lead the ledger.
-N_TRIALS: Final[int] = 34
+N_TRIALS: Final[int] = 35
 
 
 def min_track_record_length(sr: float, skew: float, kurtosis: float, alpha: float = 0.05) -> float:

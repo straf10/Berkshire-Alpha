@@ -111,11 +111,26 @@ JUDGED_ACCOUNT_NUMBER: Final[str] = "PA3UM9X4MN5X"
 # SIGN GUARDS only (ticker_screener.assign_regimes) -- no longer absolute
 # entry thresholds. A 4-day sample's median VRP was 0.96 against the old 1.25
 # credit threshold, which is why the cross-section is ranked instead.
+#
+# docs/f1_f3_remediation_plan.md F1.3, re-examined post-revert (vrp_ratio's
+# denominator moved back from rv_dte to rv_20 -- see quant.py's
+# compute_snapshot): a gate this loose CAN silently become a pass-through if
+# the ratio it gates is inflated, which was exactly rv_dte's failure mode.
+# Measured on a full post-revert replay (2026-03-12 -> 2026-09-10, 361
+# settled trades): median vrp_ratio 1.31 (was ~1.62 pre-revert), CREDIT
+# vrp_ratio range [1.19, 2.36] (n=217), DEBIT range [0.84, 1.00] (n=144).
+# CREDIT's minimum sits 0.19 above this 1.00 gate and DEBIT's maximum 0.0023
+# below it -- both regimes are still populated in healthy numbers (not
+# collapsed toward the gate), so it is NOT silently passing through
+# post-revert the way it did at the inflated pre-revert level, and the
+# measurement does not call for a value change here. Left at 1.00.
 VRP_CREDIT_MIN: Final[float] = 1.00
 # 2026-09-10 (docs/strategy_audit_and_loop.md §4 P3): considered for a
 # resize alongside VWM_Z_STRONG below and deliberately left unmoved -- see
 # the note at VWM_Z_STRONG's own definition for why (an IV/RV ratio has no
-# chain-free, live-measurable evidence source, unlike VWM_Z_STRONG).
+# chain-free, live-measurable evidence source, unlike VWM_Z_STRONG). Same
+# post-revert re-examination as VRP_CREDIT_MIN above applies here too --
+# still unmoved.
 VRP_DEBIT_MAX: Final[float] = 1.00
 # docs/strategy_audit_and_loop.md §2 finding 3 / §4 P1: sizing.p_success()
 # floored vrp_ratio at 0.5 (never divided by less) but set no ceiling --
@@ -123,17 +138,28 @@ VRP_DEBIT_MAX: Final[float] = 1.00
 # point estimate, unchecked. VRP_RATIO_CEILING is the log-symmetric mirror
 # of the existing floor (0.5 and 2.0 are reciprocals -- IV may be treated as
 # under- or overstating realised vol by at most 2x either way, a
-# geometrically neutral bound, not a fit to any one session's data).
+# geometrically neutral bound, not a fit to any one session's data). This
+# ceiling was written against pre-rv_dte (i.e. rv_20-denominated) vrp_ratio
+# readings like IWM's 1.59 -- docs/f1_f3_remediation_plan.md F1 reverted
+# vrp_ratio's denominator back to rv_20 (§1 below found rv_dte was both a
+# worse forecast AND carried zero predictive content in its deviation from
+# rv_20), so this constant is back in the regime it was calibrated for.
+# Measured post-revert: P(vrp_ratio > 2.0) = 3.3% (12/361 settled trades),
+# down from 41.4% pre-revert, when the ceiling was binding on nearly every
+# other DEBIT-eligible trade instead of catching genuine outliers. Kept
+# unchanged.
 # VRP_SHRINKAGE_FACTOR pulls the floored-and-capped ratio partway back
 # toward the neutral value 1.0 (no premium either direction) -- the same
 # "trust the point estimate only partially" logic KELLY_FRACTION's own
-# half-Kelly precedent already uses elsewhere in this file, applied here
-# because realised_vol_dte's short DTE-matched window (replacing rv_20 as
-# vrp_ratio's denominator, same audit section) is a noisier estimate than
-# the 20-day one it replaced. Both are a trial, not a measured calibration:
-# logged in docs/trial_ledger.md pending scripts/signal_forward_test.py
-# validation of the DTE-matched RV estimator that makes the extra noise
-# these two constants exist to control.
+# half-Kelly precedent already uses elsewhere in this file. Originally
+# justified by rv_dte's extra noise relative to rv_20 -- that reason is gone
+# post-revert (rv_20 is the more stable, not the noisier, estimator), but
+# the value is kept anyway: distrusting a single point estimate of a ratio
+# this consequential (it directly scales a breach-probability transform in
+# sizing.p_success) is independently defensible regardless of which
+# estimator produced the point, the same reasoning KELLY_FRACTION's halving
+# already rests on. Not a measured calibration either way -- logged as a
+# trial in docs/trial_ledger.md.
 VRP_RATIO_FLOOR: Final[float] = 0.5
 VRP_RATIO_CEILING: Final[float] = 2.0
 VRP_SHRINKAGE_FACTOR: Final[float] = 0.5    # 1.0 = no shrinkage, 0.0 = fully pinned to 1.0
