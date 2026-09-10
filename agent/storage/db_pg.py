@@ -161,3 +161,11 @@ async def init_db(dsn: str) -> None:
         # docs/fill_and_learning_plan.md S5 Task 1: same pattern -- the
         # walk-enforced cap at the moment WalkResult was returned.
         await raw.execute("ALTER TABLE trades ADD COLUMN IF NOT EXISTS final_cap REAL")
+        # docs/strategy_audit_and_loop.md §5 B1/B3: same pattern -- net_mid
+        # for the spread_cost/market_move decomposition, settled so the
+        # terminal intrinsic-value row is written (and selected) exactly once
+        # per expired contract.
+        await raw.execute("ALTER TABLE counterfactuals ADD COLUMN IF NOT EXISTS net_mid REAL")
+        await raw.execute(
+            "ALTER TABLE counterfactuals ADD COLUMN IF NOT EXISTS settled INTEGER NOT NULL DEFAULT 0"
+        )

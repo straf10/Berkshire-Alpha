@@ -192,18 +192,38 @@ def test_digest_counterfactual_fields_reported_separately_never_netted() -> None
     """docs/fill_and_learning_plan.md S5 Task 4: forgone_pnl and avoided_loss
     must both be visible even when they cancel out in a naive net -- a net
     near zero can mean either well-calibrated refusals or an even split of
-    missed gains and dodged losses, and those demand opposite responses."""
+    missed gains and dodged losses, and those demand opposite responses.
+
+    qty defaults to 1 via t.get("qty", 1) -- these fixtures predate qty
+    weighting (docs/strategy_audit_and_loop.md §5 B4), so this stays a
+    per-spread check; test_digest_counterfactual_fields_are_qty_weighted
+    below covers the weighting itself."""
     t1 = _trade("A")
-    t1.update(status="UNFILLED_REJECT", counterfactual={"would_have_filled": 1, "hypothetical_pnl": 500.0})
+    t1.update(status="UNFILLED_REJECT", counterfactual={"hypothetical_pnl": 500.0})
     t2 = _trade("B")
-    t2.update(status="UNFILLED_REJECT", counterfactual={"would_have_filled": 1, "hypothetical_pnl": -500.0})
+    t2.update(status="UNFILLED_REJECT", counterfactual={"hypothetical_pnl": -500.0})
     t3 = _trade("C")
     t3.update(status="UNFILLED_REJECT", counterfactual=None)   # never sampled -- excluded from counterfactual_n
     d = reflector.digest([_row("NO_REGIME")], [t1, t2, t3])
     assert d.counterfactual_n == 2
-    assert d.would_have_filled_n == 2
     assert d.forgone_pnl == pytest.approx(0.0)     # 500 + (-500): a net figure would look "calibrated"
     assert d.avoided_loss == pytest.approx(-500.0)  # ...but half of that was a dodged loss, not a wash
+
+
+def test_digest_counterfactual_fields_are_qty_weighted() -> None:
+    """docs/strategy_audit_and_loop.md §5 B4: hypothetical_pnl is dollars PER
+    SPREAD -- summing it unweighted across differently-sized positions
+    understated the 2026-09-09 cohort by more than 3x (+$68/-$440 per-spread
+    vs +$211/-$1,146 actual). A 1-lot and a 6-lot refusal must not count
+    equally."""
+    t1 = _trade("A")
+    t1.update(status="UNFILLED_REJECT", qty=1, counterfactual={"hypothetical_pnl": 10.0})
+    t2 = _trade("B")
+    t2.update(status="UNFILLED_REJECT", qty=6, counterfactual={"hypothetical_pnl": -20.0})
+    d = reflector.digest([_row("NO_REGIME")], [t1, t2])
+    assert d.counterfactual_n == 2
+    assert d.forgone_pnl == pytest.approx(10.0 * 1 + -20.0 * 6)
+    assert d.avoided_loss == pytest.approx(-20.0 * 6)
 
 
 def test_digest_returns_none_when_every_reason_is_denylisted() -> None:

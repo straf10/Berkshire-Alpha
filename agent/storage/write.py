@@ -197,7 +197,15 @@ class ReflectionRow:
 @dataclass(frozen=True)
 class CounterfactualRow:
     """docs/fill_and_learning_plan.md P2. One re-quote of an unfilled entry's
-    original legs -- see schema.sql's `counterfactuals` table comment."""
+    original legs -- see schema.sql's `counterfactuals` table comment.
+
+    docs/strategy_audit_and_loop.md §5 B1/B3: `net_mid` and `settled` default
+    so every existing call site keeps constructing unchanged. `net_mid` is
+    the plan's entry-time net_mid (alongside `entry_at_natural`, so
+    hypothetical_pnl's spread-cost/market-move split is derivable without
+    plan_json). `settled` is True only for the one terminal row
+    `_counterfactual_tick` writes once a contract has expired, valuing the
+    spread at intrinsic from the settlement underlying price."""
     trade_id: int
     ts_utc: str
     would_have_filled: bool
@@ -206,6 +214,8 @@ class CounterfactualRow:
     mark_to_market: Decimal
     hypothetical_pnl: Decimal
     detail: str
+    net_mid: Decimal | None = None
+    settled: bool = False
 
 
 @dataclass(frozen=True)
@@ -404,12 +414,14 @@ async def insert_reflection(conn: aiosqlite.Connection, r: ReflectionRow) -> int
 async def insert_counterfactual(conn: aiosqlite.Connection, r: CounterfactualRow) -> None:
     await conn.execute(
         """INSERT INTO counterfactuals
-           (trade_id, ts_utc, would_have_filled, entry_at_natural, ev_at_entry,
-            mark_to_market, hypothetical_pnl, detail)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+           (trade_id, ts_utc, would_have_filled, entry_at_natural, net_mid, ev_at_entry,
+            mark_to_market, hypothetical_pnl, settled, detail)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             r.trade_id, r.ts_utc, int(r.would_have_filled), float(r.entry_at_natural),
-            float(r.ev_at_entry), float(r.mark_to_market), float(r.hypothetical_pnl), r.detail,
+            float(r.net_mid) if r.net_mid is not None else None,
+            float(r.ev_at_entry), float(r.mark_to_market), float(r.hypothetical_pnl),
+            int(r.settled), r.detail,
         ),
     )
     await conn.commit()

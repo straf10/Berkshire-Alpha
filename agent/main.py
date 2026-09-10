@@ -84,7 +84,7 @@ from agent.strategy.spread_builder import BuildFailure, build
 from agent.strategy.ticker_screener import assign_regimes, shortlist, skew_threshold
 from agent.tools import markgap
 from agent.tools.llm import LlmBudget, LlmClient, LlmPort, LlmUnavailable, load_budget
-from agent.tools.market_data import ChainCache, fetch_leg_snapshots, fetch_universe_bars
+from agent.tools.market_data import ChainCache, fetch_daily_bars_range, fetch_leg_snapshots, fetch_universe_bars
 from agent.tools.news import Headline, fetch_headlines
 from agent.tools.quant import compute_all
 from agent.tools.walk_cap import quantize_cent
@@ -560,27 +560,37 @@ async def _counterfactual_tick(deps: Deps, conn: aiosqlite.Connection, session: 
     """docs/fill_and_learning_plan.md P2. An UNFILLED_REJECT produces no
     outcome label today: the plan is discarded and nothing further is ever
     recorded about it. For every trade still sitting UNFILLED_REJECT whose
-    contract hasn't expired, re-quote its original legs and record whether it
-    would have filled at the natural (marketable) price, the EV that price
-    implied, what a position entered there would mark at now, and the
-    resulting hypothetical P&L -- so every rejection becomes a labelled
-    example instead of a blank one."""
+    contract hasn't expired, re-quote its original legs and record the EV the
+    natural (marketable) price implied, what a position entered there would
+    mark at now, and the resulting hypothetical P&L -- so every rejection
+    becomes a labelled example instead of a blank one.
+
+    docs/strategy_audit_and_loop.md §5 B1: on the FIRST tick at or after
+    expiry, write one terminal row instead -- valuing the spread at intrinsic
+    from the underlying's own settlement close, since there is no live quote
+    left to re-quote against and nothing further will ever be learned by
+    trying. That row is marked `settled`, and the query below excludes any
+    trade that already has one, so it is written exactly once per contract --
+    this is the only settled outcome the counterfactual table will ever
+    record for a rejection, which is what makes the 09-11/09-14/09-16
+    cohorts (docs/strategy_audit_and_loop.md §4) readable at all."""
     cur = await conn.execute(
-        """SELECT t.id, t.structure, t.expiry, t.legs_json, d.plan_json
+        """SELECT t.id, t.symbol, t.structure, t.expiry, t.legs_json, d.plan_json
            FROM trades t JOIN decisions d ON d.id = t.decision_id
-           WHERE t.status = 'UNFILLED_REJECT' AND t.closed_at IS NULL"""
+           WHERE t.status = 'UNFILLED_REJECT' AND t.closed_at IS NULL
+             AND NOT EXISTS (
+               SELECT 1 FROM counterfactuals c WHERE c.trade_id = t.id AND c.settled = 1
+             )"""
     )
     rows = await cur.fetchall()
     if not rows:
         return
 
-    for trade_id, structure_s, expiry_s, legs_json, plan_json in rows:
+    for trade_id, symbol, structure_s, expiry_s, legs_json, plan_json in rows:
         if plan_json is None:
             continue
         try:
             expiry = date.fromisoformat(expiry_s)
-            if expiry < session.session_date:
-                continue  # expired -- nothing left to learn from re-quoting a dead contract
             plan_data = json.loads(plan_json)
             legs = tuple(
                 Leg(
@@ -594,8 +604,46 @@ async def _counterfactual_tick(deps: Deps, conn: aiosqlite.Connection, session: 
             width = Decimal(str(plan_data["width"]))
             p_success_v = Decimal(str(plan_data["p_success"]))
             natural = quantize_cent(Decimal(str(plan_data["net_natural"])))
+            entry_mid = quantize_cent(Decimal(str(plan_data["net_mid"])))
         except Exception:  # noqa: BLE001 -- one malformed row must not stop the rest
             logger.exception("counterfactual_tick: trade %d could not be reconstructed -- skipped", trade_id)
+            continue
+
+        ev_at_entry = ev_at_price(is_credit=is_credit, price=natural, width=width, p_success=p_success_v)
+
+        if expiry < session.session_date:
+            bars = await fetch_daily_bars_range(deps.clients, [symbol], expiry, expiry)
+            settlement_bars = bars.get(symbol, ())
+            if not settlement_bars:
+                logger.warning(
+                    "counterfactual_tick: trade %d (%s) expired %s but no settlement bar is "
+                    "available yet -- retrying next tick", trade_id, symbol, expiry,
+                )
+                continue  # not settled -- next tick tries again, nothing is marked done
+            settle_spot = Decimal(str(settlement_bars[-1].close))
+
+            intrinsic_net = Decimal("0")
+            for leg in legs:
+                strike = Decimal(str(leg.strike))
+                intrinsic = max(Decimal("0"), settle_spot - strike) if leg.right == "C" \
+                    else max(Decimal("0"), strike - settle_spot)
+                sign = 1 if leg.side == "BUY" else -1
+                intrinsic_net += sign * intrinsic
+            intrinsic_net = quantize_cent(intrinsic_net)
+            pnl = hypothetical_pnl(is_credit=is_credit, entry_price=natural, current_price=intrinsic_net)
+
+            await storage_write.insert_counterfactual(conn, storage_write.CounterfactualRow(
+                trade_id=trade_id, ts_utc=datetime.now(timezone.utc).isoformat(),
+                would_have_filled=True, entry_at_natural=natural, net_mid=entry_mid,
+                ev_at_entry=ev_at_entry, mark_to_market=intrinsic_net, hypothetical_pnl=pnl,
+                settled=True,
+                detail=(
+                    f"SETTLED at expiry {expiry.isoformat()}: {symbol} closed {settle_spot}, intrinsic "
+                    f"net {intrinsic_net} vs entry-at-natural {natural} "
+                    f"(EV@natural {float(ev_at_entry):.2f}/spread); terminal hypothetical P&L "
+                    f"{float(pnl):+.2f}/spread"
+                ),
+            ))
             continue
 
         quotes = await fetch_leg_snapshots(deps.clients, [leg.occ_symbol for leg in legs])
@@ -607,7 +655,6 @@ async def _counterfactual_tick(deps: Deps, conn: aiosqlite.Connection, session: 
             current_mid += sign * Decimal(str(quotes[leg.occ_symbol].mid))
         current_mid = quantize_cent(current_mid)
 
-        ev_at_entry = ev_at_price(is_credit=is_credit, price=natural, width=width, p_success=p_success_v)
         pnl = hypothetical_pnl(is_credit=is_credit, entry_price=natural, current_price=current_mid)
 
         await storage_write.insert_counterfactual(conn, storage_write.CounterfactualRow(
@@ -616,8 +663,9 @@ async def _counterfactual_tick(deps: Deps, conn: aiosqlite.Connection, session: 
             # there would always have filled by construction -- the field
             # exists for a future counterfactual (e.g. a re-quoted natural
             # that has since moved past what the walk could ever have paid)
-            # rather than being a live branch today.
-            would_have_filled=True, entry_at_natural=natural, ev_at_entry=ev_at_entry,
+            # rather than being a live branch today (docs/strategy_audit_and_
+            # loop.md §0 D1 -- dropped from every read path until it does).
+            would_have_filled=True, entry_at_natural=natural, net_mid=entry_mid, ev_at_entry=ev_at_entry,
             mark_to_market=current_mid, hypothetical_pnl=pnl,
             detail=(
                 f"entered at natural {natural} (EV@natural {float(ev_at_entry):.2f}/spread); "
@@ -1949,10 +1997,16 @@ async def _session_trades(conn: aiosqlite.Connection, session_date: str) -> list
     cap after any P0-3 mid-walk re-quote -- reflector._recompute_cap prefers
     it over recomputing from plan_json. Each row also carries its LATEST
     `counterfactual` sample (S5 Task 4), or None if it never got one (e.g.
-    the contract expired before the next management tick re-quoted it)."""
+    the contract expired before the next management tick re-quoted it).
+    `qty` (docs/strategy_audit_and_loop.md §5 B4) lets reflector.digest
+    qty-weight forgone_pnl/avoided_loss -- hypothetical_pnl is dollars PER
+    SPREAD, and summing it unweighted across differently-sized positions
+    misstates the portfolio-level number. `would_have_filled` is dropped from
+    this query entirely (§5 B2/§0 D1): it is hardcoded True at write time, so
+    reading it back would present a constant as though it were measured."""
     cur = await conn.execute(
         "SELECT t.id, t.symbol, t.submitted_limit, t.fill_price, t.realized_pnl, t.closed_at, "
-        "t.status, t.final_limit, t.final_cap, d.plan_json "
+        "t.status, t.final_limit, t.final_cap, t.qty, d.plan_json "
         "FROM trades t JOIN decisions d ON t.decision_id = d.id WHERE d.session_date = ?",
         (session_date,),
     )
@@ -1962,7 +2016,7 @@ async def _session_trades(conn: aiosqlite.Connection, session_date: str) -> list
     if trade_ids:
         placeholders = ",".join("?" for _ in trade_ids)
         cur = await conn.execute(
-            f"SELECT trade_id, would_have_filled, hypothetical_pnl, ts_utc FROM counterfactuals "
+            f"SELECT trade_id, hypothetical_pnl, ts_utc FROM counterfactuals "
             f"WHERE trade_id IN ({placeholders}) ORDER BY ts_utc ASC",
             trade_ids,
         )

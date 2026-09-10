@@ -18,8 +18,10 @@ from agent.config import SCAN_OFFSETS_MIN as _SCAN_OFFSETS_MIN
 from agent.config import Settings
 from agent.execution import cli_bridge
 from agent.execution.broker import MockBroker
+from agent.schemas.market import DailyBar
 from agent.session import SessionPlan
 from agent.storage import db as storage_db
+from agent.storage import read as storage_read
 from agent.storage import write as storage_write
 from agent.tests.fixture_helpers import load_bar_data, load_chain_raw, make_barset
 
@@ -2980,3 +2982,113 @@ async def test_retry_pending_entries_drops_after_max_consecutive_quote_misses(
         )
         pending = await main_module._read_state_value(conn, "pending_entries")
         assert pending == {}   # the Nth consecutive miss finally drops it
+
+
+_CF_PLAN_JSON = json.dumps({
+    "symbol": "XYZ", "structure": "BULL_PUT_SPREAD", "regime": "CREDIT",
+    "expiry": "2026-09-11", "dte": 3,
+    "legs": [
+        {"occ_symbol": "XYZ260911P00100000", "strike": 100.0, "right": "P", "side": "SELL",
+         "ratio_qty": 1, "intent": "SELL_TO_OPEN", "delta": -0.28, "vega": 0.05, "bid": 1.0, "ask": 1.1},
+        {"occ_symbol": "XYZ260911P00095000", "strike": 95.0, "right": "P", "side": "BUY",
+         "ratio_qty": 1, "intent": "BUY_TO_OPEN", "delta": -0.10, "vega": 0.05, "bid": 0.5, "ask": 0.6},
+    ],
+    "width": 5.0, "net_mid": -1.10, "net_natural": -1.00,
+    "max_profit_per_spread": "100", "max_loss_per_spread": "400",
+    "p_success": 0.80, "spot": 100.0, "short_leg_delta": 0.28,
+})
+_CF_LEGS_JSON = json.dumps(json.loads(_CF_PLAN_JSON)["legs"])
+
+
+async def _seed_expired_unfilled_reject(db_path: str) -> None:
+    async with storage_db.connect(db_path) as conn:
+        decision_id = await storage_write.insert_decision(conn, storage_write.DecisionRow(
+            ts_utc="2026-09-08T15:00:00Z", cycle_id="c1", session_date="2026-09-08", symbol="XYZ",
+            mode="quant-only", regime="CREDIT", structure="BULL_PUT_SPREAD", action="ENTER",
+            gate_reason="APPROVED", gate_detail="APPROVED", observed_value=None, threshold_value=None,
+            qty=1, equity_feed="iex", earnings_armed=False, quant_json="{}", plan_json=_CF_PLAN_JSON,
+        ))
+        await storage_write.insert_trade(conn, storage_write.TradeRow(
+            decision_id=decision_id, ts_utc="2026-09-08T15:00:00Z", symbol="XYZ",
+            structure="BULL_PUT_SPREAD", expiry="2026-09-11", legs_json=_CF_LEGS_JSON, qty=1,
+            submitted_limit=Decimal("-1.00"), status="UNFILLED_REJECT",
+        ))
+
+
+async def test_counterfactual_tick_settles_expired_contract_at_intrinsic(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """docs/strategy_audit_and_loop.md §5 B1: on the first tick after expiry,
+    _counterfactual_tick must write ONE terminal row valuing the spread at
+    intrinsic from the underlying's settlement close, mark it settled, and
+    never select that trade again -- instead of skipping the dead contract
+    forever (main.py:582-583 before this fix, which is why the 09-11/09-14/
+    09-16 cohorts would otherwise record nothing at settlement)."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    await _seed_expired_unfilled_reject(db_path)
+
+    async def fake_fetch_daily_bars_range(clients, symbols, start, end):
+        assert list(symbols) == ["XYZ"]
+        return {"XYZ": (DailyBar(
+            ts=datetime(2026, 9, 11, tzinfo=timezone.utc), open=90.0, high=91.0, low=89.0,
+            close=90.0, volume=1000,
+        ),)}
+
+    monkeypatch.setattr(main_module, "fetch_daily_bars_range", fake_fetch_daily_bars_range)
+
+    clients = FakeClients()
+    broker = MockBroker([])
+    clock = _FastClock(datetime(2026, 9, 12, 15, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+    session = SimpleNamespace(session_date=date(2026, 9, 12))
+
+    async with storage_db.connect(db_path) as conn:
+        await main_module._counterfactual_tick(deps, conn, session)
+
+        rows = await storage_read.counterfactuals(conn)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["settled"] == 1
+        # short put(100, SELL) intrinsic 10, long put(95, BUY) intrinsic 5 at
+        # spot 90: (-1)*10 + (+1)*5 = -5.00.
+        assert row["mark_to_market"] == pytest.approx(-5.00)
+        # (mark_to_market - entry_at_natural) * 100 = (-5.00 - -1.00) * 100
+        assert row["hypothetical_pnl"] == pytest.approx(-400.00)
+        assert row["spread_cost"] == pytest.approx(-10.00)    # (net_mid -1.10 - natural -1.00) * 100
+        assert row["market_move"] == pytest.approx(-390.00)   # (mark -5.00 - net_mid -1.10) * 100
+        assert row["spread_cost"] + row["market_move"] == pytest.approx(row["hypothetical_pnl"])
+
+        # A second tick must not write a duplicate -- the NOT EXISTS guard
+        # excludes any trade that already has a settled row.
+        await main_module._counterfactual_tick(deps, conn, session)
+        rows_again = await storage_read.counterfactuals(conn)
+        assert len(rows_again) == 1
+
+
+async def test_counterfactual_tick_retries_when_settlement_bar_not_yet_posted(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The settlement bar can lag the tick that first runs after expiry --
+    that must not mark the trade settled with no data, or the terminal row
+    would be permanently wrong/missing. Nothing is written, and the trade
+    stays eligible for the next tick to try again."""
+    db_path = str(tmp_path / "agent.db")
+    await storage_db.init_db(db_path)
+    await _seed_expired_unfilled_reject(db_path)
+
+    async def fake_fetch_daily_bars_range(clients, symbols, start, end):
+        return {}  # settlement bar not posted yet
+
+    monkeypatch.setattr(main_module, "fetch_daily_bars_range", fake_fetch_daily_bars_range)
+
+    clients = FakeClients()
+    broker = MockBroker([])
+    clock = _FastClock(datetime(2026, 9, 12, 15, 0, tzinfo=timezone.utc))
+    deps = _deps(db_path, clients, broker, clock)
+    session = SimpleNamespace(session_date=date(2026, 9, 12))
+
+    async with storage_db.connect(db_path) as conn:
+        await main_module._counterfactual_tick(deps, conn, session)
+        rows = await storage_read.counterfactuals(conn)
+        assert rows == []

@@ -7,6 +7,7 @@ from typing import Any
 
 import aiosqlite
 
+from agent.risk.counterfactual import hypothetical_pnl
 from agent.schemas.execution import STRUCTURE_IS_CREDIT, Structure
 from agent.tools.walk_cap import walk_cap
 
@@ -427,7 +428,20 @@ async def counterfactuals(
     natural, and what would it be worth now) was invisible outside the raw
     DB. Joined to `trades`/`decisions` so each row carries `symbol`,
     `structure` and the session date -- a bare `trade_id` is not usable from
-    the dashboard. Newest first, like `latest_reflections`."""
+    the dashboard. Newest first, like `latest_reflections`.
+
+    docs/strategy_audit_and_loop.md §5 B2/B3. `would_have_filled` is excluded
+    from the response entirely: it is hardcoded True at write time (§0 D1),
+    so surfacing it here invites exactly the over-reading ("N of N would have
+    filled!") the audit's first pass committed. In its place, `spread_cost` /
+    `market_move` decompose `hypothetical_pnl` (§0 D2) so a reader never has
+    to re-derive the split from `plan_json` to avoid mistaking the mechanical
+    bid/ask crossing cost for alpha decay -- both are None for rows written
+    before `net_mid` existed, since the split isn't recoverable without it.
+
+    Returns Decimal for `spread_cost`/`market_move`, same convention as
+    `_walk_cap_for_trade` above -- the HTTP boundary's jsonable_encoder does
+    the float conversion, not this module (test_money_boundary_is_explicit)."""
     where = ""
     params: tuple[Any, ...] = ()
     if session_date is not None:
@@ -443,7 +457,21 @@ async def counterfactuals(
            ORDER BY c.ts_utc DESC LIMIT ?""",
         (*params, limit),
     )
-    return [dict(row) for row in await cur.fetchall()]
+    rows = [dict(row) for row in await cur.fetchall()]
+    for row in rows:
+        row.pop("would_have_filled", None)
+        net_mid = row.get("net_mid")
+        if net_mid is None:
+            row["spread_cost"] = None
+            row["market_move"] = None
+            continue
+        is_credit = STRUCTURE_IS_CREDIT[Structure(row["structure"])]
+        natural = Decimal(str(row["entry_at_natural"]))
+        mid = Decimal(str(net_mid))
+        mark = Decimal(str(row["mark_to_market"]))
+        row["spread_cost"] = hypothetical_pnl(is_credit=is_credit, entry_price=natural, current_price=mid)
+        row["market_move"] = hypothetical_pnl(is_credit=is_credit, entry_price=mid, current_price=mark)
+    return rows
 
 
 async def decision_chain(conn: aiosqlite.Connection, decision_id: int) -> dict[str, Any]:

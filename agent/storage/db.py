@@ -137,3 +137,15 @@ async def _migrate(conn: aiosqlite.Connection) -> None:
     # only when this is NULL.
     if "final_cap" not in await _column_names(conn, "trades"):
         await conn.execute("ALTER TABLE trades ADD COLUMN final_cap REAL")
+
+    # docs/strategy_audit_and_loop.md §5 B1/B3. net_mid lets a reader split
+    # hypothetical_pnl into spread cost vs market move without re-deriving it
+    # from plan_json; settled marks the one terminal, intrinsic-value row
+    # _counterfactual_tick writes once a contract has expired, so it is never
+    # re-quoted (and never re-settled) again. NULL/0 for every pre-existing
+    # row -- none of them were ever settled at intrinsic value.
+    counterfactuals_cols = await _column_names(conn, "counterfactuals")
+    if counterfactuals_cols and "net_mid" not in counterfactuals_cols:
+        await conn.execute("ALTER TABLE counterfactuals ADD COLUMN net_mid REAL")
+    if counterfactuals_cols and "settled" not in counterfactuals_cols:
+        await conn.execute("ALTER TABLE counterfactuals ADD COLUMN settled INTEGER NOT NULL DEFAULT 0")

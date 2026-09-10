@@ -501,8 +501,8 @@ async def test_counterfactuals_read_joins_symbol_and_structure(tmp_path) -> None
         ))
         await write.insert_counterfactual(conn, write.CounterfactualRow(
             trade_id=trade_id, ts_utc="t2", would_have_filled=True, entry_at_natural=Decimal("-0.80"),
-            ev_at_entry=Decimal("14.00"), mark_to_market=Decimal("-0.94"), hypothetical_pnl=Decimal("-14.00"),
-            detail="entered at natural -0.80; now marks -0.94",
+            net_mid=Decimal("-0.90"), ev_at_entry=Decimal("14.00"), mark_to_market=Decimal("-0.94"),
+            hypothetical_pnl=Decimal("-14.00"), detail="entered at natural -0.80; now marks -0.94",
         ))
 
         rows = await read.counterfactuals(conn)
@@ -510,7 +510,14 @@ async def test_counterfactuals_read_joins_symbol_and_structure(tmp_path) -> None
         assert rows[0]["symbol"] == "AAPL"
         assert rows[0]["structure"] == "BULL_PUT_SPREAD"
         assert rows[0]["session_date"] == "2026-09-09"
-        assert rows[0]["would_have_filled"] == 1
+        # docs/strategy_audit_and_loop.md §5 B2: would_have_filled is dropped
+        # from the read path -- it is hardcoded True at write time.
+        assert "would_have_filled" not in rows[0]
+        # §5 B3: spread_cost (mid -> natural) + market_move (mid -> mark)
+        # decompose hypothetical_pnl without re-deriving it from plan_json.
+        assert rows[0]["spread_cost"] == pytest.approx(-10.00)  # (net_mid -0.90 - natural -0.80) * 100
+        assert rows[0]["market_move"] == pytest.approx(-4.00)   # (mark -0.94 - net_mid -0.90) * 100
+        assert rows[0]["spread_cost"] + rows[0]["market_move"] == pytest.approx(rows[0]["hypothetical_pnl"])
 
         # session_date filter
         assert await read.counterfactuals(conn, session_date="2026-09-08") == []

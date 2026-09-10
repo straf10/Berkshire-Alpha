@@ -98,9 +98,15 @@ class SessionDigest:
     # SEPARATELY and never netted: a net figure near zero is consistent both
     # with "the refusals were perfectly calibrated" and with "we missed $500
     # and dodged $500", and those demand opposite responses from the model.
+    #
+    # docs/strategy_audit_and_loop.md §5 B4: both are qty-WEIGHTED totals
+    # (hypothetical_pnl * trades.qty, summed), not per-spread -- summing the
+    # raw per-spread dollars across differently-sized positions understated
+    # the 2026-09-09 cohort by more than 3x ($68/$440 per-spread vs
+    # $211/$1,146 actual). would_have_filled_n (§0 D1) is dropped: the column
+    # it counted is hardcoded True at write time and carries zero information.
     counterfactual_n: int = 0            # unfilled entries with >=1 counterfactual sample
-    would_have_filled_n: int = 0         # of those, how many would have filled at natural
-    forgone_pnl: float = 0.0             # summed hypothetical_pnl over would-have-filled entries
+    forgone_pnl: float = 0.0             # qty-weighted $ summed over sampled entries
     avoided_loss: float = 0.0            # same sum, restricted to negative values only
 
 
@@ -191,14 +197,15 @@ def digest(rows: Sequence[Mapping[str, Any]], trades: Sequence[Mapping[str, Any]
     # latest P2 re-quote sample main._session_trades attaches to each
     # UNFILLED_REJECT row, or None if none was ever recorded (e.g. the
     # contract expired before the next management tick).
+    #
+    # docs/strategy_audit_and_loop.md §5 B4: qty-weighted -- hypothetical_pnl
+    # is dollars PER SPREAD, so a 1-lot and a 6-lot refusal must not count
+    # equally. `t.get("qty", 1)` covers rows/fixtures predating this field.
     cf_sampled = [t for t in unfilled_rejects if t.get("counterfactual") is not None]
     counterfactual_n = len(cf_sampled)
-    would_have_filled_pnls = [
-        t["counterfactual"]["hypothetical_pnl"] for t in cf_sampled if t["counterfactual"]["would_have_filled"]
-    ]
-    would_have_filled_n = len(would_have_filled_pnls)
-    forgone_pnl = sum(would_have_filled_pnls)
-    avoided_loss = sum(p for p in would_have_filled_pnls if p < 0)
+    cf_qty_pnls = [t["counterfactual"]["hypothetical_pnl"] * t.get("qty", 1) for t in cf_sampled]
+    forgone_pnl = sum(cf_qty_pnls)
+    avoided_loss = sum(p for p in cf_qty_pnls if p < 0)
 
     wide_spread_rows = [
         row for row in rows if row["gate_reason"] == "WIDE_NET_SPREAD" and row["observed_value"] is not None
@@ -284,7 +291,6 @@ def digest(rows: Sequence[Mapping[str, Any]], trades: Sequence[Mapping[str, Any]
         median_cap_headroom=median_cap_headroom,
         median_net_width_pct=median_net_width_pct,
         counterfactual_n=counterfactual_n,
-        would_have_filled_n=would_have_filled_n,
         forgone_pnl=forgone_pnl,
         avoided_loss=avoided_loss,
     )
@@ -350,12 +356,12 @@ def _prompt(d: SessionDigest) -> str:
         cf_detail = ""
         if d.counterfactual_n > 0:
             cf_detail = (
-                f"\nCounterfactuals (P2 re-quotes of unfilled entries): {d.counterfactual_n} sampled, "
-                f"{d.would_have_filled_n} would have filled at natural. Forgone P&L (gains missed by "
-                f"refusing) {d.forgone_pnl:+.2f}; avoided loss (losses dodged by refusing) "
-                f"{d.avoided_loss:+.2f}. These are reported separately and must NOT be netted -- a sum "
-                f"near zero can mean the refusals were well-calibrated OR that equal gains and losses "
-                f"were both missed, and those call for opposite responses."
+                f"\nCounterfactuals (P2 re-quotes of unfilled entries): {d.counterfactual_n} sampled. "
+                f"Forgone P&L (gains missed by refusing) {d.forgone_pnl:+.2f}; avoided loss (losses "
+                f"dodged by refusing) {d.avoided_loss:+.2f} -- both qty-weighted portfolio dollars, not "
+                f"per-spread. These are reported separately and must NOT be netted -- a sum near zero "
+                f"can mean the refusals were well-calibrated OR that equal gains and losses were both "
+                f"missed, and those call for opposite responses."
             )
         execution_block = (
             f"\nExecution: {d.submitted} submitted, {d.filled} FILLED, {d.unfilled_reject} unfilled-rejected "

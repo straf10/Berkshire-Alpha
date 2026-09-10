@@ -253,9 +253,19 @@ CREATE TABLE IF NOT EXISTS counterfactuals (
   ts_utc            TEXT    NOT NULL,
   would_have_filled INTEGER NOT NULL,
   entry_at_natural  REAL    NOT NULL,   -- signed, per share
+  -- docs/strategy_audit_and_loop.md §5 B3: the plan's net_mid at entry time,
+  -- alongside entry_at_natural -- lets a reader split hypothetical_pnl into
+  -- the mechanical cost of crossing mid->natural and the actual market move
+  -- without re-deriving it from plan_json. NULL for rows written before this
+  -- column existed.
+  net_mid           REAL,
   ev_at_entry       REAL    NOT NULL,   -- dollars per spread, at entry_at_natural
-  mark_to_market    REAL    NOT NULL,   -- current signed net mid, per share
+  mark_to_market    REAL    NOT NULL,   -- current signed net mid, per share (intrinsic value once settled)
   hypothetical_pnl  REAL    NOT NULL,   -- dollars per spread, entry_at_natural -> now
+  -- docs/strategy_audit_and_loop.md §5 B1: 1 once a terminal, intrinsic-value
+  -- settlement row has been written for this trade -- the tick never selects
+  -- a settled trade again. 0 for every live (still re-quotable) sample.
+  settled           INTEGER NOT NULL DEFAULT 0,
   detail            TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_counterfactuals_trade ON counterfactuals(trade_id);

@@ -204,9 +204,11 @@ CREATE TABLE IF NOT EXISTS counterfactuals (
   ts_utc            TEXT    NOT NULL,
   would_have_filled INTEGER NOT NULL,
   entry_at_natural  REAL    NOT NULL,
+  net_mid           REAL,
   ev_at_entry       REAL    NOT NULL,
   mark_to_market    REAL    NOT NULL,
   hypothetical_pnl  REAL    NOT NULL,
+  settled           INTEGER NOT NULL DEFAULT 0,
   detail            TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_counterfactuals_trade ON counterfactuals(trade_id);
