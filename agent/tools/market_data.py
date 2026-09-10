@@ -96,9 +96,19 @@ async def fetch_daily_bars_range(
     window once and slices per-session in memory. IEX feed: SIP's recency
     embargo doesn't apply to old settled dates, but a fixed feed keeps a
     multi-month batch job from depending on subscription tier."""
+    # Alpaca treats `end` as an exclusive datetime bound at that calendar
+    # day's midnight, but every daily bar is timestamped mid-day (04:00 UTC
+    # observed) -- so start=end=D silently returns nothing for D itself, and
+    # this function's own contract above ("the whole [start, end] range") is
+    # an INCLUSIVE range. +1 day makes `end` inclusive at the day
+    # granularity this function actually deals in. Confirmed empirically:
+    # end=D returns zero bars for D, end=D+1 returns exactly D's bar, no
+    # overshoot into D+1 itself (docs/strategy_audit_and_loop.md S0 Task 0d
+    # follow-up -- this broke B1's expiry-settlement branch in main.py,
+    # which always calls this with start=end=expiry).
     req = StockBarsRequest(
         symbol_or_symbols=list(symbols), timeframe=TimeFrame.Day,
-        start=start, end=end, adjustment=Adjustment.ALL, feed=DataFeed.IEX,
+        start=start, end=end + timedelta(days=1), adjustment=Adjustment.ALL, feed=DataFeed.IEX,
     )
     barset = await clients.get_stock_bars(req)
     return {

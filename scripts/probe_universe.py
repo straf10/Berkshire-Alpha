@@ -11,13 +11,17 @@ close, so an after-hours run understates every name.
 
     python scripts/probe_universe.py
 """
-import os, asyncio, httpx, datetime as dt, statistics
+import os, sys, asyncio, httpx, datetime as dt, statistics
+from pathlib import Path
 from dotenv import load_dotenv
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 load_dotenv(r"c:\Python\Alpaca_Hackathon\.env")
 H={"APCA-API-KEY-ID":os.environ["APCA_API_KEY_ID"],"APCA-API-SECRET-KEY":os.environ["APCA_API_SECRET_KEY"]}
-CAND=("SPY QQQ IWM DIA AAPL MSFT NVDA AMD AVGO TSLA META AMZN GOOGL NFLX INTC MU QCOM TXN CRM ORCL "
-      "ADBE CSCO PLTR SMCI ARM JPM BAC GS MS WFC V MA SCHW C AXP UNH LLY JNJ ABBV MRK PFE TMO "
-      "WMT COST HD PG KO PEP MCD NKE SBUX DIS XOM CVX CAT BA GE UBER T VZ").split()
+# docs/strategy_audit_and_loop.md S0 Task 0a: probe the LIVE UNVIERSE, not an
+# arbitrary superset -- NO_CHAIN was 37/50 of config.UNIVERSE itself, so the
+# diagnosis has to run against the exact list the agent trades, not a
+# hand-picked candidate pool that may not reproduce the failure at all.
+from agent.config import UNIVERSE as CAND
 today=dt.date.today()
 async def one(cl,s,sem):
     async with sem:

@@ -94,6 +94,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: npm install -g @railway/cli
+      # /config.revision (agent/config.py) reads RAILWAY_GIT_COMMIT_SHA /
+      # GIT_COMMIT_SHA / GITHUB_SHA from the container's own environment.
+      # `railway up` here deploys a local build from this runner rather than
+      # Railway's GitHub-integration checkout, so Railway never learns which
+      # commit it is and RAILWAY_GIT_COMMIT_SHA is never set -- GITHUB_SHA
+      # lives in this workflow's own environment and stops at the runner
+      # unless forwarded. Set it as a service variable before `up` so it
+      # lands in the container as GIT_COMMIT_SHA and /config.revision is
+      # never None again. --skip-deploys: the `railway up` right after this
+      # already deploys; without it, setting the variable would trigger a
+      # redundant deploy of its own.
+      - run: railway variable set "GIT_COMMIT_SHA=${{ github.sha }}" --service "$RAILWAY_SERVICE" --skip-deploys
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_SERVICE: ${{ secrets.RAILWAY_SERVICE }}
       - run: railway up --service "$RAILWAY_SERVICE" --detach
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}

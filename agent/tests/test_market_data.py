@@ -10,7 +10,13 @@ from alpaca.data.timeframe import TimeFrameUnit
 from agent.config import UNIVERSE
 from agent.tests.fixture_helpers import load_bar_data, make_barset
 from agent.tools import market_data
-from agent.tools.market_data import ChainCache, _build_chain_snapshot, fetch_leg_snapshots, fetch_universe_bars
+from agent.tools.market_data import (
+    ChainCache,
+    _build_chain_snapshot,
+    fetch_daily_bars_range,
+    fetch_leg_snapshots,
+    fetch_universe_bars,
+)
 
 
 async def test_bars_are_batched(fake_clients) -> None:
@@ -202,3 +208,28 @@ def test_entry_intake_still_rejects_what_pricing_now_allows() -> None:
     chain = _build_chain_snapshot("TST", raw)
     assert chain is not None
     assert chain.contracts == (), "data failures must still trip DEGENERATE_CHAIN"
+
+
+async def test_fetch_daily_bars_range_end_is_inclusive(fake_clients) -> None:
+    """docs/strategy_audit_and_loop.md S0 Task 0d follow-up: Alpaca treats
+    StockBarsRequest.end as an exclusive datetime bound at that calendar
+    day's midnight, so start=end=D silently returned zero bars for D itself
+    -- confirmed live against the real API, where it silently broke B1's
+    expiry-settlement branch in main.py (start=end=expiry, every time). The
+    fix passes end+1 day to the request; this test locks that in by
+    asserting on the request object itself rather than depending on a real
+    network call."""
+    captured: list[StockBarsRequest] = []
+
+    async def fake_get_stock_bars(req: StockBarsRequest):
+        captured.append(req)
+        return make_barset({})
+
+    fake_clients.get_stock_bars = fake_get_stock_bars
+
+    d = date(2026, 9, 4)
+    await fetch_daily_bars_range(fake_clients, ["NVDA"], d, d)
+
+    assert len(captured) == 1
+    assert captured[0].start == datetime(2026, 9, 4, 0, 0)
+    assert captured[0].end == datetime(2026, 9, 5, 0, 0)
