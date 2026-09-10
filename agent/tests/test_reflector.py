@@ -88,6 +88,37 @@ def test_digest_excludes_denylisted_reasons_from_binding_constraint() -> None:
     assert dict(d.gate_histogram)["DEGENERATE_CHAIN"] == 3
 
 
+def test_digest_excludes_approved_from_binding_constraint() -> None:
+    """docs/strategy_audit_and_loop.md S0 Task A3: entered decisions carry
+    gate_reason=GateReason.APPROVED (a success outcome, not a rejection).
+    `counts` is built from every row including these, so a session with a
+    good fill rate (the FILL_RATE branch never fires below) and a plurality
+    of ENTER decisions must not hand the model 'APPROVED' as something to
+    argue loosening -- NO_REGIME, the next-most-common actual rejection,
+    must win instead."""
+    rows = [
+        _row("APPROVED", action="ENTER"), _row("APPROVED", action="ENTER"),
+        _row("APPROVED", action="ENTER"),
+        _row("NO_REGIME"), _row("NO_REGIME"),
+    ]
+    d = reflector.digest(rows)
+    assert d.binding_constraint == "NO_REGIME"
+    assert d.constraint_count == 2
+    # The full histogram still carries APPROVED for context.
+    assert dict(d.gate_histogram)["APPROVED"] == 3
+
+
+def test_digest_returns_none_when_only_approved_observed() -> None:
+    """Counterpart to test_digest_returns_none_when_every_reason_is_
+    denylisted: an all-ENTER session (every row APPROVED, nothing ever
+    rejected) must also fall through to no-verdict, not surface 'APPROVED'
+    as the binding constraint."""
+    rows = [_row("APPROVED", action="ENTER"), _row("APPROVED", action="ENTER")]
+    d = reflector.digest(rows)
+    assert d.binding_constraint is None
+    assert d.constraint_count == 0
+
+
 def test_digest_defaults_outcome_block_when_no_trades_passed() -> None:
     """docs/review.md Task 7: every existing call site (and every session
     before Thursday's unwind) passes no trades at all -- must digest exactly

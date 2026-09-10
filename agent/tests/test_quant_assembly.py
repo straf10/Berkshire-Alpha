@@ -8,7 +8,7 @@ from agent.schemas.market import ChainSnapshot, DailyBar, MinuteBar, OptionQuote
 from agent.tests.fixture_helpers import load_chain_raw, load_trading_days
 from agent.tools import market_data
 from agent.tools.market_data import UniverseBars
-from agent.tools.quant import compute_snapshot
+from agent.tools.quant import SCREEN_STAGE_DATA_REJECTS, compute_snapshot
 
 _TS = datetime(2026, 8, 28, tzinfo=timezone.utc)
 SESSION_DATE = date(2026, 8, 31)
@@ -107,6 +107,32 @@ def test_degenerate_chain_dropped() -> None:
     assert snap.data_ok is False
     assert snap.drop_reason == "DEGENERATE_CHAIN"
     assert snap.vrp_ratio == 0.0  # inert default -- never computed from garbage data
+
+
+def test_screen_stage_data_rejects_matches_dropped_reasons() -> None:
+    """docs/strategy_audit_and_loop.md S0 Task A1. Every literal compute_
+    snapshot's _dropped() is ever called with must land in this set -- the
+    assert inside _dropped() itself already enforces that at runtime; this
+    pins the intended membership as a static list so a future addition shows
+    up in the diff."""
+    assert SCREEN_STAGE_DATA_REJECTS == frozenset({
+        "NO_CHAIN", "DEGENERATE_CHAIN", "NO_EXPIRY_IN_WINDOW", "INSUFFICIENT_BARS",
+        "NO_ATM_IV", "NO_SKEW_QUOTE", "ZERO_RV", "NO_MINUTE_BARS",
+    })
+
+
+def test_read_and_reflector_screen_reject_sets_are_supersets_of_quant() -> None:
+    """docs/strategy_audit_and_loop.md S0 Task A1/A2: read.py's funnel() and
+    reflector.py's REFLECTOR_DENYLIST both import SCREEN_STAGE_DATA_REJECTS
+    rather than hand-copying it, so this must hold by construction -- pinned
+    here as the property the two prior hand-copies silently violated (each
+    was independently missing NO_ATM_IV/NO_SKEW_QUOTE/ZERO_RV/
+    NO_MINUTE_BARS)."""
+    from agent.agents.reflector import REFLECTOR_DENYLIST
+    from agent.storage.read import _SCREEN_STAGE_REJECTS
+
+    assert SCREEN_STAGE_DATA_REJECTS <= _SCREEN_STAGE_REJECTS
+    assert SCREEN_STAGE_DATA_REJECTS <= REFLECTOR_DENYLIST
 
 
 def test_expiry_window_weekend_anchor() -> None:

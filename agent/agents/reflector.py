@@ -12,7 +12,17 @@ from agent.config import FILL_RATE_FLOOR, MIN_FILL_SAMPLE
 from agent.schemas.execution import STRUCTURE_IS_CREDIT, Structure
 from agent.schemas.llm import ReflectorOutput
 from agent.tools.llm import LlmPort, LlmUnavailable, LlmValidationDropped
+from agent.tools.quant import SCREEN_STAGE_DATA_REJECTS
 from agent.tools.walk_cap import quantize_cent, walk_cap
+
+# agent/agents/* may never import agent.risk (test_agent_import_graph.py's
+# test_agents_never_execute -- the gate takes no LLM input, so the LLM side
+# must not reach INTO the gate's own enum either), so GateReason.APPROVED's
+# value is inlined as a literal rather than imported. agent.risk.gates.
+# GateReason.APPROVED == "APPROVED" is a StrEnum member; this repo already
+# compares decisions.gate_reason against plain string literals everywhere
+# else (see _row's callers, REFLECTOR_DENYLIST itself).
+_APPROVED_GATE_REASON: Final[str] = "APPROVED"
 
 # Day 4 (docs/day4_action_plan.md Step 5). Post-market critique agent. Same
 # agent/agents/* contract as analysts.py/researchers.py/trader.py/risk_team.py:
@@ -28,17 +38,27 @@ from agent.tools.walk_cap import quantize_cent, walk_cap
 # marginal-liquidity chains. MAX_QUOTE_SPREAD_PCT and the walk-cap constants
 # are new P0 guardrails from the same audit -- denylisted pre-emptively so a
 # future reflection cannot recommend loosening them either.
-REFLECTOR_DENYLIST: Final[frozenset[str]] = frozenset({
-    "DEGENERATE_CHAIN", "MAX_QUOTE_SPREAD_PCT", "NO_CHAIN",
+#
+# docs/strategy_audit_and_loop.md S0 Task A2: agent.tools.quant.
+# SCREEN_STAGE_DATA_REJECTS -- the same set read.py's _SCREEN_STAGE_REJECTS
+# imports -- folded in here too. Those reasons (NO_CHAIN/DEGENERATE_CHAIN/
+# NO_EXPIRY_IN_WINDOW/INSUFFICIENT_BARS/NO_ATM_IV/NO_SKEW_QUOTE/ZERO_RV/
+# NO_MINUTE_BARS) are a data-availability floor, not a policy dial: "loosen
+# NO_ATM_IV" is not a coherent proposal in the way "loosen DEGENERATE_CHAIN"
+# at least parses as one. Before this fix the four newer members
+# (NO_ATM_IV/NO_SKEW_QUOTE/ZERO_RV/NO_MINUTE_BARS) were absent, hand-copied
+# out of sync with read.py's own (also-incomplete) copy of the same list.
+REFLECTOR_DENYLIST: Final[frozenset[str]] = SCREEN_STAGE_DATA_REJECTS | {
+    "MAX_QUOTE_SPREAD_PCT",
     # docs/fill_and_learning_plan.md P0-4/P1-1: WIDE_NET_SPREAD is the same
-    # class of liquidity guardrail as the three above -- it exists because a
+    # class of liquidity guardrail as the ones above -- it exists because a
     # chain this wide cannot be filled profitably, not because the agent is
     # too picky. FILL_RATE, below, is deliberately NOT in this set: it names
     # an execution-layer failure the Reflector should be free to report and
     # argue about (within a bounded proposed_change), unlike a liquidity gate
     # it must never argue to loosen.
     "WIDE_NET_SPREAD",
-})
+}
 
 
 @dataclass(frozen=True)
@@ -231,7 +251,21 @@ def digest(rows: Sequence[Mapping[str, Any]], trades: Sequence[Mapping[str, Any]
         # candidacy, don't just downrank it, or a session dominated by
         # DEGENERATE_CHAIN rejections would still hand the model the next-most-
         # common reason to build a "loosen this" argument around.
-        candidates = {r: c for r, c in counts.items() if r not in REFLECTOR_DENYLIST}
+        #
+        # docs/strategy_audit_and_loop.md S0 Task A3: `counts` is built from
+        # EVERY decisions row's gate_reason, including the entered ones --
+        # those carry gate_reason=GateReason.APPROVED (agent/risk/gates.py),
+        # a success outcome, not a rejection. Undenylisted, a session with a
+        # good fill rate (so the FILL_RATE branch above never fires) and a
+        # plurality of ENTER decisions would hand the model "APPROVED" as the
+        # thing standing between it and more trades -- nonsensical, since
+        # nothing rejected anything. REFLECTOR_DENYLIST stays reserved for
+        # actual guardrails the Reflector must never argue to loosen; this is
+        # a separate exclusion because APPROVED isn't a guardrail at all.
+        candidates = {
+            r: c for r, c in counts.items()
+            if r not in REFLECTOR_DENYLIST and r != _APPROVED_GATE_REASON
+        }
         if not candidates:
             binding_constraint = None
             constraint_count = 0

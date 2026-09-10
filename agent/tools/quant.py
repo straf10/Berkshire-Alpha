@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import statistics
 from datetime import date
-from typing import Sequence
+from typing import Final, Sequence
 
 from agent.config import (
     ANNUALISATION_DAYS,
@@ -240,7 +240,28 @@ def select_target_expiry(
     return max(candidates)
 
 
+# docs/strategy_audit_and_loop.md S0 Task A1/A2: the complete set of reasons
+# compute_snapshot's _dropped() ever returns -- every one of them means "this
+# symbol never reached the chain-building stage", so a symbol dropped for any
+# of these belongs in the screen-stage bucket (agent/storage/read.py's
+# _SCREEN_STAGE_REJECTS) and can never be a sensible thing for the Reflector
+# to argue to loosen (agent/agents/reflector.py's REFLECTOR_DENYLIST) -- you
+# cannot loosen "there was no data". Defined once, here, and imported into
+# both rather than hand-copied, so the next new drop reason can't silently
+# diverge into a third, different subset (it was already two before this fix:
+# read.py had NO_ATM_IV/NO_SKEW_QUOTE/ZERO_RV/NO_MINUTE_BARS missing, and
+# reflector.py had those same four missing, independently).
+SCREEN_STAGE_DATA_REJECTS: Final[frozenset[str]] = frozenset({
+    "NO_CHAIN", "DEGENERATE_CHAIN", "NO_EXPIRY_IN_WINDOW", "INSUFFICIENT_BARS",
+    "NO_ATM_IV", "NO_SKEW_QUOTE", "ZERO_RV", "NO_MINUTE_BARS",
+})
+
+
 def _dropped(symbol: str, session_date: date, reason: str) -> QuantSnapshot:
+    assert reason in SCREEN_STAGE_DATA_REJECTS, (
+        f"{reason!r} passed to _dropped() but missing from SCREEN_STAGE_DATA_REJECTS -- "
+        "add it there so read.py and reflector.py pick it up automatically."
+    )
     return QuantSnapshot(
         symbol=symbol,
         session_date=session_date,

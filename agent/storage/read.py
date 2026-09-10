@@ -9,6 +9,7 @@ import aiosqlite
 
 from agent.risk.counterfactual import hypothetical_pnl
 from agent.schemas.execution import STRUCTURE_IS_CREDIT, Structure
+from agent.tools.quant import SCREEN_STAGE_DATA_REJECTS
 from agent.tools.walk_cap import walk_cap
 
 # imported ONLY by api/. No mutating SQL statements below this line.
@@ -18,6 +19,17 @@ from agent.tools.walk_cap import walk_cap
 # reaching agent.execution directly.
 
 _CLOSING_INTENTS = {"BUY_TO_CLOSE", "SELL_TO_CLOSE"}
+
+# agent.tools.quant.SCREEN_STAGE_DATA_REJECTS is compute_snapshot's own set
+# of rejection reasons (docs/strategy_audit_and_loop.md S0 Task A1); the four
+# literals below are gate/screen rejections that never go through
+# compute_snapshot at all (NO_REGIME etc. come from the regime/momentum
+# screen, NOT_SHORTLISTED from the shortlist gate) so they stay listed here
+# rather than in the shared set. Module-level (not funnel()-local) so a test
+# can assert it stays a superset of SCREEN_STAGE_DATA_REJECTS.
+_SCREEN_STAGE_REJECTS: frozenset[str] = SCREEN_STAGE_DATA_REJECTS | {
+    "NO_REGIME", "DATA_NOT_OK", "DEBIT_NO_MOMENTUM_CONFIRMATION", "NOT_SHORTLISTED",
+}
 
 # One week. health_history allocates a dict entry per hour before reading any
 # row, so this bounds the allocation regardless of caller.
@@ -222,11 +234,6 @@ async def funnel(conn: aiosqlite.Connection, session_date: str | None = None) ->
         "(SELECT id FROM decisions WHERE session_date = ?)", (session_date,)
     )
     debated_ids = {r["decision_id"] for r in await cur.fetchall()}
-
-    _SCREEN_STAGE_REJECTS = {
-        "NO_REGIME", "DATA_NOT_OK", "DEBIT_NO_MOMENTUM_CONFIRMATION", "NOT_SHORTLISTED",
-        "DEGENERATE_CHAIN", "NO_CHAIN", "NO_EXPIRY_IN_WINDOW", "INSUFFICIENT_BARS",
-    }
 
     # BuildFailure (agent/strategy/spread_builder.py) and ProposalFailure
     # (agent/agents/trader.py) members -- see the `built` stage docstring above.
