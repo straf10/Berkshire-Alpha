@@ -228,12 +228,16 @@ def pnl_vrp_regression(trades: list[TradeResult]) -> dict[str, float] | None:
     the confirm-the-artifact diagnostic this proof shipped with also calls
     this directly on the pre-fix data).
 
-    Returns {"slope", "stderr", "n"} -- `stderr` is the standard OLS slope
-    standard error (sqrt(residual_variance / Sxx)), so callers can test
-    statistical significance (e.g. |slope| < k*stderr) instead of an
-    arbitrary fixed or pnl-scaled tolerance; a bound in slope-standard-errors
-    is the same test regardless of sample size or how noisy the P&L happens
-    to be.
+    Returns {"slope", "stderr", "n", "vrp_min", "vrp_max", "mean_abs_pnl"} --
+    `stderr` is the standard OLS slope standard error (sqrt(residual_variance
+    / Sxx)), so callers can test statistical significance (e.g. |slope| <
+    k*stderr) instead of an arbitrary fixed or pnl-scaled tolerance; a bound
+    in slope-standard-errors is the same test regardless of sample size or
+    how noisy the P&L happens to be. `vrp_min`/`vrp_max`/`mean_abs_pnl` let a
+    caller additionally bound EFFECT SIZE (|slope| * (vrp_max - vrp_min)
+    against mean_abs_pnl) -- a pure significance bound gets *weaker*, not
+    stronger, on a smaller (e.g. per-regime) sample, since stderr grows, so
+    F2 needs both (docs/f1_f3_remediation_plan.md S2.2).
 
     None for < 3 trades (need at least 1 residual degree of freedom, n - 2
     > 0) or zero vrp_ratio variance across the set -- "no slope is
@@ -255,7 +259,28 @@ def pnl_vrp_regression(trades: list[TradeResult]) -> dict[str, float] | None:
     sse = sum((y - (intercept + slope * x)) ** 2 for x, y in zip(xs, ys))
     residual_var = sse / (n - 2)
     stderr = math.sqrt(residual_var / sxx)
-    return {"slope": slope, "stderr": stderr, "n": float(n)}
+    return {
+        "slope": slope,
+        "stderr": stderr,
+        "n": float(n),
+        "vrp_min": min(xs),
+        "vrp_max": max(xs),
+        "mean_abs_pnl": statistics.fmean(abs(y) for y in ys),
+    }
+
+
+def pnl_vrp_regression_by_regime(trades: list[TradeResult]) -> dict[str, dict[str, float] | None]:
+    """Per-regime pnl_vrp_regression. Pooling CREDIT and DEBIT measures the
+    between-regime mean difference, not a within-regime slope: the two occupy
+    disjoint vrp_ratio ranges with structurally opposite signs (credit earns
+    +k*F, debit pays -k*F), so a pooled slope can sit near zero while both
+    components are large -- and on the real 503-trade log the pooled slope is
+    +50.78 while DEBIT alone is -1212.51, the opposite sign
+    (docs/f1_f3_remediation_plan.md S2)."""
+    by: dict[str, list[TradeResult]] = {}
+    for t in trades:
+        by.setdefault(t.regime.name, []).append(t)
+    return {name: pnl_vrp_regression(group) for name, group in sorted(by.items())}
 
 
 def write_report(trades: list[TradeResult], out_dir: str) -> None:
@@ -295,6 +320,19 @@ def write_report(trades: list[TradeResult], out_dir: str) -> None:
         boot = bootstrap_pnl(trades)
         w.writerow(["total_pnl", round(boot["total_pnl_p5"], 2), round(boot["total_pnl_p50"], 2), round(boot["total_pnl_p95"], 2)])
         w.writerow(["win_rate", round(boot["win_rate_p5"], 4), round(boot["win_rate_p50"], 4), round(boot["win_rate_p95"], 4)])
+
+    with open(os.path.join(out_dir, "vrp_neutrality.csv"), "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["regime", "n", "slope", "stderr", "vrp_min", "vrp_max", "mean_abs_pnl"])
+        by_regime = pnl_vrp_regression_by_regime(trades)
+        for regime, reg in by_regime.items():
+            if reg is None:
+                w.writerow([regime, "", "", "", "", "", ""])
+                continue
+            w.writerow([
+                regime, int(reg["n"]), round(reg["slope"], 4), round(reg["stderr"], 4),
+                round(reg["vrp_min"], 4), round(reg["vrp_max"], 4), round(reg["mean_abs_pnl"], 2),
+            ])
 
     with open(os.path.join(out_dir, "window_stability.csv"), "w", newline="") as f:
         w = csv.writer(f)

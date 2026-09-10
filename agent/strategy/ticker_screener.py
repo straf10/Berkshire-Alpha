@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import statistics
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
@@ -18,6 +19,20 @@ _UNIVERSE_INDEX: dict[str, int] = {sym: i for i, sym in enumerate(UNIVERSE)}
 
 def _clip(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
+
+
+def _winsorized_bounds(values: Sequence[float]) -> tuple[float, float]:
+    """10th/90th percentile of `values`, falling back to raw min/max below
+    n=10 (docs/f1_f3_remediation_plan.md F1.4) -- with CROSS_SECTION_N=4 and
+    ~10-13 clean names per scan, a thin cross-section is routine, and
+    statistics.quantiles on fewer than 10 points is not a percentile. Guards
+    composite_score's min-max normalisation, weighted 0.70 in the CREDIT
+    composite and 1 - term at 0.50 in DEBIT, against a single extreme
+    vrp_ratio reading flattening every other candidate toward 0."""
+    if len(values) < 10:
+        return min(values), max(values)
+    cuts = statistics.quantiles(values, n=10)
+    return cuts[0], cuts[-1]
 
 
 @dataclass(frozen=True)
@@ -95,10 +110,14 @@ def skew_threshold(snapshots: Sequence[QuantSnapshot]) -> float:
 
 def composite_score(q: QuantSnapshot, d: RegimeDecision, vrp_lo: float, vrp_hi: float) -> float:
     """Pre-LLM composite rank -- see docs/day2_spine_plan.md Group 4. `vrp_lo`/
-    `vrp_hi` are the min/max vrp_ratio over THIS scan's data_ok snapshots
-    (docs/day4_track_ab_plan.md §1.4): with the absolute 1.25/1.00 thresholds
-    retired by §1.3, renormalising against the observed cross-section keeps
-    every credit/debit candidate from collapsing onto a 0.0 term."""
+    `vrp_hi` are the winsorized (10th/90th percentile, n>=10; else raw
+    min/max) vrp_ratio bounds over THIS scan's data_ok snapshots
+    (docs/day4_track_ab_plan.md §1.4, docs/f1_f3_remediation_plan.md F1.4):
+    with the absolute 1.25/1.00 thresholds retired by §1.3, renormalising
+    against the observed cross-section keeps every credit/debit candidate
+    from collapsing onto a 0.0 term, and winsorizing keeps a single extreme
+    reading from flattening every other candidate toward 0 on a term
+    weighted 0.70 (CREDIT) / 0.50 (DEBIT)."""
     if d.regime == Regime.CREDIT:
         # Day 4 (docs/day4_action_plan.md Step 9): skew_abs's SIGN is noise
         # (median +0.06 across agent.db, negative 47% of the time), but its
@@ -140,7 +159,7 @@ def shortlist(
     and `vwm_bar` must be the SAME effective bar threaded into that same loop
     (docs/day4_action_plan.md Step 4)."""
     ok_vrps = [q.vrp_ratio for q in snapshots if q.data_ok]
-    vrp_lo, vrp_hi = (min(ok_vrps), max(ok_vrps)) if ok_vrps else (0.0, 0.0)
+    vrp_lo, vrp_hi = _winsorized_bounds(ok_vrps) if ok_vrps else (0.0, 0.0)
 
     candidates = []
     for q in snapshots:

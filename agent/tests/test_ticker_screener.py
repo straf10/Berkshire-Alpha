@@ -10,7 +10,13 @@ from agent.config import CROSS_SECTION_N, EARNINGS_DATES, MACRO_TICKERS, SHORTLI
 from agent.schemas.execution import Regime, Structure
 from agent.schemas.market import QuantSnapshot
 from agent.strategy.regime import RegimeDecision
-from agent.strategy.ticker_screener import assign_regimes, composite_score, shortlist, skew_threshold
+from agent.strategy.ticker_screener import (
+    _winsorized_bounds,
+    assign_regimes,
+    composite_score,
+    shortlist,
+    skew_threshold,
+)
 
 _BASE = QuantSnapshot(
     symbol="SPY",
@@ -189,6 +195,51 @@ def test_composite_score_skew_uses_magnitude() -> None:
     assert composite_score(positive, d, vrp_lo=1.00, vrp_hi=1.20) == pytest.approx(
         composite_score(negative, d, vrp_lo=1.00, vrp_hi=1.20)
     )
+
+
+def test_winsorized_bounds_falls_back_to_minmax_below_n10() -> None:
+    # docs/f1_f3_remediation_plan.md F1.4: statistics.quantiles on fewer than
+    # 10 points is not a percentile -- below n=10, use raw min/max.
+    values = [1.0, 1.5, 2.0, 50.0]
+    assert _winsorized_bounds(values) == (1.0, 50.0)
+
+
+def test_winsorized_bounds_clips_outlier_at_n10_plus() -> None:
+    # 20 well-behaved readings plus one extreme outlier: min/max would set
+    # vrp_hi=100 and compress every other candidate toward the bottom of the
+    # range; the winsorized (10th/90th percentile) bounds must not extend
+    # anywhere near the outlier. (At n just above the n>=10 floor a single
+    # outlier still pulls the 90th-percentile cut some -- this needs a wider
+    # sample to isolate the intended effect from that small-n interpolation
+    # noise.)
+    values = [1.0 + 0.1 * i for i in range(20)] + [100.0]
+    lo, hi = _winsorized_bounds(values)
+    assert lo >= 1.0
+    assert hi < 5.0  # far below the outlier at 100.0
+
+
+def test_shortlist_outlier_does_not_collapse_cross_section() -> None:
+    """docs/f1_f3_remediation_plan.md F1.4: a single extreme vrp_ratio must not
+    flatten every other CREDIT candidate's score toward 0 (the min-max
+    normaliser's failure mode, on a term weighted 0.70 in the composite)."""
+    d = RegimeDecision(Regime.CREDIT, Structure.BULL_PUT_SPREAD, "x", "TEST", None, None)
+    normal = [_snap(f"N{i}", vrp_ratio=1.0 + 0.1 * i, skew_abs=0.0, rsi=50.0) for i in range(20)]
+    outlier = _snap("OUT", vrp_ratio=100.0, skew_abs=0.0, rsi=50.0)
+    snaps = normal + [outlier]
+
+    ok_vrps = [q.vrp_ratio for q in snaps]
+    vrp_lo, vrp_hi = _winsorized_bounds(ok_vrps)
+    raw_lo, raw_hi = min(ok_vrps), max(ok_vrps)
+
+    # A mid-pack non-outlier candidate must score meaningfully above 0 on its
+    # credit term under the winsorized bounds -- under raw min/max
+    # (vrp_lo=1.0, vrp_hi=100.0) the same candidate is squashed to near 0
+    # (1.5/99.0 =~ 0.0051), unable to distinguish itself from the floor.
+    mid = normal[10]  # vrp_ratio=2.0, roughly the middle of the non-outlier pack
+    winsorized_term = (mid.vrp_ratio - vrp_lo) / max(vrp_hi - vrp_lo, 1e-9)
+    minmax_term = (mid.vrp_ratio - raw_lo) / max(raw_hi - raw_lo, 1e-9)
+    assert winsorized_term > 0.10
+    assert winsorized_term > 10 * minmax_term
 
 
 # Day 4 Step 3 contamination regression (docs/day4_action_plan.md §3.7):

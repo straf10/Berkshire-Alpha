@@ -5,13 +5,15 @@ from agent.backtest import dsr
 
 def test_n_trials_matches_trial_ledger_backfill() -> None:
     """docs/strategy_audit_and_loop.md S3.1/S4 P1/P3: the ledger has grown to
-    33 rows (docs/trial_ledger.md: 16 backfilled to 25, 26-28 for the
+    34 rows (docs/trial_ledger.md: 16 backfilled to 25, 26-28 for the
     p_success lognormal/ceiling/DTE-matched-RV trials, 29-32 for the
     CROSS_SECTION_N resize, the VWM_Z_STRONG/VRP_DEBIT_MAX decision pair, and
     the MAX_NET_SPREAD_WIDTH_PCT re-check, 33 for the synthetic chain's
-    iv_atm forecast -- blend toward RV_20 instead of the short window alone)
-    -- this constant must track it, not lead it (dsr.py's own comment)."""
-    assert dsr.N_TRIALS == 33
+    iv_atm forecast -- blend toward RV_20 instead of the short window alone,
+    34 for docs/f1_f3_remediation_plan.md F1.4's winsorized composite_score
+    normalisation) -- this constant must track it, not lead it (dsr.py's own
+    comment)."""
+    assert dsr.N_TRIALS == 34
 
 
 def test_main_picks_up_agent_db_path_set_only_via_dotenv(monkeypatch, capsys) -> None:

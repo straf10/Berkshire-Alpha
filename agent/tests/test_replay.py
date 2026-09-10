@@ -198,22 +198,80 @@ def _synthetic_market(rng: random.Random, n_symbols: int) -> _MarketData:
 
 
 def test_synthetic_chain_is_not_exploitable() -> None:
+    """docs/f1_f3_remediation_plan.md S2. A POOLED regression across CREDIT and
+    DEBIT measures the between-regime mean difference, not a within-regime
+    slope -- the two occupy disjoint vrp_ratio ranges with structurally
+    opposite P&L signs, so the pooled slope can have the OPPOSITE sign to a
+    component regime's own slope (real 503-trade log: pooled +50.78 vs DEBIT
+    alone -1212.51). Must regress per regime.
+
+    A t-bound alone is also too weak at real trade counts: per-regime n is
+    smaller than pooled n, so stderr is *larger*, and DEBIT's real t=-2.10
+    sits inside even a 3-SE bound while the slope implies a ~$606/trade swing
+    against a ~$168 mean |pnl| -- a t-test that waves through a 3.6x effect.
+    So this asserts BOTH significance (a t-bound) AND effect size (the P&L
+    swing the slope implies across the regime's own observed vrp range, vs
+    that regime's mean |pnl|).
+
+    CREDIT is asserted for real: it's the live system's dominant regime and
+    the proof's prediction is clean there. DEBIT is not asserted neutral --
+    a synthetic chain whose IV is built from the same estimators the screen
+    divides by cannot be made neutral there (synthetic_chain.iv_forecast's
+    own docstring; docs/f1_f3_remediation_plan.md S4) -- only bounded by a
+    documented regression ceiling, so this test still catches a harness that
+    gets WORSE without asserting a property it provably cannot have."""
     rng = random.Random(20260910)
     data = _synthetic_market(rng, n_symbols=len(UNIVERSE))
 
     trades = _simulate(data)
 
     assert len(trades) >= 30, f"only {len(trades)} settled trades -- not enough to regress meaningfully"
-    reg = payoff.pnl_vrp_regression(trades)
-    assert reg is not None
 
-    # A bound in slope-standard-errors is a statistical significance test
-    # (roughly a 99.7% two-sided bound at k=3), not an arbitrary fixed or
-    # pnl-scaled tolerance -- it holds regardless of sample size or how
-    # noisy this particular synthetic draw's P&L happens to be.
-    k = 3.0
-    assert abs(reg["slope"]) < k * reg["stderr"], (
-        f"pnl-vs-vrp_ratio slope={reg['slope']:.2f} is {abs(reg['slope']) / reg['stderr']:.1f} "
-        f"standard errors from zero (n={int(reg['n'])}, se={reg['stderr']:.2f}) -- the synthetic "
-        "chain is pricing off vrp_ratio, not off a neutral no-lookahead forecast"
+    by_regime = payoff.pnl_vrp_regression_by_regime(trades)
+
+    # A thin regime must fail loudly, not be silently skipped: pnl_vrp_regression
+    # returns None below n=3 or zero vrp variance, and a neutrality test that can
+    # be satisfied by a regime not trading enough is not a neutrality test.
+    for name in ("CREDIT", "DEBIT"):
+        reg = by_regime.get(name)
+        assert reg is not None and reg["n"] >= 30, (
+            f"regime {name} has too few trades ({0 if reg is None else int(reg['n'])}) to "
+            "assert vrp-neutrality against -- widen the synthetic universe/window rather than "
+            "silently skip this regime's check"
+        )
+
+    credit = by_regime["CREDIT"]
+    debit = by_regime["DEBIT"]
+
+    # Significance: a bound in slope-standard-errors (roughly a 99.7% two-sided
+    # bound at k=3.0 pooled; 2.5 per-regime as a Bonferroni-ish allowance for the
+    # second look, since two regimes are now tested separately).
+    k = 2.5
+    assert abs(credit["slope"]) < k * credit["stderr"], (
+        f"CREDIT pnl-vs-vrp_ratio slope={credit['slope']:.2f} is "
+        f"{abs(credit['slope']) / credit['stderr']:.1f} standard errors from zero "
+        f"(n={int(credit['n'])}, se={credit['stderr']:.2f}) -- the synthetic chain is pricing "
+        "off vrp_ratio, not off a neutral no-lookahead forecast"
+    )
+
+    # Effect size: the P&L swing the slope implies across CREDIT's own observed
+    # vrp range must be small relative to CREDIT's own mean |pnl| -- a pure
+    # significance bound gets WEAKER, not stronger, at the smaller per-regime n.
+    credit_effect = abs(credit["slope"]) * (credit["vrp_max"] - credit["vrp_min"])
+    credit_bound = 0.5 * credit["mean_abs_pnl"]
+    assert credit_effect < credit_bound, (
+        f"CREDIT slope={credit['slope']:.2f} implies a ${credit_effect:.2f}/trade swing across "
+        f"its observed vrp range [{credit['vrp_min']:.2f}, {credit['vrp_max']:.2f}], vs a bound of "
+        f"${credit_bound:.2f} (0.5x mean|pnl|=${credit['mean_abs_pnl']:.2f}) -- exceeds a "
+        "significant fraction of the regime's own P&L"
+    )
+
+    # DEBIT is NOT asserted neutral (see docstring) -- only a documented
+    # regression ceiling, so a harness that degrades further than the known
+    # structural artifact still fails the suite.
+    debit_ceiling = 5.0 * debit["mean_abs_pnl"] / max(debit["vrp_max"] - debit["vrp_min"], 1e-9)
+    assert abs(debit["slope"]) < debit_ceiling, (
+        f"DEBIT slope={debit['slope']:.2f} exceeds the documented regression ceiling "
+        f"({debit_ceiling:.2f}) -- DEBIT is a known non-neutral artifact "
+        "(docs/f1_f3_remediation_plan.md S4) but this bound catches it getting worse"
     )

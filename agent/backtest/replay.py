@@ -650,6 +650,17 @@ async def _amain() -> None:
     for reg, s in stats.items():
         print(f"  {reg}: {s['count']} trades, win_rate={s['win_rate']:.2%}, avg_pnl=${s['avg_pnl']:.2f}, total_pnl=${s['total_pnl']:.2f}")
     print(f"  TOTAL pnl: ${total_pnl:.2f}")
+    by_regime = payoff.pnl_vrp_regression_by_regime(trades)
+    for reg, r in by_regime.items():
+        if r is None:
+            print(f"  vrp_neutrality[{reg}]: not enough trades or zero vrp variance to regress")
+            continue
+        effect = abs(r["slope"]) * (r["vrp_max"] - r["vrp_min"])
+        print(
+            f"  vrp_neutrality[{reg}]: n={int(r['n'])} slope={r['slope']:.2f} "
+            f"stderr={r['stderr']:.2f} (t={abs(r['slope']) / r['stderr']:.2f}) "
+            f"effect=${effect:.2f} vs mean|pnl|=${r['mean_abs_pnl']:.2f}"
+        )
     stability = payoff.window_stability(trades)
     print(
         f"  window_stability: p_positive={stability['p_positive']:.2f}, "
