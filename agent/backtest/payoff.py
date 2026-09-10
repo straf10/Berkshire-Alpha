@@ -28,7 +28,7 @@ class TradeResult:
     # docs/strategy_audit_and_loop.md (2026-09-10 follow-up): the value
     # assign_regimes ranked this trade on at entry (quant.vrp_ratio, threaded
     # verbatim from the QuantSnapshot that built it) -- carried through so
-    # pnl_vrp_slope can check the harness isn't exploitable. Its ABSENCE here
+    # pnl_vrp_regression can check the harness isn't exploitable. Its ABSENCE here
     # is exactly why the Round-2 "fix" (replay.py's VRP tautology) shipped
     # with no test able to catch that it had replaced one tautology with a
     # subtler one: a synthetic chain priced off a stale/noisy forecast whose
@@ -52,7 +52,7 @@ def settle(
     intrinsic settlement value of each leg at `settle_spot`. No exit slippage --
     expiry settlement, not a market order. `vrp_ratio` is the entry-time value
     from the QuantSnapshot that built `plan`, carried through verbatim so it
-    can be checked against `realized_pnl` after the fact (pnl_vrp_slope)."""
+    can be checked against `realized_pnl` after the fact (pnl_vrp_regression)."""
     entry_cashflow = float(-entry_fill * 100)
 
     settlement_value = 0.0

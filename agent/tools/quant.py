@@ -107,28 +107,27 @@ def realised_vol_20(closes: Sequence[float]) -> float:
 def realised_vol_dte(closes: Sequence[float], dte: int) -> float:
     """Same estimator as realised_vol_20 (annualised stdev of winsorised
     log-returns), but over a trailing window matched to the position's own
-    DTE instead of the fixed RV_WINDOW=20 -- docs/strategy_audit_and_loop.md
-    §2 finding 1 (Horizon mismatch): a 20-day trailing RV is the wrong
-    denominator for a 3-7 day forward realized-vol comparison against ATM
-    IV, and understates it precisely during vol expansion -- exactly when
-    the short strike gets breached. Feeds vrp_ratio ONLY; rv_20 itself (the
-    QuantSnapshot field spread_builder.build's sqrt-time strike-placement
-    scaling and main.py's debug print both consume) is unaffected -- that
-    consumer already does its own DTE scaling via sqrt(dte/252) off the
-    same fixed, more-stable 20-day level, which is a different and still-
-    correct use of it.
+    DTE instead of the fixed RV_WINDOW=20.
+
+    NOT live: compute_snapshot stopped calling this as of
+    docs/f1_f3_remediation_plan.md F1.1 -- vrp_ratio's denominator was
+    reverted to rv_20. This estimator inflated vrp_ratio's median by ~41%
+    (small-sample + winsorisation bias) and its mean by ~5x (Jensen/
+    convexity on the 1/x), and scripts/signal_forward_test.py's MAE
+    comparison (docs/f1_f3_remediation_plan.md §0.1) showed it is also a
+    strictly worse forward-vol forecast than rv_20 at every DTE-band
+    horizon -- the deviation between the two carries no predictive content
+    at all (§0.3). Kept here, un-deleted, only because
+    scripts/signal_forward_test.py:143 still calls it -- that script is
+    what produced the evidence above and must keep working.
 
     Requires dte >= 2 (a single return has no variance to estimate) and
-    len(closes) >= dte + 1 -- both already guaranteed given DTE_MIN=3 and
-    the RV_WINDOW+1 bars gate upstream in compute_snapshot; still enforced
-    here since this is a general, re-usable estimator. A short window this
-    is still winsorised at the same RV_WINSOR_Z, even though a handful of
-    log-returns leaves an outlier a large share of the sample -- the cap
-    still bounds its influence rather than dropping it, consistent with
-    _winsorise's own reasoning. A short window is inherently noisier than
-    RV_20; docs/strategy_audit_and_loop.md §4 P1's vrp_ratio ceiling/
-    shrinkage in sizing.p_success is the deliberate downstream control for
-    that added variance, not a reason to avoid the DTE match."""
+    len(closes) >= dte + 1, both enforced here since this is a general,
+    re-usable estimator no longer guaranteed anything upstream. A short
+    window is still winsorised at the same RV_WINSOR_Z, even though a
+    handful of log-returns leaves an outlier a large share of the sample --
+    the cap still bounds its influence rather than dropping it, consistent
+    with _winsorise's own reasoning."""
     if dte < 2:
         raise ValueError(f"dte must be >= 2 to estimate a variance, got {dte}")
     if len(closes) < dte + 1:
