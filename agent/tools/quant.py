@@ -257,12 +257,6 @@ def vwm_zscore(
 # Expiry selection and assembly.
 # ---------------------------------------------------------------------------
 
-# Annualised-vol floor below which realised_vol_dte's short window is float
-# noise, not signal -- see its call site in compute_snapshot. Well below any
-# real single-digit-percent vol reading, comfortably above the ~1e-15-scale
-# residue a near-perfect cancellation of a handful of log-returns can leave.
-_RV_DTE_MIN: Final[float] = 1e-6
-
 
 def select_target_expiry(
     chain: ChainSnapshot, session_date: date, trading_days: frozenset[date]
@@ -385,18 +379,22 @@ def compute_snapshot(
     vwm_val = vwm(closes, volumes)
     vwm_z_val = vwm_zscore(closes, volumes)
     dte = (target_expiry - session_date).days
-    # docs/strategy_audit_and_loop.md §2/§4 P1: vrp_ratio compares IV_ATM
-    # (priced for THIS target_expiry/dte) against a realized-vol estimate on
-    # the SAME horizon, not the fixed 20-day trailing window rv_20 uses for
-    # its other consumers. Falls back to rv20 when the dte-window itself is
-    # degenerate -- either a flat run of closes, or (a short window's own
-    # failure mode a 20-day one essentially never hits) a handful of
-    # opposite-signed moves that nearly cancel, leaving a stdev so close to
-    # float noise that dividing by it would explode vrp_ratio into a
-    # meaningless number. rv20 is already known non-zero at this point, so
-    # this never divides by zero.
-    rv_dte = realised_vol_dte(closes, dte)
-    vrp = vrp_ratio(iv, rv_dte if rv_dte > _RV_DTE_MIN else rv20)
+    # docs/f1_f3_remediation_plan.md F1 (reverts §2/§4 P1's DTE-matched
+    # denominator, e356537/row 28): scripts/signal_forward_test.py's own
+    # validation (chain-free, n≈21,600 across DTE 3-7) contradicts the change
+    # it was meant to validate -- rv_20 has LOWER mean absolute error against
+    # actual forward realized vol than rv_dte at every horizon in the band,
+    # by 8-11% relative, and a separate chain-free measurement (n=8,250
+    # name-days) shows rv_dte's deviation from rv_20 carries ZERO predictive
+    # content for forward vol: FWD/rv_20 sits at ~1.00 across every bucket of
+    # that deviation, while FWD/rv_dte swings 4.5x. rv_dte was also both
+    # biased low (small-sample + its own winsorisation clips a 3-7 sample
+    # window) and 3x higher relative variance than rv_20 (50% vs 16% at
+    # dte=3) -- inflating vrp_ratio's median ~41% and its mean ~5x (Jensen/
+    # convexity in 1/x) with a quantity worth strictly less than zero once
+    # measured. iv_atm and rv20 are both already annualised, so this
+    # comparison is horizon-consistent without a DTE-matched window.
+    vrp = vrp_ratio(iv, rv20)
 
     return QuantSnapshot(
         symbol=symbol,

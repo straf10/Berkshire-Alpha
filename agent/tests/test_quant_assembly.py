@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
-from agent.config import RV_WINDOW
+from agent.config import ANNUALISATION_DAYS, RV_WINDOW
 from agent.schemas.market import ChainSnapshot, DailyBar, MinuteBar, OptionQuote
 from agent.tests.fixture_helpers import load_chain_raw, load_trading_days
 from agent.tools import market_data
@@ -250,14 +250,21 @@ def test_realised_vol_dte_rejects_insufficient_history() -> None:
         realised_vol_dte([100.0, 101.0, 99.0], 5)
 
 
-def test_vrp_ratio_uses_dte_matched_rv_not_rv20() -> None:
-    """docs/strategy_audit_and_loop.md §2/§4 P1 (Horizon mismatch): vrp_ratio
-    must compare IV_ATM against a realized-vol estimate on the SAME horizon
-    as the position's DTE, not the fixed 20-day trailing window -- a 20-day
-    trailing RV is the wrong denominator for a 3-7 day forward comparison.
-    Uses a price path with a genuine vol regime shift (volatile early, calmer
-    late) so RV_20 and the 5-DTE-matched RV diverge, and asserts the snapshot
-    reflects the DTE-matched one, not iv_atm / rv_20."""
+def test_vrp_ratio_uses_rv20_not_dte_matched_rv() -> None:
+    """docs/f1_f3_remediation_plan.md F1 (reverts §2/§4 P1's DTE-matched
+    denominator): vrp_ratio compares IV_ATM against RV_20, not a DTE-matched
+    realized-vol estimate. scripts/signal_forward_test.py's chain-free
+    validation (n≈21,600) found rv_dte has HIGHER mean absolute error than
+    rv_20 against actual forward realized vol at every horizon in the DTE
+    band, and a separate n=8,250 measurement found rv_dte's deviation from
+    rv_20 carries ZERO predictive content for forward vol -- so this
+    property, not the DTE match, is the one that must hold. Uses a price
+    path with a genuine vol regime shift (volatile early, calmer late) so
+    RV_20 and the 5-DTE-matched RV diverge, and asserts the snapshot's
+    vrp_ratio tracks RV_20 through that divergence, not the DTE-matched
+    estimator (which remains a real, tested function -- just no longer
+    compute_snapshot's caller; scripts/signal_forward_test.py still uses it
+    to produce that validation evidence)."""
     expiry = date(2026, 9, 5)  # 5 DTE from SESSION_DATE = 2026-08-31
 
     def _leg(strike: float, right: str, iv: float, delta: float) -> OptionQuote:
@@ -287,5 +294,53 @@ def test_vrp_ratio_uses_dte_matched_rv_not_rv20() -> None:
     rv_dte = realised_vol_dte(closes, snap.dte)
     assert rv_dte != pytest.approx(rv20, rel=0.05)  # the regime shift is real -- horizons disagree
     assert snap.rv_20 == pytest.approx(rv20)         # the stored field is UNCHANGED -- still the 20-day value
-    assert snap.vrp_ratio == pytest.approx(snap.iv_atm / rv_dte)
-    assert snap.vrp_ratio != pytest.approx(snap.iv_atm / rv20, rel=0.05)
+    assert snap.vrp_ratio == pytest.approx(snap.iv_atm / rv20)
+
+
+def test_vrp_ratio_denominator_is_an_unbiased_scale_not_an_inflating_one() -> None:
+    """docs/f1_f3_remediation_plan.md F1.5: the property rv_dte violated and
+    no prior test asserted -- for a price path with CONSTANT true vol (no
+    regime shift), vrp_ratio's denominator must be an unbiased scale of that
+    true vol, not one that systematically inflates the ratio. rv_dte's
+    ~41% median inflation (small-sample bias + its own 3-7-sample
+    winsorisation) and ~5x mean inflation (Jensen/convexity in 1/x, from its
+    ~50% relative SD at dte=3 vs rv_20's ~16%) are exactly what this would
+    have caught.
+
+    Log-returns are exact alternating +/-v (closes[i] = closes[i-1] *
+    exp((-1)**i * v)), so the path's true annualised vol is
+    sqrt(ANNUALISATION_DAYS) * v up to only the ordinary small-sample (N-1
+    vs N) correction any stdev-based estimator carries at N=20 -- comfortably
+    inside a 5% tolerance."""
+    v = 0.015
+    closes = [100.0]
+    for i in range(RV_WINDOW + 6):  # enough for RV_WINDOW=20 plus a 5-DTE expiry lookahead margin
+        closes.append(closes[-1] * math.exp((-1) ** i * v))
+
+    true_annualised_vol = math.sqrt(ANNUALISATION_DAYS) * v
+    multiplier = 1.15
+    iv = true_annualised_vol * multiplier
+
+    expiry = date(2026, 9, 5)  # 5 DTE from SESSION_DATE = 2026-08-31
+
+    def _leg(strike: float, right: str, delta: float) -> OptionQuote:
+        return OptionQuote(
+            occ_symbol=f"XYZ{expiry:%y%m%d}{right}{int(strike * 1000):08d}", underlying="XYZ",
+            expiry=expiry, strike=strike, right=right, bid=1.0, ask=1.1, delta=delta,
+            gamma=0.01, theta=-0.01, vega=0.05, iv=iv,
+        )
+
+    daily = _daily_bars(closes)
+    spot = closes[-1]
+    minute = (MinuteBar(ts=_TS, high=101.0, low=99.0, close=spot, volume=500_000.0),)
+    chain = ChainSnapshot(underlying="XYZ", fetched_at=_TS, contracts=(
+        _leg(spot, "C", 0.50), _leg(spot, "P", -0.50),
+        _leg(spot * 0.92, "P", -0.25),  # in SKEW_DELTA_BAND
+    ))
+
+    snap = compute_snapshot(
+        "XYZ", _bars_for("XYZ", daily, minute), chain=chain,
+        session_date=SESSION_DATE, trading_days=frozenset({expiry}),
+    )
+    assert snap.data_ok is True
+    assert snap.vrp_ratio == pytest.approx(iv / true_annualised_vol, rel=0.05)
