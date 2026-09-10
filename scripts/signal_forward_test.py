@@ -29,6 +29,17 @@ Every (signal, horizon, k) cell printed below is a trial in the sense of
 docs/report.md S1; printing only the best cell would be exactly the
 overfitting this report exists to flag, so every cell is reported.
 
+Also reports a second, unrelated chain-free comparison (docs/strategy_audit_
+and_loop.md §2/§4 P1 Task 3): the fixed RV_20 estimator vs a DTE-matched
+realised_vol_dte(h) estimator, forecasting the ACTUAL h-day-forward move
+magnitude across the same universe/history -- the one piece of that P1
+remediation list this script CAN validate, since it never touches an IV
+surface. The lognormal p_success transform and the vrp_ratio ceiling/
+shrinkage (the other two P1 items) compare a probability against realized
+breach outcomes, which needs an options chain by construction -- out of
+scope here by the same "no IV surface" rule, and validated instead by
+scripts/p_success_validation.py against genuinely settled trades.
+
     python scripts/signal_forward_test.py
 """
 from __future__ import annotations
@@ -38,6 +49,7 @@ import csv
 import datetime as dt
 import math
 import os
+import statistics
 
 from agent.config import (
     ANNUALISATION_DAYS,
@@ -53,10 +65,11 @@ from agent.config import (
 )
 from agent.execution.alpaca_client import AlpacaClients
 from agent.tools.market_data import fetch_daily_bars_range
-from agent.tools.quant import realised_vol_20, rsi, vwm_zscore
+from agent.tools.quant import realised_vol_20, realised_vol_dte, rsi, vwm_zscore
 
 _BARRIER_KS = (0.5, 1.0, 1.5)
 _OUT_CSV = "agent/backtest/output/signal_forward_test.csv"
+_RV_HORIZON_OUT_CSV = "agent/backtest/output/signal_forward_test_rv_horizon.csv"
 _LOOKBACK_DAYS = 730  # ~2 years of calendar days
 
 
@@ -83,6 +96,15 @@ async def main() -> None:
     # direction, rather than comparing against a flat 50/50.
     cond = {(sig, h, k): [0, 0] for sig in ("momentum", "mean_reversion") for h in horizons for k in _BARRIER_KS}
     base = {(sig, h, k): [0, 0] for sig in ("momentum", "mean_reversion") for h in horizons for k in _BARRIER_KS}
+
+    # docs/strategy_audit_and_loop.md §2/§4 P1 Task 3: chain-free comparison
+    # of the FIXED RV_20 estimator against a DTE-matched realised_vol_dte(h)
+    # estimator's forecast of the ACTUAL h-day-forward move magnitude --
+    # neither a directional signal nor a P&L claim, purely "whose predicted
+    # move size is closer to what happened". rv_errors[h] holds
+    # (predicted_20, predicted_dte, actual) triples, aggregated into MAE and
+    # signed bias per horizon below.
+    rv_errors: dict[int, list[tuple[float, float, float]]] = {h: [] for h in horizons}
 
     name_days = 0
     for sym in UNIVERSE:
@@ -114,6 +136,16 @@ async def main() -> None:
                 if fwd_idx >= n:
                     continue
                 spot_fwd = closes[fwd_idx]
+
+                actual_move = abs(math.log(spot_fwd / spot_now))
+                predicted_20 = rv20 * math.sqrt(h / ANNUALISATION_DAYS)
+                try:
+                    rv_h = realised_vol_dte(closes[:i], h)
+                    predicted_dte = rv_h * math.sqrt(h / ANNUALISATION_DAYS)
+                    rv_errors[h].append((predicted_20, predicted_dte, actual_move))
+                except ValueError:
+                    pass  # i < h + 1 never happens given need > DTE_MAX, but stay defensive
+
                 for k in _BARRIER_KS:
                     mom_hit = _barrier_hit(momentum_bullish, spot_now, spot_fwd, rv20, h, k)
                     entry = base[("momentum", h, k)]
@@ -159,6 +191,33 @@ async def main() -> None:
         for sig, h, k, n, hit_rate, base_rate, edge in rows:
             w.writerow([sig, h, k, n, round(hit_rate, 4), round(base_rate, 4), round(edge, 4)])
     print(f"\nwritten to {_OUT_CSV}")
+
+    print("\ndocs/strategy_audit_and_loop.md §2/§4 P1 Task 3: RV_20 vs DTE-matched RV, forecasting the")
+    print("ACTUAL h-day-forward move magnitude (|ln(spot_fwd/spot_now)|) -- lower MAE / bias closer to 0 wins.")
+    print("Neither column is a directional signal or a P&L claim.\n")
+    rv_header = f"{'h':>4}{'n':>10}{'MAE_rv20':>12}{'MAE_dte':>12}{'bias_rv20':>12}{'bias_dte':>12}{'dte_wins':>10}"
+    print(rv_header)
+    rv_rows = []
+    for h in horizons:
+        triples = rv_errors[h]
+        if not triples:
+            continue
+        mae_20 = statistics.fmean(abs(p20 - actual) for p20, _, actual in triples)
+        mae_dte = statistics.fmean(abs(pdte - actual) for _, pdte, actual in triples)
+        bias_20 = statistics.fmean(p20 - actual for p20, _, actual in triples)
+        bias_dte = statistics.fmean(pdte - actual for _, pdte, actual in triples)
+        rv_rows.append((h, len(triples), mae_20, mae_dte, bias_20, bias_dte))
+    for h, n, mae_20, mae_dte, bias_20, bias_dte in rv_rows:
+        dte_wins = "yes" if mae_dte < mae_20 else "no"
+        print(f"{h:>4}{n:>10}{mae_20:>12.4f}{mae_dte:>12.4f}{bias_20:>+12.4f}{bias_dte:>+12.4f}{dte_wins:>10}")
+
+    os.makedirs(os.path.dirname(_RV_HORIZON_OUT_CSV), exist_ok=True)
+    with open(_RV_HORIZON_OUT_CSV, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["horizon_days", "n", "mae_rv20", "mae_rv_dte", "bias_rv20", "bias_rv_dte"])
+        for h, n, mae_20, mae_dte, bias_20, bias_dte in rv_rows:
+            w.writerow([h, n, round(mae_20, 6), round(mae_dte, 6), round(bias_20, 6), round(bias_dte, 6)])
+    print(f"\nwritten to {_RV_HORIZON_OUT_CSV}")
 
 
 if __name__ == "__main__":

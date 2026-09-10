@@ -104,6 +104,40 @@ def realised_vol_20(closes: Sequence[float]) -> float:
     return math.sqrt(ANNUALISATION_DAYS) * statistics.stdev(_winsorise(log_returns))
 
 
+def realised_vol_dte(closes: Sequence[float], dte: int) -> float:
+    """Same estimator as realised_vol_20 (annualised stdev of winsorised
+    log-returns), but over a trailing window matched to the position's own
+    DTE instead of the fixed RV_WINDOW=20 -- docs/strategy_audit_and_loop.md
+    §2 finding 1 (Horizon mismatch): a 20-day trailing RV is the wrong
+    denominator for a 3-7 day forward realized-vol comparison against ATM
+    IV, and understates it precisely during vol expansion -- exactly when
+    the short strike gets breached. Feeds vrp_ratio ONLY; rv_20 itself (the
+    QuantSnapshot field spread_builder.build's sqrt-time strike-placement
+    scaling and main.py's debug print both consume) is unaffected -- that
+    consumer already does its own DTE scaling via sqrt(dte/252) off the
+    same fixed, more-stable 20-day level, which is a different and still-
+    correct use of it.
+
+    Requires dte >= 2 (a single return has no variance to estimate) and
+    len(closes) >= dte + 1 -- both already guaranteed given DTE_MIN=3 and
+    the RV_WINDOW+1 bars gate upstream in compute_snapshot; still enforced
+    here since this is a general, re-usable estimator. A short window this
+    is still winsorised at the same RV_WINSOR_Z, even though a handful of
+    log-returns leaves an outlier a large share of the sample -- the cap
+    still bounds its influence rather than dropping it, consistent with
+    _winsorise's own reasoning. A short window is inherently noisier than
+    RV_20; docs/strategy_audit_and_loop.md §4 P1's vrp_ratio ceiling/
+    shrinkage in sizing.p_success is the deliberate downstream control for
+    that added variance, not a reason to avoid the DTE match."""
+    if dte < 2:
+        raise ValueError(f"dte must be >= 2 to estimate a variance, got {dte}")
+    if len(closes) < dte + 1:
+        raise ValueError(f"need at least {dte + 1} closes for a {dte}-day window, got {len(closes)}")
+    window = closes[-(dte + 1):]
+    log_returns = _log_returns(window)
+    return math.sqrt(ANNUALISATION_DAYS) * statistics.stdev(_winsorise(log_returns))
+
+
 def atm_iv(chain: ChainSnapshot, expiry: date, spot: float) -> float | None:
     """IV of the contract whose strike is nearest `spot` in `expiry`.
     Averages the call and the put at that strike when both are usable.
@@ -222,6 +256,12 @@ def vwm_zscore(
 # ---------------------------------------------------------------------------
 # Expiry selection and assembly.
 # ---------------------------------------------------------------------------
+
+# Annualised-vol floor below which realised_vol_dte's short window is float
+# noise, not signal -- see its call site in compute_snapshot. Well below any
+# real single-digit-percent vol reading, comfortably above the ~1e-15-scale
+# residue a near-perfect cancellation of a handful of log-returns can leave.
+_RV_DTE_MIN: Final[float] = 1e-6
 
 
 def select_target_expiry(
@@ -344,8 +384,19 @@ def compute_snapshot(
     rsi_val = rsi(closes)
     vwm_val = vwm(closes, volumes)
     vwm_z_val = vwm_zscore(closes, volumes)
-    vrp = vrp_ratio(iv, rv20)
     dte = (target_expiry - session_date).days
+    # docs/strategy_audit_and_loop.md §2/§4 P1: vrp_ratio compares IV_ATM
+    # (priced for THIS target_expiry/dte) against a realized-vol estimate on
+    # the SAME horizon, not the fixed 20-day trailing window rv_20 uses for
+    # its other consumers. Falls back to rv20 when the dte-window itself is
+    # degenerate -- either a flat run of closes, or (a short window's own
+    # failure mode a 20-day one essentially never hits) a handful of
+    # opposite-signed moves that nearly cancel, leaving a stdev so close to
+    # float noise that dividing by it would explode vrp_ratio into a
+    # meaningless number. rv20 is already known non-zero at this point, so
+    # this never divides by zero.
+    rv_dte = realised_vol_dte(closes, dte)
+    vrp = vrp_ratio(iv, rv_dte if rv_dte > _RV_DTE_MIN else rv20)
 
     return QuantSnapshot(
         symbol=symbol,

@@ -3,12 +3,14 @@ from __future__ import annotations
 import math
 from datetime import date, datetime, timedelta, timezone
 
+import pytest
+
 from agent.config import RV_WINDOW
 from agent.schemas.market import ChainSnapshot, DailyBar, MinuteBar, OptionQuote
 from agent.tests.fixture_helpers import load_chain_raw, load_trading_days
 from agent.tools import market_data
 from agent.tools.market_data import UniverseBars
-from agent.tools.quant import SCREEN_STAGE_DATA_REJECTS, compute_snapshot
+from agent.tools.quant import SCREEN_STAGE_DATA_REJECTS, compute_snapshot, realised_vol_20, realised_vol_dte
 
 _TS = datetime(2026, 8, 28, tzinfo=timezone.utc)
 SESSION_DATE = date(2026, 8, 31)
@@ -215,3 +217,75 @@ def test_spot_is_the_live_minute_close_not_yesterdays_daily_close() -> None:
     assert snap.spot == 107.5                    # the live minute close, not daily[-1].close
     assert snap.iv_atm == 0.30                   # ATM resolves to the 108 strike, not the 100 strike
     assert snap.spot == minute[-1].close         # same price vwap_and_dev() uses as P_current
+
+
+def _regime_shift_closes(vol_early: float, vol_late: float, n_early: int = 15, n_late: int = 6) -> list[float]:
+    """A deterministic price path with a real volatility regime shift:
+    +/-vol_early alternating for n_early steps, then +/-vol_late for n_late
+    -- long enough (21 closes) for RV_WINDOW=20, short tail matched to a
+    5-DTE window below."""
+    closes = [100.0]
+    signs = (1, -1)
+    for i in range(n_early):
+        closes.append(closes[-1] * (1 + signs[i % 2] * vol_early))
+    for i in range(n_late):
+        closes.append(closes[-1] * (1 + signs[i % 2] * vol_late))
+    return closes
+
+
+def test_realised_vol_dte_matches_realised_vol_20s_own_math_at_window_20() -> None:
+    """realised_vol_dte is realised_vol_20's own estimator, parameterised --
+    at window=RV_WINDOW the two must agree exactly, not just approximately."""
+    closes = _regime_shift_closes(0.02, 0.02, n_early=15, n_late=6)
+    assert realised_vol_dte(closes, RV_WINDOW) == realised_vol_20(closes)
+
+
+def test_realised_vol_dte_rejects_a_window_too_short_to_estimate_a_variance() -> None:
+    with pytest.raises(ValueError, match="dte must be >= 2"):
+        realised_vol_dte([100.0, 101.0], 1)
+
+
+def test_realised_vol_dte_rejects_insufficient_history() -> None:
+    with pytest.raises(ValueError, match="need at least"):
+        realised_vol_dte([100.0, 101.0, 99.0], 5)
+
+
+def test_vrp_ratio_uses_dte_matched_rv_not_rv20() -> None:
+    """docs/strategy_audit_and_loop.md §2/§4 P1 (Horizon mismatch): vrp_ratio
+    must compare IV_ATM against a realized-vol estimate on the SAME horizon
+    as the position's DTE, not the fixed 20-day trailing window -- a 20-day
+    trailing RV is the wrong denominator for a 3-7 day forward comparison.
+    Uses a price path with a genuine vol regime shift (volatile early, calmer
+    late) so RV_20 and the 5-DTE-matched RV diverge, and asserts the snapshot
+    reflects the DTE-matched one, not iv_atm / rv_20."""
+    expiry = date(2026, 9, 5)  # 5 DTE from SESSION_DATE = 2026-08-31
+
+    def _leg(strike: float, right: str, iv: float, delta: float) -> OptionQuote:
+        return OptionQuote(
+            occ_symbol=f"XYZ{expiry:%y%m%d}{right}{int(strike * 1000):08d}", underlying="XYZ",
+            expiry=expiry, strike=strike, right=right, bid=1.0, ask=1.1, delta=delta,
+            gamma=0.01, theta=-0.01, vega=0.05, iv=iv,
+        )
+
+    closes = _regime_shift_closes(0.03, 0.02)
+    daily = _daily_bars(closes)
+    minute = (MinuteBar(ts=_TS, high=101.0, low=99.0, close=closes[-1], volume=500_000.0),)
+    spot = closes[-1]
+    chain = ChainSnapshot(underlying="XYZ", fetched_at=_TS, contracts=(
+        _leg(spot, "C", 0.20, 0.50), _leg(spot, "P", 0.20, -0.50),
+        _leg(spot * 0.92, "P", 0.25, -0.25),  # in SKEW_DELTA_BAND
+    ))
+
+    snap = compute_snapshot(
+        "XYZ", _bars_for("XYZ", daily, minute), chain=chain,
+        session_date=SESSION_DATE, trading_days=frozenset({expiry}),
+    )
+    assert snap.data_ok is True
+    assert snap.dte == 5
+
+    rv20 = realised_vol_20(closes)
+    rv_dte = realised_vol_dte(closes, snap.dte)
+    assert rv_dte != pytest.approx(rv20, rel=0.05)  # the regime shift is real -- horizons disagree
+    assert snap.rv_20 == pytest.approx(rv20)         # the stored field is UNCHANGED -- still the 20-day value
+    assert snap.vrp_ratio == pytest.approx(snap.iv_atm / rv_dte)
+    assert snap.vrp_ratio != pytest.approx(snap.iv_atm / rv20, rel=0.05)

@@ -113,6 +113,26 @@ JUDGED_ACCOUNT_NUMBER: Final[str] = "PA3UM9X4MN5X"
 # credit threshold, which is why the cross-section is ranked instead.
 VRP_CREDIT_MIN: Final[float] = 1.00
 VRP_DEBIT_MAX: Final[float] = 1.00
+# docs/strategy_audit_and_loop.md §2 finding 3 / §4 P1: sizing.p_success()
+# floored vrp_ratio at 0.5 (never divided by less) but set no ceiling --
+# IWM's observed 1.59 cut breach probability by 37% off a single noisy
+# point estimate, unchecked. VRP_RATIO_CEILING is the log-symmetric mirror
+# of the existing floor (0.5 and 2.0 are reciprocals -- IV may be treated as
+# under- or overstating realised vol by at most 2x either way, a
+# geometrically neutral bound, not a fit to any one session's data).
+# VRP_SHRINKAGE_FACTOR pulls the floored-and-capped ratio partway back
+# toward the neutral value 1.0 (no premium either direction) -- the same
+# "trust the point estimate only partially" logic KELLY_FRACTION's own
+# half-Kelly precedent already uses elsewhere in this file, applied here
+# because realised_vol_dte's short DTE-matched window (replacing rv_20 as
+# vrp_ratio's denominator, same audit section) is a noisier estimate than
+# the 20-day one it replaced. Both are a trial, not a measured calibration:
+# logged in docs/trial_ledger.md pending scripts/signal_forward_test.py
+# validation of the DTE-matched RV estimator that makes the extra noise
+# these two constants exist to control.
+VRP_RATIO_FLOOR: Final[float] = 0.5
+VRP_RATIO_CEILING: Final[float] = 2.0
+VRP_SHRINKAGE_FACTOR: Final[float] = 0.5    # 1.0 = no shrinkage, 0.0 = fully pinned to 1.0
 RV_WINDOW: Final[int] = 20
 ANNUALISATION_DAYS: Final[int] = 252
 DTE_MIN: Final[int] = 3

@@ -1,12 +1,26 @@
 from __future__ import annotations
 
+import statistics
 from datetime import date
 from decimal import Decimal
 
 import pytest
 
+from agent.config import VRP_RATIO_CEILING, VRP_RATIO_FLOOR, VRP_SHRINKAGE_FACTOR
 from agent.risk.sizing import p_success, size_position
 from agent.schemas.execution import Intent, Leg, Regime, SpreadPlan, Structure
+
+_ND = statistics.NormalDist()
+
+
+def _vrp_shrunk(vrp: float) -> float:
+    """Mirrors p_success's own clamp-then-shrink-toward-1 pipeline
+    (VRP_RATIO_FLOOR/CEILING/SHRINKAGE_FACTOR), so tests compute expected
+    values from the same config constants the code uses rather than
+    hardcoding numbers that would silently drift if those trial values are
+    later re-tuned."""
+    clamped = min(max(vrp, VRP_RATIO_FLOOR), VRP_RATIO_CEILING)
+    return 1.0 + VRP_SHRINKAGE_FACTOR * (clamped - 1.0)
 
 EXPIRY = date(2026, 9, 4)
 
@@ -89,28 +103,113 @@ def test_p_success_credit_vs_debit() -> None:
 
 
 def test_p_success_deflates_by_vrp() -> None:
-    # docs/day4_track_ab_plan.md §1.1 worked example: 27.5-delta short, VRP 1.30
-    # -> d_phys = 0.275 / 1.30, p = 1 - d_phys ~= 0.788.
+    # docs/strategy_audit_and_loop.md §2/§4 P1: lognormal form, d_phys =
+    # Phi(vrp_shrunk * Phi^-1(d_rn)), NOT the old d_rn / vrp -- and vrp is
+    # itself clamped to [VRP_RATIO_FLOOR, VRP_RATIO_CEILING] then shrunk
+    # toward 1.0 by VRP_SHRINKAGE_FACTOR before feeding the transform.
+    # 27.5-delta short, VRP 1.30 (inside both bounds, so only shrinkage
+    # moves it) -> p ~= 0.754, vs the old, pre-audit linear/unshrunk value
+    # of 0.7885 -- the two disagree by more than a rounding error.
+    expected_d_phys = _ND.cdf(_vrp_shrunk(1.30) * _ND.inv_cdf(0.275))
     p = p_success(Structure.BULL_PUT_SPREAD, -0.275, 1.30)
-    assert p == pytest.approx(1.0 - 0.275 / 1.30, abs=1e-9)
-    assert p == pytest.approx(0.7885, abs=1e-3)
-    # VRP == 1.0 leaves the risk-neutral delta unchanged.
+    assert p == pytest.approx(1.0 - expected_d_phys, abs=1e-9)
+    assert p == pytest.approx(0.7541, abs=1e-3)
+    # VRP == 1.0 is a no-op for BOTH the clamp/shrink pipeline (1.0 is
+    # already the neutral value) and the lognormal identity Phi(Phi^-1(x))
+    # == x, so the risk-neutral delta passes through unchanged -- the one
+    # point every version of this function, old and new, must agree on.
     assert p_success(Structure.BULL_PUT_SPREAD, -0.275, 1.0) == pytest.approx(0.725)
 
 
 def test_p_success_clamps() -> None:
-    # VRP 0.1 is floored at 0.5 in the denominator (never divided by 0.1 directly).
-    assert p_success(Structure.BULL_CALL_SPREAD, 0.40, 0.1) == pytest.approx(0.80)
-    # delta 0.99 at VRP 1.0 clamps d_phys at the 0.95 ceiling.
+    # VRP 0.1 clamps to VRP_RATIO_FLOOR (0.5), then shrinks toward 1.0,
+    # before ever feeding the lognormal transform -- NOT used directly as
+    # the Phi^-1 scale factor, and NOT the old 0.40 / 0.5 = 0.80 linear value.
+    expected = _ND.cdf(_vrp_shrunk(0.1) * _ND.inv_cdf(0.40))
+    assert p_success(Structure.BULL_CALL_SPREAD, 0.40, 0.1) == pytest.approx(expected, abs=1e-9)
+    assert p_success(Structure.BULL_CALL_SPREAD, 0.40, 0.1) == pytest.approx(0.4247, abs=1e-3)
+    # A VRP far above VRP_RATIO_CEILING clamps there before shrinking --
+    # regression guard for the ceiling half of Task 2 (the floor was already
+    # covered above; this is the piece that didn't exist before).
+    ceiling_expected = _ND.cdf(_vrp_shrunk(5.0) * _ND.inv_cdf(0.30))
+    assert p_success(Structure.BULL_PUT_SPREAD, -0.30, 5.0) == pytest.approx(1.0 - ceiling_expected, abs=1e-9)
+    assert _vrp_shrunk(5.0) == pytest.approx(_vrp_shrunk(VRP_RATIO_CEILING))  # same as clamping at the ceiling itself
+    # delta 0.99 at VRP 1.0: Phi(Phi^-1(0.99)) == 0.99 exactly (vrp==1 is a
+    # no-op through the whole pipeline), then the 0.95 ceiling clamps it --
+    # same outcome the old linear form gave, since every version agrees at
+    # vrp_ratio == 1.
     assert p_success(Structure.BULL_CALL_SPREAD, 0.99, 1.0) == pytest.approx(0.95)
+
+
+def test_p_success_identical_to_linear_form_only_at_vrp_one() -> None:
+    """Phi(Phi^-1(x)) == x is an identity and clamp-then-shrink is a no-op at
+    vrp_ratio == 1.0, so at that one point the current function and the
+    original pre-audit linear/unshrunk form must agree exactly, for any
+    delta -- the one point every version of this function is guaranteed to
+    coincide on."""
+    for delta in (0.10, 0.223, 0.275, 0.329, 0.45, 0.80):
+        d_phys_linear = max(0.05, min(0.95, delta / 1.0))
+        p_credit = p_success(Structure.BULL_PUT_SPREAD, delta, 1.0)
+        assert p_credit == pytest.approx(1.0 - d_phys_linear, abs=1e-9)
+
+
+def test_p_success_error_vs_linear_form_changes_sign_across_short_delta_band() -> None:
+    """docs/strategy_audit_and_loop.md §2: the linear and lognormal forms
+    disagree by an error that changes SIGN somewhere near the middle of
+    SHORT_DELTA_BAND (0.22, 0.33) -- optimistic (linear > lognormal p) at the
+    top of the band, pessimistic at the bottom. Reproduces the audit's own
+    AAPL (delta 0.329) and QQQ (delta 0.223) examples at their observed VRPs,
+    both credit spreads, put through the SAME clamp/shrink pipeline as the
+    real code so this isolates the functional-form claim from Task 2's
+    separate ceiling/shrinkage change."""
+    def p_linear(delta: float, vrp: float) -> float:
+        return 1.0 - max(0.05, min(0.95, delta / _vrp_shrunk(vrp)))
+
+    high_delta_p_lognormal = p_success(Structure.BULL_PUT_SPREAD, 0.329, 1.55)
+    high_delta_p_linear = p_linear(0.329, 1.55)
+    assert high_delta_p_lognormal < high_delta_p_linear  # lognormal form is LESS optimistic here
+
+    low_delta_p_lognormal = p_success(Structure.BULL_PUT_SPREAD, 0.223, 1.50)
+    low_delta_p_linear = p_linear(0.223, 1.50)
+    assert low_delta_p_lognormal > low_delta_p_linear  # and MORE optimistic here -- the sign flips
+
+
+def test_p_success_vrp_ceiling_and_shrinkage_are_identity_at_vrp_one() -> None:
+    """docs/strategy_audit_and_loop.md §2 finding 3 / §4 P1: the ceiling and
+    shrinkage this task adds must never disturb a fairly-priced spread
+    (vrp_ratio == 1) -- only one that has moved away from 1. A VRP just
+    below the ceiling and one well above it must land on DIFFERENT
+    probabilities (the ceiling is doing real clamping work, not a no-op),
+    while VRP 1.0 stays exactly at the risk-neutral delta."""
+    assert p_success(Structure.BULL_PUT_SPREAD, -0.30, 1.0) == pytest.approx(0.70)
+    below_ceiling = p_success(Structure.BULL_PUT_SPREAD, -0.30, VRP_RATIO_CEILING - 0.01)
+    above_ceiling = p_success(Structure.BULL_PUT_SPREAD, -0.30, VRP_RATIO_CEILING + 3.0)
+    assert below_ceiling != pytest.approx(above_ceiling, abs=1e-6)
+    # A vrp far beyond the ceiling still clamps to the SAME value the
+    # ceiling itself gives -- proof the ceiling, not the raw input, is what
+    # determines the outcome above it.
+    assert above_ceiling == pytest.approx(p_success(Structure.BULL_PUT_SPREAD, -0.30, VRP_RATIO_CEILING))
+
+
+def test_p_success_handles_delta_near_the_domain_boundary() -> None:
+    """NormalDist.inv_cdf requires p strictly inside (0, 1); a delta of
+    exactly 0.0 or 1.0 never occurs on a real chain, but p_success must not
+    crash on one -- regression guard for the epsilon clamp the lognormal
+    form needs that the old linear form (plain division) never did."""
+    assert 0.0 <= p_success(Structure.BULL_PUT_SPREAD, 0.0, 1.2) <= 1.0
+    assert 0.0 <= p_success(Structure.BULL_CALL_SPREAD, 1.0, 1.2) <= 1.0
 
 
 def test_fairly_priced_credit_now_passes_kelly() -> None:
     """docs/day4_track_ab_plan.md §1.1 -- D3: feeding the risk-neutral delta
     straight into Kelly makes a fairly-priced (VRP == 1.0) credit spread
     NEGATIVE_EDGE by construction; deflating by a real VRP > 1.0 restores a
-    genuine, capped edge. 27.5-delta short, $5-wide vertical, $1.25 credit
-    ($125 max profit / $375 max loss per spread)."""
+    genuine edge. 27.5-delta short, $5-wide vertical, $1.25 credit ($125 max
+    profit / $375 max loss per spread). docs/strategy_audit_and_loop.md §2/
+    §4 P1's lognormal form plus vrp_ratio shrinkage makes this a SMALLER
+    restored edge than the original pre-audit linear/unshrunk transform gave
+    (no longer capped at MAX_RISK_PER_TRADE_PCT at this VRP) -- deliberately
+    a more conservative number, still clearly positive and clearly sized."""
     p_before = p_success(Structure.BULL_PUT_SPREAD, -0.275, 1.0)
     before = size_position(_plan(p=p_before, max_profit="125", max_loss="375"), Decimal("100000"))
     assert before.kelly_fraction < 0
@@ -120,7 +219,8 @@ def test_fairly_priced_credit_now_passes_kelly() -> None:
     after = size_position(_plan(p=p_after, max_profit="125", max_loss="375"), Decimal("100000"))
     assert after.kelly_fraction > 0
     assert after.reason is None
-    assert after.risk_dollars == Decimal("2000")  # capped at MAX_RISK_PER_TRADE_PCT
+    assert after.risk_dollars < Decimal("2000")  # no longer hits the MAX_RISK_PER_TRADE_PCT cap at this VRP
+    assert after.qty >= 1
 
 
 def test_negative_edge_still_reachable() -> None:
