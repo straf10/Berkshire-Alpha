@@ -569,7 +569,18 @@ RECONCILE_MAX_CHAIN_HOPS: Final[int] = 32   # replace-chain follow limit
 # generates a Black-Scholes chain per session/symbol to feed the real,
 # unmodified spread_builder.build(). None of these affect the live agent.
 BACKTEST_SLIPPAGE_PCT: Final[Decimal] = Decimal("0.10")   # fixed haircut on modeled entry fill
-BACKTEST_IV_RV_MULTIPLIER: Final[float] = 1.15             # synthetic ATM IV = RV_20 * this
+BACKTEST_IV_RV_MULTIPLIER: Final[float] = 1.15             # synthetic ATM IV = short-window RV * this
+# docs/strategy_audit_and_loop.md S0 Task B (the VRP tautology). iv_atm used
+# to be BACKTEST_IV_RV_MULTIPLIER * RV_20 -- the same RV_20 quant.vrp_ratio
+# divides by -- so vrp_ratio = iv_atm / rv_20 was pinned to
+# BACKTEST_IV_RV_MULTIPLIER (~1.15) for every name and every session, always
+# above VRP_DEBIT_MAX=1.00: Regime.DEBIT was structurally unreachable in
+# every replay, not just an unlucky window (replay.py:350-361 already said so
+# honestly). BACKTEST_IV_TERM_WINDOW is the short trailing window (trading
+# days) a genuine term-structure ratio (short-window RV / RV_20) is computed
+# over instead -- real variation sourced from the historical price path
+# itself, not a fabricated random draw, so replay stays exactly reproducible.
+BACKTEST_IV_TERM_WINDOW: Final[int] = 5                    # ~1 trading week vs RV_WINDOW's ~1 month
 BACKTEST_SKEW_SLOPE: Final[float] = 0.5                    # IV points of equity-style put skew per unit OTM moneyness
 BACKTEST_CHAIN_SPREAD_PCT: Final[float] = 0.03              # synthetic bid/ask width as a fraction of BS mid
 BACKTEST_STRIKE_RANGE_PCT: Final[float] = 0.15               # synthetic strike grid, matches ChainCache's live bounds

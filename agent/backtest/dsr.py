@@ -15,11 +15,13 @@ import statistics
 from datetime import date, datetime
 from typing import Final
 
+from dotenv import load_dotenv
+
 from agent.storage import db
 
 # Row count in docs/trial_ledger.md as of the sealed window (docs/preregistration.md).
 # Bump only after adding a row there -- this constant must never lead the ledger.
-N_TRIALS: Final[int] = 16
+N_TRIALS: Final[int] = 25
 
 
 def min_track_record_length(sr: float, skew: float, kurtosis: float, alpha: float = 0.05) -> float:
@@ -51,10 +53,30 @@ async def _daily_equity(db_path: str) -> list[tuple[date, float]]:
 
 
 def _main() -> None:
-    daily = asyncio.run(_daily_equity(os.environ.get("AGENT_DB_PATH", "./agent.db")))
+    # docs/strategy_audit_and_loop.md S0/S3.1: agent.storage.db.connect already
+    # dispatches AGENT_DB_PATH to Postgres transparently (_is_postgres) --
+    # every DSR/MinTRL number in the audit was a *capability* statement, not
+    # a measured one, only because this file never called load_dotenv() the
+    # way agent.config.load_settings() does. A postgres:// DSN set in .env
+    # (not exported to the shell) was invisible to a bare os.environ.get()
+    # here, so this silently fell through to the empty local ./agent.db --
+    # the exact "looks like it ran, actually a no-op" failure mode the rest
+    # of this audit is about. Not routed through load_settings() itself: that
+    # also _require_env()'s the Alpaca API keys, which this script has no use
+    # for and should not need to have configured just to read equity history.
+    load_dotenv()
+    db_path = os.environ.get("AGENT_DB_PATH", "./agent.db")
+    backend = "Postgres" if db._is_postgres(db_path) else f"SQLite ({db_path})"
+    print(f"reading daily equity from: {backend}")
+    daily = asyncio.run(_daily_equity(db_path))
     if len(daily) < 3:
         print(f"{len(daily)} daily equity point(s) in greeks_snapshots -- not enough for a return series.")
         print("MinTRL/DSR need daily returns; see docs/preregistration.md for the sealed window this feeds.")
+        if backend != "Postgres":
+            print(
+                "Reading SQLite, not Postgres -- if you meant to read production, set AGENT_DB_PATH to "
+                "its postgres:// DSN (in .env or the shell environment) before re-running."
+            )
         return
     returns = [daily[i][1] / daily[i - 1][1] - 1 for i in range(1, len(daily))]
     mean = statistics.fmean(returns)

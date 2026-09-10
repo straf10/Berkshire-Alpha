@@ -26,17 +26,20 @@ import argparse
 import asyncio
 import csv
 import logging
+import math
 import os
 import statistics
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any
+from typing import Any, Sequence
 
 import pytz
 
 from agent.config import (
+    ANNUALISATION_DAYS,
     BACKTEST_IV_RV_MULTIPLIER,
+    BACKTEST_IV_TERM_WINDOW,
     BACKTEST_SLIPPAGE_PCT,
     CROSS_SECTION_N,
     DTE_MAX,
@@ -80,6 +83,21 @@ class _ChainMap:
 
     def get(self, symbol: str) -> ChainSnapshot | None:
         return self._chains.get(symbol)
+
+
+def _short_term_rv(closes: Sequence[float], window: int) -> float:
+    """Same annualised-stdev-of-log-returns estimator as quant.realised_vol_20
+    (agent/tools/quant.py), over a shorter trailing `window` instead of the
+    fixed RV_WINDOW=20 -- docs/strategy_audit_and_loop.md S0 Task B (the VRP
+    tautology). Deliberately NOT winsorised, unlike quant.realised_vol_20: a
+    short window is already narrow enough that clipping outliers would throw
+    away most of its signal, and this feeds only the synthetic backtest
+    chain, never the live signal path quant.py's winsorisation protects.
+    Caller guarantees len(closes) >= window + 1 (the RV_WINDOW=20 gate in
+    _simulate already covers BACKTEST_IV_TERM_WINDOW=5)."""
+    recent = closes[-(window + 1):]
+    log_returns = [math.log(recent[i] / recent[i - 1]) for i in range(1, len(recent))]
+    return math.sqrt(ANNUALISATION_DAYS) * statistics.stdev(log_returns)
 
 
 def _pick_expiry(session_date: date, trading_days: frozenset[date]) -> date | None:
@@ -188,7 +206,19 @@ def _simulate(
             if rv20 == 0.0:
                 chains[sym] = None
                 continue
-            iv_atm = rv20 * iv_multiplier
+            # docs/strategy_audit_and_loop.md S0 Task B: iv_atm used to be
+            # rv20 * iv_multiplier -- the same rv20 vrp_ratio divides by below
+            # -- which pinned vrp_ratio to iv_multiplier for every name/
+            # session and made Regime.DEBIT (vrp_ratio <= VRP_DEBIT_MAX)
+            # structurally unreachable. rv_short is a genuine, deterministic
+            # term-structure signal (short trailing RV vs the 20-day one)
+            # computed from the real historical price path, so vrp_ratio now
+            # actually varies instead of being a constant in disguise.
+            rv_short = _short_term_rv(closes, BACKTEST_IV_TERM_WINDOW)
+            if rv_short == 0.0:
+                chains[sym] = None
+                continue
+            iv_atm = rv_short * iv_multiplier
             chains[sym] = generate_chain(sym, session_date, target_expiry, closes[-1], iv_atm)
 
         snapshots = quant.compute_all(bars, _ChainMap(chains), session_date, trading_days)
@@ -351,13 +381,14 @@ async def _run_param_sweep(
     if debit_starved:
         print(
             "\nCAVEAT: zero DEBIT-regime trades entered in ANY cell (verified at vwm_z_strong down to 0.01,"
-            " ruling out a threading bug) -- BACKTEST_IV_RV_MULTIPLIER=1.15 floors every session/symbol's"
-            " synthetic vrp_ratio (IV/RV) at ~1.03-1.21 in this window, which never drops below"
-            " VRP_DEBIT_MAX=1.00, so ticker_screener.assign_regimes never assigns Regime.DEBIT at all."
-            " VWM_Z_STRONG only gates the DEBIT branch (agent/strategy/regime.py:97) -- with DEBIT"
-            " structurally unreachable, this sweep's flatness on VWM_Z_STRONG is a real finding about the"
-            " backtest harness (100% CREDIT trades, every run, not just this sweep), not evidence that"
-            " the live strategy is insensitive to VWM_Z_STRONG."
+            " ruling out a threading bug) -- as of docs/strategy_audit_and_loop.md S0 Task B this is no"
+            " longer structural (synthetic vrp_ratio now varies by name/session via a real short-vs-long RV"
+            " term-structure ratio, not a constant iv_multiplier), so a debit-starved window is a genuine"
+            " finding about --start/--end's actual volatility path, not a floor on VRP_DEBIT_MAX=1.00 that"
+            " no input could ever cross. VWM_Z_STRONG only gates the DEBIT branch (agent/strategy/"
+            " regime.py:97) -- treat this sweep's flatness on VWM_Z_STRONG as a property of this window's"
+            " data, and re-run over a window with a real recent-vol contraction before concluding the live"
+            " strategy is insensitive to VWM_Z_STRONG."
         )
 
     html_path = _write_heatmap_report(cells, out_dir, debit_starved=debit_starved)
@@ -368,8 +399,9 @@ async def _run_param_sweep(
 # backtest's entry fill (net_natural, already the worst of the two crossed
 # quotes -- ask on BUY legs, bid on SELL legs) is degraded a further
 # BACKTEST_SLIPPAGE_PCT=0.10 on top of that. This sweeps CROSS_SECTION_N (the
-# one axis --param-sweep proved is a real read, since VWM_Z_STRONG's column
-# is flat -- DEBIT is structurally unreachable, see debit_starved above) at
+# axis --param-sweep found VWM_Z_STRONG's own column flat on, in whatever
+# window it was last run over -- see debit_starved above for whether that was
+# a real DEBIT-starved window or the pre-Task-B structural floor) at
 # slippage_pct in {0.00, 0.05, 0.10} to check whether sweep.csv's negative
 # P&L is a fill-model artifact rather than a real negative edge.
 _SLIPPAGE_SENSITIVITY_PCTS = (Decimal("0.00"), Decimal("0.05"), Decimal("0.10"))
@@ -552,15 +584,15 @@ def _write_heatmap_report(cells: list[_SweepCell], out_dir: str, *, debit_starve
   </p>
 
   {f'''<p class="caveat">
-    <strong>CAVEAT -- VWM_Z_STRONG's column is flat because DEBIT is structurally unreachable here, not
-    because the strategy is insensitive to it.</strong> Zero DEBIT-regime trades entered in any of the
-    {len(cells)} cells (checked down to vwm_z_strong=0.01, ruling out a parameter-threading bug).
-    BACKTEST_IV_RV_MULTIPLIER=1.15 (agent/config.py) floors every session/symbol's synthetic vrp_ratio
-    (IV/RV) at roughly 1.03-1.21 across this window -- always above VRP_DEBIT_MAX=1.00 -- so
-    ticker_screener.assign_regimes never assigns Regime.DEBIT, and VWM_Z_STRONG (which only gates the
-    DEBIT branch, agent/strategy/regime.py:97) never gets exercised. Every replay.py backtest to date
-    (this sweep, the iv/slippage sweep, the single-run report) has traded CREDIT structures exclusively.
-    Only the CROSS_SECTION_N axis is a real read here.
+    <strong>CAVEAT -- VWM_Z_STRONG's column is flat because zero DEBIT-regime trades entered this window,
+    not because the strategy is insensitive to it.</strong> Checked down to vwm_z_strong=0.01, ruling out
+    a parameter-threading bug, across all {len(cells)} cells. Since docs/strategy_audit_and_loop.md S0 Task
+    B, synthetic vrp_ratio varies by name/session (a real short-vs-long realized-vol term-structure ratio,
+    not a constant BACKTEST_IV_RV_MULTIPLIER), so this is no longer a structural floor VRP_DEBIT_MAX=1.00
+    could never cross -- it means --start/--end's actual price path never produced a strong enough
+    recent-vol contraction to cross it. ticker_screener.assign_regimes never assigned Regime.DEBIT this
+    run, so VWM_Z_STRONG (which only gates the DEBIT branch, agent/strategy/regime.py:97) never got
+    exercised. Only the CROSS_SECTION_N axis is a real read on this particular window.
   </p>''' if debit_starved else ""}
 
   <div class="row">
