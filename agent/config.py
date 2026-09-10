@@ -674,12 +674,27 @@ BACKTEST_IV_TERM_WINDOW: Final[int] = 5                    # ~1 trading week vs 
 # the short window alone -- rv_5 alone is a noisy, biased forecast of
 # forward vol, and a VRP-ranked backtest priced off a biased forecast
 # measures the bias, not a premium (see the proof at iv_forecast's
-# docstring). 0.0 (pure RV_20) reintroduces a constant vrp_ratio -- the
-# ORIGINAL bug -- so this must stay > 0; the actual guarantee that matters
-# (P&L doesn't predictably correlate with the resulting vrp_ratio) is
-# checked empirically by test_synthetic_chain_is_not_exploitable, not by
-# this weight being "correct" in any absolute sense -- per the proof, no
-# forecast choice here can be validated against a surface it invented.
+# docstring).
+#
+# docs/f1_f3_remediation_plan.md F3: this constant does NOT collapse
+# vrp_ratio to a constant at 0.0 -- that claim was only ever true when
+# vrp_ratio's denominator was RV_20 (pre-row-28), and measured false against
+# the current rv_dte-denominated vrp_ratio: at blend_weight=0.0, vrp sd=5.19,
+# range 0.54-59.58, P(DEBIT)=24.0%, vs 19.0%/15.5% at 0.3/1.0 -- DEBIT is
+# MORE reachable at 0.0, not less. The real reason to keep this > 0: as long
+# as the harness's IV is built from the same estimators (RV_20, or a blend
+# with a short window) the screen itself divides by, vrp_ratio is a
+# deterministic function of the trailing price path, and the harness can
+# have either a varying vrp_ratio or a neutral one -- never both (proof at
+# iv_forecast's docstring). w=0.0 picks neutrality but loses ALL of iv_atm's
+# cross-sectional variation from the short leg, an unjustified asymmetric
+# choice; w>0 is what gives the harness any DEBIT coverage at all, at the
+# documented cost that the resulting DEBIT population is a known artifact
+# (docs/f1_f3_remediation_plan.md S4) whose P&L must never be quoted as a
+# real edge. test_synthetic_chain_is_not_exploitable checks the empirical
+# guarantee that actually matters -- P&L doesn't predictably correlate with
+# the resulting vrp_ratio on the regime that CAN be neutral (CREDIT) -- not
+# this comment.
 BACKTEST_IV_FORECAST_BLEND_WEIGHT: Final[float] = 0.3
 BACKTEST_SKEW_SLOPE: Final[float] = 0.5                    # IV points of equity-style put skew per unit OTM moneyness
 BACKTEST_CHAIN_SPREAD_PCT: Final[float] = 0.03              # synthetic bid/ask width as a fraction of BS mid

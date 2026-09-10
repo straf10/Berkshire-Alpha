@@ -54,17 +54,31 @@ def iv_forecast(
 
     This blends toward RV_WINDOW=20 instead -- "rv_20 alone is already a
     better forecast of forward 3-7 day vol than rv_5, purely because it's
-    less noisy" -- without eliminating it (blend_weight=0.0 collapses
-    forecast=rv20 exactly, reintroducing a constant vrp_ratio just like the
-    original bug, since vrp_ratio = forecast*multiplier/rv20 = multiplier
-    when forecast==rv20). Neither endpoint is safe; the empirical guarantee
-    that actually matters -- realized P&L doesn't predictably correlate with
-    the resulting vrp_ratio -- is checked directly by
-    test_synthetic_chain_is_not_exploitable (agent/tests/test_replay.py),
-    not asserted by this docstring. Per the proof: ANY forecast choice here
-    just substitutes a different assumption for the market's real IV: this
-    function's job is to keep the harness NEUTRAL (measures nothing about
-    VRP either way), not to make VRP-based selection newly "work"."""
+    less noisy" -- without eliminating it. blend_weight=0.0 collapses
+    forecast=rv20 exactly, but that does NOT reintroduce a constant
+    vrp_ratio the way the original bug did: vrp_ratio's own denominator is
+    NOT this forecast's rv20 argument, it's quant.py's rv_dte (or, once
+    docs/f1_f3_remediation_plan.md's F1 ships, rv_20 computed independently
+    inside quant.py) -- a genuinely different quantity from THIS function's
+    `rv20` parameter, computed from the full trailing history rather than
+    whatever window this call happens to be threading through. Measured
+    against the current (rv_dte-denominated) vrp_ratio: blend_weight=0.0
+    gives vrp sd=5.19, range 0.54-59.58, P(DEBIT)=24.0% -- not constant, and
+    DEBIT is MORE reachable than at 0.3 or 1.0, not less
+    (docs/f1_f3_remediation_plan.md F3). The real cost of w=0.0 is
+    structural, not a collapse-to-constant: it discards ALL of iv_atm's
+    cross-sectional variation from the short leg, an unjustified asymmetric
+    choice. The empirical guarantee that actually matters -- realized P&L
+    doesn't predictably correlate with the resulting vrp_ratio -- is checked
+    directly by test_synthetic_chain_is_not_exploitable
+    (agent/tests/test_replay.py), on the regime (CREDIT) that can actually
+    be neutral; DEBIT cannot (docs/f1_f3_remediation_plan.md S4) as long as
+    this harness's IV is built from the same estimators the screen itself
+    divides by -- the harness can have either a varying vrp_ratio or a
+    neutral one, never both. Per the proof: ANY forecast choice here just
+    substitutes a different assumption for the market's real IV: this
+    function's job is to keep the harness as NEUTRAL as that constraint
+    allows, not to make VRP-based selection newly "work"."""
     rv_short = short_term_rv(closes, window)
     if rv_short == 0.0 or rv20 == 0.0:
         return 0.0
