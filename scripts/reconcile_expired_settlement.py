@@ -33,9 +33,22 @@ settlement bar to already exist for the expiry date -- if the underlying
 didn't trade that day (a data gap, not a trading question), the row is
 reported and left untouched rather than guessed at.
 
+docs/strategy_audit_and_loop.md S5 A4 -- OPEN DECISION, not defaulted here on
+purpose: overwriting closed_at with the trade's expiry date is economically
+correct (the P&L belongs to the expiry date) but moves it into a DIFFERENT
+reflector.digest() session bucket than the one that already ran for it --
+reflections are per-session-date and are not regenerated once written
+(agent/main.py's _maybe_reflect only ever reflects the most recent session).
+--closed-at=expiry is correct but leaves that earlier date's reflection
+silently stale (it ran with fewer closed trades than actually happened);
+--closed-at=unchanged corrects realized_pnl/exit_reason only and leaves
+closed_at (and therefore which reflection saw the trade) exactly as
+reconcile_expired_ledger wrote it. There is no default -- pick one.
+
 Usage:
-    python scripts/reconcile_expired_settlement.py             # corrects for real
-    python scripts/reconcile_expired_settlement.py --dry-run   # report only, no writes
+    python scripts/reconcile_expired_settlement.py --closed-at=expiry --dry-run
+    python scripts/reconcile_expired_settlement.py --closed-at=unchanged --dry-run
+    python scripts/reconcile_expired_settlement.py --closed-at=expiry   # writes for real
 """
 from __future__ import annotations
 
@@ -87,16 +100,20 @@ def _intrinsic_net(legs: tuple[_Leg, ...], settle_spot: Decimal) -> Decimal:
 async def _candidate_trades(conn) -> list[dict[str, Any]]:
     cur = await conn.execute(
         "SELECT id, symbol, structure, expiry, qty, legs_json, submitted_limit, "
-        "final_limit, fill_price FROM trades WHERE exit_reason = 'EXPIRED_UNRECONCILED' ORDER BY id"
+        "final_limit, fill_price, closed_at FROM trades WHERE exit_reason = 'EXPIRED_UNRECONCILED' ORDER BY id"
     )
     return [dict(row) for row in await cur.fetchall()]
 
 
-async def _reconcile_trade(conn, clients: AlpacaClients, row: dict[str, Any], *, dry_run: bool) -> bool:
+async def _reconcile_trade(
+    conn, clients: AlpacaClients, row: dict[str, Any], *, closed_at_mode: str, dry_run: bool,
+) -> bool:
     """Returns True iff this trade was (or, dry-run, would be) corrected."""
     trade_id, symbol, qty = row["id"], row["symbol"], int(row["qty"])
     expiry = date.fromisoformat(row["expiry"])
-    print(f"trade {trade_id}  {symbol}  qty={qty}  expiry={expiry}  structure={row['structure']}")
+    original_closed_at = row["closed_at"]
+    print(f"trade {trade_id}  {symbol}  qty={qty}  expiry={expiry}  structure={row['structure']}  "
+          f"currently closed_at={original_closed_at}")
 
     # main.py:539-542's exact precedence: the actual fill, falling back only
     # when a fill was never recorded.
@@ -125,20 +142,31 @@ async def _reconcile_trade(conn, clients: AlpacaClients, row: dict[str, Any], *,
           f"entry {entry_price}: {pnl_per_spread:+.2f}/spread x {qty} = realized_pnl ${realized_pnl:+.2f} "
           f"(was $0.00, exit_reason EXPIRED_UNRECONCILED)")
 
+    new_closed_at = f"{expiry.isoformat()}T00:00:00+00:00" if closed_at_mode == "expiry" else original_closed_at
+    moved_session = closed_at_mode == "expiry" and original_closed_at is not None \
+        and not str(original_closed_at).startswith(expiry.isoformat())
+
     if dry_run:
-        print("    (dry run -- not written)")
+        print(f"    (dry run -- not written; closed_at would become {new_closed_at})")
         return True
 
     await storage_write.close_trade(
-        conn, trade_id,
-        closed_at=f"{expiry.isoformat()}T00:00:00+00:00",
+        conn, trade_id, closed_at=new_closed_at,
         realized_pnl=realized_pnl, exit_reason=_NEW_EXIT_REASON,
     )
-    print(f"    written to trades.realized_pnl / exit_reason={_NEW_EXIT_REASON}")
+    print(f"    written to trades.realized_pnl / exit_reason={_NEW_EXIT_REASON} / closed_at={new_closed_at}")
+    if moved_session:
+        print(
+            f"    WARNING: closed_at moved from session {str(original_closed_at)[:10]} to {expiry.isoformat()} "
+            f"-- if a reflection already exists for {expiry.isoformat()} (SELECT 1 FROM reflections WHERE "
+            f"session_date = '{expiry.isoformat()}'), it ran without this trade and will NOT regenerate "
+            "itself (_maybe_reflect only ever reflects the most recent session). Delete that reflections "
+            "row and re-run the reflector for that date by hand if you want it to reflect the corrected ledger."
+        )
     return True
 
 
-async def main(*, dry_run: bool = False) -> int:
+async def main(*, closed_at_mode: str, dry_run: bool = False) -> int:
     settings = load_settings(dry_run=True)
     clients = AlpacaClients(settings)
     async with storage_db.connect(settings.db_path) as conn:
@@ -147,12 +175,12 @@ async def main(*, dry_run: bool = False) -> int:
             print("No exit_reason = 'EXPIRED_UNRECONCILED' trades -- nothing to reconcile.")
             return 0
 
-        print(f"{len(candidates)} EXPIRED_UNRECONCILED trade(s) to settle at intrinsic value"
-              f"{' (dry run -- no writes)' if dry_run else ''}:")
+        print(f"{len(candidates)} EXPIRED_UNRECONCILED trade(s) to settle at intrinsic value "
+              f"(closed_at={closed_at_mode}){' (dry run -- no writes)' if dry_run else ''}:")
         print(_BAR)
         reconciled = 0
         for row in candidates:
-            if await _reconcile_trade(conn, clients, row, dry_run=dry_run):
+            if await _reconcile_trade(conn, clients, row, closed_at_mode=closed_at_mode, dry_run=dry_run):
                 reconciled += 1
             print(_BAR)
 
@@ -163,6 +191,12 @@ async def main(*, dry_run: bool = False) -> int:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        "--closed-at", choices=("expiry", "unchanged"), required=True,
+        help="expiry: economically correct, moves the P&L into the expiry date's session bucket "
+             "(docs/strategy_audit_and_loop.md S5 A4). unchanged: correct realized_pnl/exit_reason only, "
+             "leave closed_at (and which reflection saw the trade) exactly as it is. No default -- pick one.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="report what would be reconciled without writing")
     args = parser.parse_args()
-    sys.exit(asyncio.run(main(dry_run=args.dry_run)))
+    sys.exit(asyncio.run(main(closed_at_mode=args.closed_at, dry_run=args.dry_run)))
