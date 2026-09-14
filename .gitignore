@@ -16,3 +16,4 @@ CLAUDE.md
 agent/backtest/output*/
 agent/backtest/cache/
 .vercel
+results/
