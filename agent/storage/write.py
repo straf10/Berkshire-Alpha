@@ -628,7 +628,7 @@ class ChainSnapshotRow:
     occ_symbol: str
     expiry: str
     strike: float
-    right: str
+    option_right: str
     bid: float
     ask: float
     delta: float
@@ -661,12 +661,12 @@ async def insert_chain_snapshots(conn: aiosqlite.Connection, rows: Sequence[Chai
         for r in batch:
             params.extend((
                 r.cycle_id, r.ts_utc, r.session_date, r.underlying, r.occ_symbol, r.expiry,
-                r.strike, r.right, r.bid, r.ask, r.delta, r.gamma, r.theta, r.vega, r.iv,
+                r.strike, r.option_right, r.bid, r.ask, r.delta, r.gamma, r.theta, r.vega, r.iv,
             ))
         await conn.execute(
             f"""INSERT INTO chain_snapshots
                (cycle_id, ts_utc, session_date, underlying, occ_symbol, expiry,
-                strike, right, bid, ask, delta, gamma, theta, vega, iv)
+                strike, option_right, bid, ask, delta, gamma, theta, vega, iv)
                VALUES {placeholders}""",
             params,
         )

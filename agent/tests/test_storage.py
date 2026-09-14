@@ -146,13 +146,13 @@ async def test_chain_snapshots_roundtrip(tmp_path) -> None:
         write.ChainSnapshotRow(
             cycle_id="cycle-1", ts_utc="2026-08-31T12:00:00Z", session_date="2026-08-31",
             underlying="SPY", occ_symbol="SPY260904C00560000", expiry="2026-09-04",
-            strike=560.0, right="C", bid=1.20, ask=1.30,
+            strike=560.0, option_right="C", bid=1.20, ask=1.30,
             delta=0.45, gamma=0.02, theta=-0.10, vega=0.30, iv=0.18,
         ),
         write.ChainSnapshotRow(
             cycle_id="cycle-1", ts_utc="2026-08-31T12:00:00Z", session_date="2026-08-31",
             underlying="QQQ", occ_symbol="QQQ260904P00480000", expiry="2026-09-04",
-            strike=480.0, right="P", bid=2.00, ask=2.10,
+            strike=480.0, option_right="P", bid=2.00, ask=2.10,
             delta=-0.40, gamma=0.03, theta=-0.12, vega=0.35, iv=0.22,
         ),
     ]

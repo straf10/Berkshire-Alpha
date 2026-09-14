@@ -231,7 +231,7 @@ async def test_scan_cycle_persists_chain_snapshots(tmp_path, monkeypatch: pytest
     assert {r["cycle_id"] for r in rows} <= decision_cycle_ids
     for r in rows:
         assert r["session_date"] == session.session_date.isoformat()
-        assert r["right"] in ("C", "P")
+        assert r["option_right"] in ("C", "P")
 
 
 async def test_chain_snapshot_write_failure_does_not_block_scan(

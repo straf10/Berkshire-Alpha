@@ -1473,7 +1473,7 @@ async def _persist_chain_snapshots(
         storage_write.ChainSnapshotRow(
             cycle_id=cycle_id, ts_utc=ts_utc, session_date=session_date.isoformat(),
             underlying=sym, occ_symbol=c.occ_symbol, expiry=c.expiry.isoformat(),
-            strike=c.strike, right=c.right, bid=c.bid, ask=c.ask,
+            strike=c.strike, option_right=c.right, bid=c.bid, ask=c.ask,
             delta=c.delta, gamma=c.gamma, theta=c.theta, vega=c.vega, iv=c.iv,
         )
         for sym in UNIVERSE

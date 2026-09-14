@@ -260,7 +260,7 @@ CREATE TABLE IF NOT EXISTS chain_snapshots (
   occ_symbol   TEXT    NOT NULL,
   expiry       TEXT    NOT NULL,
   strike       REAL    NOT NULL,
-  right        TEXT    NOT NULL,
+  option_right TEXT    NOT NULL,
   bid          REAL    NOT NULL,
   ask          REAL    NOT NULL,
   delta        REAL    NOT NULL,
