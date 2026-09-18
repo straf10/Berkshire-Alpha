@@ -784,7 +784,7 @@ class Settings:
 # stale or missing WEB_ORIGIN can now ADD an origin; it can no longer remove
 # the one the judges use. WEB_ORIGIN itself is read as a comma-separated list
 # so preview deployments can be added without another code change.
-WEB_ORIGINS_DEFAULT: Final[tuple[str, ...]] = ("https://berkshire-alpha.vercel.app",)
+WEB_ORIGINS_DEFAULT: Final[tuple[str, ...]] = ("https://berkshire-alpha-zeta.vercel.app",)
 
 
 # Commit of the running image, for /config (docs/review_2026-09-04.md §D:

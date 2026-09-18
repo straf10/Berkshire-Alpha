@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://berkshire-alpha.vercel.app/">Live dashboard</a> ·
+  <a href="https://berkshire-alpha-zeta.vercel.app/">Live dashboard</a> ·
   <a href="docs/onepager.md">One-page write-up</a> ·
   <a href="#judged-account">Judged account</a> ·
   <a href="LICENSE">MIT</a>
@@ -54,11 +54,10 @@ Trading parameters in `agent/config.py` were frozen ahead of the judged sessions
 
 ## Status & Demo
 
-Live and trading — agent, risk gates, LLM pipeline, and dashboard are all running.
+Live and trading — agent, risk gates, and dashboard are all running. The LLM layer is off unless `FEATHERLESS_API_KEY` is set; without it the agent runs the deterministic quant-only spine.
 
-- **Live dashboard (Vercel):** https://berkshire-alpha.vercel.app/
-- **Agent API (Railway):** https://autonomous-debate-trading-agent-production.up.railway.app
-  — the Railway project keeps its original name; only the Vercel project and the GitHub repo were renamed.
+- **Live dashboard (Vercel):** https://berkshire-alpha-zeta.vercel.app/
+- **Agent API (Vercel):** https://berkshire-alpha-api.vercel.app -- trading loop runs on GitHub Actions ([docs/deploy.md](docs/deploy.md))
 
 Every push to `main` runs tests (pytest, eslint, `next build`) via GitHub Actions, then auto-deploys the agent to Railway and the dashboard to Vercel. See [docs/deployment.md](docs/deployment.md) for details.
 
