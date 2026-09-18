@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Manual run = test + deploy both projects regardless of which paths
+  # changed (e.g. after rotating VERCEL_TOKEN).
+  workflow_dispatch:
 
 jobs:
   changes:
@@ -34,7 +37,7 @@ jobs:
   test-backend:
     name: Test backend (pytest)
     needs: changes
-    if: needs.changes.outputs.backend == 'true'
+    if: needs.changes.outputs.backend == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -52,7 +55,7 @@ jobs:
   test-frontend:
     name: Test frontend (lint + build)
     needs: changes
-    if: needs.changes.outputs.frontend == 'true'
+    if: needs.changes.outputs.frontend == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     # Raised from 5. NOT because this job costs five minutes -- it does not.
     # Measured on run 33816289384: `npm ci` 11s, whole job 44s. The failure
@@ -89,8 +92,9 @@ jobs:
     name: Deploy API to Vercel
     needs: [changes, test-backend]
     if: >-
-      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
-      needs.changes.outputs.backend == 'true' &&
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'push' && needs.changes.outputs.backend == 'true') ||
+       github.event_name == 'workflow_dispatch') &&
       !contains(github.event.head_commit.message, '[skip deploy]')
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -113,8 +117,9 @@ jobs:
     name: Deploy frontend to Vercel
     needs: [changes, test-frontend]
     if: >-
-      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
-      needs.changes.outputs.frontend == 'true' &&
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'push' && needs.changes.outputs.frontend == 'true') ||
+       github.event_name == 'workflow_dispatch') &&
       !contains(github.event.head_commit.message, '[skip deploy]')
     runs-on: ubuntu-latest
     # Same reasoning as test-frontend: this job installs the Vercel CLI and
