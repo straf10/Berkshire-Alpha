@@ -1,5 +1,12 @@
 # Deployment
 
+> **Superseded on 18 Sep 2026 by [deploy.md](deploy.md).** Hosting moved to the
+> owner's own free accounts: dashboard https://berkshire-alpha-zeta.vercel.app,
+> API https://berkshire-alpha-api.vercel.app, Postgres on Neon, trading loop on
+> GitHub Actions. Railway is no longer used, and the URLs below no longer
+> resolve. The rest of this file is the hackathon-era record, kept for its
+> incident notes.
+
 Live since Day 2 (Sat 29 Aug), per plan.md's "deploy on Day 2, not Day 6" rule. Both
 platform projects were renamed on Day 4 (31 Aug) to match the repo name; Railway's CLI
 has no in-place rename, so that side was a delete + recreate (new project/service, same
