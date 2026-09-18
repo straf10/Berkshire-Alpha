@@ -908,7 +908,10 @@ async def test_closed_market_places_no_orders(tmp_path, monkeypatch: pytest.Monk
     deps = _deps(db_path, clients, broker, clock)
 
     with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(main_module.trading_loop(deps), timeout=0.05)
+        # 1s, was 0.05: a cold GitHub runner did not reach the first scan inside
+        # 50ms (run 35380456141). `now` is frozen, so a longer bound only adds
+        # idle management passes -- it cannot let an extra slot fire.
+        await asyncio.wait_for(main_module.trading_loop(deps), timeout=1.0)
 
     assert scan_calls == []
     assert broker.submitted == []
@@ -981,7 +984,10 @@ async def test_scan_slot_not_rerun_after_restart(tmp_path, monkeypatch: pytest.M
     deps = _deps(db_path, clients, broker, clock)
 
     with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(main_module.trading_loop(deps), timeout=0.05)
+        # 1s, was 0.05: a cold GitHub runner did not reach the first scan inside
+        # 50ms (run 35380456141). `now` is frozen, so a longer bound only adds
+        # idle management passes -- it cannot let an extra slot fire.
+        await asyncio.wait_for(main_module.trading_loop(deps), timeout=1.0)
 
     # Only slot 2 should have run (completed count went 1 -> 2, matching
     # due=2 at this frozen `now`; the loop then falls through to
