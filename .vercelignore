@@ -1,0 +1,17 @@
+# Upload filter for the API project (repo root). The dashboard is its own
+# Vercel project deployed from web/, so none of this reaches the function.
+web/
+venv/
+.venv/
+docs/
+scripts/
+assets/
+results/
+agent/tests/
+agent/backtest/
+.github/
+memory.md
+CLAUDE.md
+Dockerfile
+*.db
+.env

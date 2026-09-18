@@ -20,14 +20,22 @@ _HAS_ID = {
 }
 _INSERT_TABLE_RE = re.compile(r"(?is)^\s*INSERT\s+INTO\s+([a-zA-Z_][a-zA-Z0-9_]*)")
 
-_pools: dict[str, asyncpg.Pool] = {}
+_pools: dict[str, tuple[asyncio.AbstractEventLoop, asyncpg.Pool]] = {}
 
 
 async def _get_pool(dsn: str) -> asyncpg.Pool:
-    pool = _pools.get(dsn)
-    if pool is None:
-        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=10)
-        _pools[dsn] = pool
+    """One pool per DSN, rebuilt if the running event loop changed. An asyncpg
+    pool is bound to the loop that created it, and the serverless API host
+    (Vercel, api/index.py) may serve a later request on a fresh loop -- reusing
+    the old pool there fails with "attached to a different loop". The agent
+    itself runs one loop for its whole life, so for it this is the same single
+    pool it always had."""
+    loop = asyncio.get_running_loop()
+    cached = _pools.get(dsn)
+    if cached is not None and cached[0] is loop:
+        return cached[1]
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=10)
+    _pools[dsn] = (loop, pool)
     return pool
 
 

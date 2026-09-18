@@ -25,6 +25,9 @@ jobs:
               - 'requirements.txt'
               - 'Dockerfile'
               - 'pytest.ini'
+              - 'api/**'
+              - 'vercel.json'
+              - '.vercelignore'
             frontend:
               - 'web/**'
 
@@ -82,37 +85,29 @@ jobs:
       - run: npm run test
       - run: npm run build
 
-  deploy-backend:
-    name: Deploy backend to Railway
+  deploy-api:
+    name: Deploy API to Vercel
     needs: [changes, test-backend]
     if: >-
       github.event_name == 'push' && github.ref == 'refs/heads/main' &&
       needs.changes.outputs.backend == 'true' &&
       !contains(github.event.head_commit.message, '[skip deploy]')
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - run: npm install -g @railway/cli
-      # /config.revision (agent/config.py) reads RAILWAY_GIT_COMMIT_SHA /
-      # GIT_COMMIT_SHA / GITHUB_SHA from the container's own environment.
-      # `railway up` here deploys a local build from this runner rather than
-      # Railway's GitHub-integration checkout, so Railway never learns which
-      # commit it is and RAILWAY_GIT_COMMIT_SHA is never set -- GITHUB_SHA
-      # lives in this workflow's own environment and stops at the runner
-      # unless forwarded. Set it as a service variable before `up` so it
-      # lands in the container as GIT_COMMIT_SHA and /config.revision is
-      # never None again. --skip-deploys: the `railway up` right after this
-      # already deploys; without it, setting the variable would trigger a
-      # redundant deploy of its own.
-      - run: railway variable set "GIT_COMMIT_SHA=${{ github.sha }}" --service "$RAILWAY_SERVICE" --skip-deploys
+      - run: npm install -g vercel
+      # The read-only API is its own Vercel project rooted at the repo root
+      # (api/index.py + vercel.json); the trading loop no longer deploys
+      # anywhere -- it runs from .github/workflows/trade.yml. Built remotely,
+      # not --prebuilt, so the runner needs no Python toolchain for this.
+      # GIT_COMMIT_SHA feeds /config.revision (agent/config.py), which a CLI
+      # deploy would otherwise leave as None.
+      - run: vercel deploy --prod --yes --token="$VERCEL_TOKEN" --env "GIT_COMMIT_SHA=${{ github.sha }}"
         env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-          RAILWAY_SERVICE: ${{ secrets.RAILWAY_SERVICE }}
-      - run: railway up --service "$RAILWAY_SERVICE" --detach
-        env:
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-          RAILWAY_SERVICE: ${{ secrets.RAILWAY_SERVICE }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_API_PROJECT_ID }}
 
   deploy-frontend:
     name: Deploy frontend to Vercel

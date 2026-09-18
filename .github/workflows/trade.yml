@@ -1,0 +1,78 @@
+name: Trading agent
+
+# Runs the unmodified trading loop on GitHub's runners instead of an always-on
+# host (docs/deploy.md). Inside a run nothing changes: scan slots
+# (SCAN_OFFSETS_MIN), the 5-minute management tick and the 2s order walk are
+# all timed off Alpaca's clock by agent.main itself. The cron only has to fire
+# before the work starts.
+#
+# A session is 6.5h and a job may run at most 6h, so each trading day is two
+# legs that hand off at 12:30 ET -- between the 11:45 and 13:15 ET scans. The
+# second leg resumes where the first stopped: completed scans are counted from
+# the decisions table and open positions come back through startup_reconcile.
+#
+# Scheduled runs are best-effort on GitHub (they can start late, and rarely not
+# at all), and they are disabled after 60 days without a commit to the repo.
+
+on:
+  schedule:
+    # Cron is UTC with no DST. 12:45 UTC = 08:45 EDT / 07:45 EST, before the
+    # 09:30 ET open either way.
+    - cron: "45 12 * * 1-5"
+    # 16:15 UTC = 12:15 EDT / 11:15 EST, always before the 12:30 ET handoff,
+    # so this leg queues behind the morning one rather than overlapping it.
+    - cron: "15 16 * * 1-5"
+  workflow_dispatch:
+
+# One agent at a time: two loops against one account would double-trade.
+concurrency:
+  group: trading-agent
+  cancel-in-progress: false
+
+jobs:
+  trade:
+    name: Run trading loop
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      TZ: UTC
+      PYTHONUNBUFFERED: "1"
+      APCA_API_KEY_ID: ${{ secrets.APCA_API_KEY_ID }}
+      APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
+      APCA_API_BASE_URL: https://paper-api.alpaca.markets
+      AGENT_DB_PATH: ${{ secrets.AGENT_DB_PATH }}
+      # Empty secret = quant-only spine (build_deps disables the LLM layer).
+      FEATHERLESS_API_KEY: ${{ secrets.FEATHERLESS_API_KEY }}
+      ALPACA_CLI_PATH: /usr/local/bin/alpaca
+      GIT_COMMIT_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - run: pip install -r requirements.txt
+      # Same pinned CLI as the Dockerfile -- see the comment there for why
+      # it is v0.0.14 and not `latest`.
+      - run: |
+          curl -fsSL -o /tmp/cli.tar.gz \
+            https://github.com/alpacahq/cli/releases/download/v0.0.14/cli_0.0.14_linux_amd64.tar.gz
+          sudo tar -xzf /tmp/cli.tar.gz -C /usr/local/bin alpaca
+          sudo chmod +x /usr/local/bin/alpaca
+      # Idempotent schema create. Runs even when the Trade step is skipped, so
+      # a manual run at any hour is enough to set up a fresh database.
+      - name: Initialise database schema
+        run: python -c "import asyncio, os; from agent.storage.db import init_db; asyncio.run(init_db(os.environ['AGENT_DB_PATH']))"
+      - name: Compute when this leg stops
+        id: stop
+        run: |
+          now=$(date +%s)
+          handoff=$(TZ=America/New_York date -d 'today 12:30' +%s)
+          # 30 min after a normal close: leaves room for the post-session
+          # Reflector, which runs on the loop's first closed-market pass.
+          close_out=$(TZ=America/New_York date -d 'today 16:30' +%s)
+          if [ "$now" -lt "$handoff" ]; then stop=$handoff; else stop=$close_out; fi
+          echo "secs=$(( stop - now ))" >> "$GITHUB_OUTPUT"
+      - name: Trade
+        if: fromJSON(steps.stop.outputs.secs) > 60
+        run: python -m agent.main --live --no-api --max-runtime-s "${{ steps.stop.outputs.secs }}"

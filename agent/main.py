@@ -2229,6 +2229,14 @@ async def main() -> None:
         "--no-llm", dest="llm", action="store_false",
         help="force-disable the LLM pipeline -- reproduces the Day-2 quant-only spine byte-for-byte",
     )
+    # docs/deploy.md: on GitHub Actions the API is served separately (Vercel)
+    # and each job has a hard runtime cap, so the scheduled trading legs run
+    # the loop alone and stop themselves at the ET handoff time.
+    parser.add_argument("--no-api", action="store_true", help="run the trading loop without serving the HTTP API")
+    parser.add_argument(
+        "--max-runtime-s", type=float, default=None,
+        help="exit cleanly after this many seconds (the next run resumes via startup_reconcile)",
+    )
     args = parser.parse_args()
 
     # --i-will-supervise was Day 2's stopgap for exactly one reason: entries
@@ -2279,7 +2287,14 @@ async def main() -> None:
         # 6, revised). The API is what judges see; log loudly and boot.
         logger.exception("startup reconcile FAILED -- booting anyway, no entries halt")
 
-    await asyncio.gather(serve_api(settings), supervised_loop(deps))
+    tasks = [supervised_loop(deps)] if args.no_api else [serve_api(settings), supervised_loop(deps)]
+    if args.max_runtime_s is None:
+        await asyncio.gather(*tasks)
+        return
+    try:
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=args.max_runtime_s)
+    except asyncio.TimeoutError:
+        logger.info("max runtime of %.0fs reached -- exiting; the next run resumes from the DB", args.max_runtime_s)
 
 
 if __name__ == "__main__":
