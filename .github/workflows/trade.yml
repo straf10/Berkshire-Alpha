@@ -40,6 +40,12 @@ jobs:
       APCA_API_KEY_ID: ${{ secrets.APCA_API_KEY_ID }}
       APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
       APCA_API_BASE_URL: https://paper-api.alpaca.markets
+      # The Alpaca CLI reads these names, not APCA_*, and otherwise demands
+      # `alpaca profile login`. Fed from the SAME secrets on purpose: two
+      # separately-set pairs drifted apart once and silently halted trading
+      # (docs/deployment.md, "stale ALPACA_API_KEY" incident).
+      ALPACA_API_KEY: ${{ secrets.APCA_API_KEY_ID }}
+      ALPACA_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
       AGENT_DB_PATH: ${{ secrets.AGENT_DB_PATH }}
       # Empty secret = quant-only spine (build_deps disables the LLM layer).
       FEATHERLESS_API_KEY: ${{ secrets.FEATHERLESS_API_KEY }}
