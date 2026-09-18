@@ -1,6 +1,6 @@
 import { Dashboard } from "@/components/Dashboard";
 import { ServiceDown } from "@/components/ServiceDown";
-import { apiBase, fetchJson } from "@/lib/api";
+import { apiBase, fetchJson, fetchState } from "@/lib/api";
 import { DEFAULT_TAB, VALID_TABS, type TabId } from "@/lib/tabs";
 import type {
   AccountState,
@@ -98,9 +98,9 @@ export default async function Page({
     markgap,
   ] = await Promise.all([
     fetchJson<AgentConfig>(`${base}/config`),
-    fetchJson<AccountState>(`${base}/state/account`),
+    fetchState<AccountState>(`${base}/state/account`),
     fetchJson<EquityPoint[]>(`${base}/equity/history?limit=500`),
-    fetchJson<GreeksSnapshot>(`${base}/greeks/latest`),
+    fetchState<GreeksSnapshot>(`${base}/greeks/latest`),
     fetchJson<OpenPosition[]>(`${base}/positions/open`),
     fetchJson<Trade[]>(`${base}/trades?limit=100`),
     fetchJson<LlmUsageResponse>(`${base}/llm/usage`),
@@ -108,7 +108,7 @@ export default async function Page({
     fetchJson<HealthBucket[]>(`${base}/health/history`),
     fetchJson<HealthResponse>(`${base}/health`),
     fetchJson<ReflectionShape[]>(`${base}/reflections?limit=10`),
-    fetchJson<MarkGapResponse>(`${base}/markgap`),
+    fetchState<MarkGapResponse>(`${base}/markgap`),
   ]);
 
   return (
